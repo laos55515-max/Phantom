@@ -6,6 +6,8 @@ All notable changes to PHANTOM are recorded here. The format follows
 
 ## [2.0.0] — release candidate
 
+Released under the MIT license (see `LICENSE`).
+
 Complete rewrite of the 1.x single-file application. Existing v1 files remain
 readable; new files are written in the v2 format.
 

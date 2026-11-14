@@ -8,7 +8,7 @@ version = "2.0.0"
 description = "PHANTOM — offline AES-256-GCM payload hiding in PNG images and WAV/FLAC audio"
 readme = "README.md"
 requires-python = ">=3.11"
-license = { text = "Proprietary" }
+license = { text = "MIT" }
 authors = [{ name = "PHANTOM project" }]
 dependencies = [
     "cryptography==50.0.2",

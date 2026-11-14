@@ -92,19 +92,24 @@ def test_fixtures_are_small() -> None:
 
 
 def test_docs_exist() -> None:
-    for name in ("README.md", "README.ru.md", "SECURITY.md", "CHANGELOG.md"):
+    for name in ("README.md", "README.ru.md", "SECURITY.md", "CHANGELOG.md", "LICENSE"):
         path = ROOT / name
         assert path.exists(), f"missing {name}"
         assert path.stat().st_size > 200, f"{name} is suspiciously short"
 
 
-def test_license_decision_is_recorded() -> None:
-    """Until the maintainer picks a licence, the repository must say so."""
+def test_license_is_mit_everywhere() -> None:
     declared = _pyproject()["project"]["license"]["text"]
-    readme = (ROOT / "README.md").read_text(encoding="utf-8")
-    assert declared
-    assert "## License" in readme
-    assert declared.lower() in readme.lower() or "unlicensed" in readme.lower()
+    licence = ROOT / "LICENSE"
+    assert licence.exists(), "LICENSE is missing"
+    text = licence.read_text(encoding="utf-8")
+    assert text.startswith("MIT License")
+    assert "WITHOUT WARRANTY OF ANY KIND" in text
+    assert declared == "MIT"
+    for readme in ("README.md", "README.ru.md"):
+        body = (ROOT / readme).read_text(encoding="utf-8")
+        assert "MIT" in body
+        assert "LICENSE" in body
 
 
 def test_every_python_file_compiles() -> None:

@@ -150,5 +150,6 @@ tools/                     fixture generators
 
 ## License
 
-See `LICENSE`. If no license file is present, the work is unlicensed and the
-choice is still open — ask the maintainer before redistributing.
+MIT — see [`LICENSE`](LICENSE). You may use, modify and redistribute the code,
+including commercially, provided the copyright notice and permission notice are
+kept. The software is provided "as is", without warranty of any kind.
