@@ -74,7 +74,13 @@ jobs:
         env:
           MPLBACKEND: Agg
       - name: GUI smoke tests (Xvfb)
-        run: xvfb-run -a -s "-screen 0 1280x1024x24" python -m pytest -ra -m gui
+        # A stuck Tk main loop must fail the job instead of hanging for hours:
+        # the step has a hard limit and faulthandler dumps every thread if a
+        # single test stops making progress.
+        timeout-minutes: 10
+        run: |
+          xvfb-run -a -s "-screen 0 1280x1024x24" python -m pytest -ra -m gui -v \
+            --durations=20 -o faulthandler_timeout=120
 
   benchmark:
     name: slow benchmarks
