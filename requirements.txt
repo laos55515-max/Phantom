@@ -1,0 +1,9 @@
+# Runtime dependencies — pinned (single source of truth: pyproject.toml).
+cryptography==50.0.2
+Pillow==13.0.0
+numpy==2.4.6
+soundfile==0.14.0
+mutagen==1.48.1
+customtkinter==6.0.0
+platformdirs==4.14.5
+tkinterdnd2==0.7.0

@@ -1,0 +1,45 @@
+{
+  "carrier": "carrier.png",
+  "carrier_sha256": "62dd388639c30ffdf556f6bd7f5b33549140ac54b67af2f7d3a03fb33cc3bc0b",
+  "carrier_size": [
+    160,
+    120
+  ],
+  "cipher": "AES-256-GCM",
+  "embedding": "sequential LSB matching (+-1), RGB channels, row-major",
+  "file": {
+    "blob_size": 402,
+    "name": "secret.bin",
+    "secret_sha256": "19e5ff0bfa1b3d662026d01277c641cf8ccfb2b6d780608a40d1473bc20929c7",
+    "stego": "stego_file.png",
+    "stego_sha256": "a1d3e43c440213a19869e399f220080325d63c4f7f8ae4fccc31c3a3cdd0da88"
+  },
+  "format": "legacy-v1",
+  "generator": "tools/make_legacy_fixtures.py @ commit 4920c65",
+  "header_bits_plaintext_length": 32,
+  "kdf": "pbkdf2-hmac-sha256",
+  "kdf_iterations": 200000,
+  "nonce_size": 12,
+  "password": "correct horse battery staple",
+  "password_variants_expected": [
+    "raw-utf8"
+  ],
+  "salt_size": 16,
+  "text": {
+    "blob_size": 213,
+    "secret_sha256": "f7427802e8dbd0bc801fb3d7732f94b5c2f5ebc382859bfef979c989f3c1c041",
+    "secret_utf8": "PHANTOM legacy v1 fixture → текст українською, русский текст, emoji 🔐🖼️ and ASCII. Second line.",
+    "stego": "stego_text.png",
+    "stego_sha256": "cc343368a0c4c295adba7bd4735d346c5bddc2b63e5d1a1b9bcc70472ab75c04"
+  },
+  "unicode_text": {
+    "blob_size": 152,
+    "note": "password stored as NFC bytes by the original implementation",
+    "password_nfc": "Пароль-ї-Ω-тест-2026",
+    "password_nfd": "Пароль-ї-Ω-тест-2026",
+    "secret_sha256": "de1fc1be5e5a7dcaf486cd8c9dae8c76235cdfdcec54730ce4a31f11542fbb6b",
+    "secret_utf8": "Legacy v1 with a non-ASCII password — кирилиця + Ω",
+    "stego": "stego_text_unicode.png",
+    "stego_sha256": "af288d088f16b1c5c722ea9a7a47604856c42131b4c01a625d4ff5f1e957f893"
+  }
+}

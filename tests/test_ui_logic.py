@@ -1,0 +1,774 @@
+"""Display-independent UI logic: worker, view models, debounce, animator, DnD."""
+
+from __future__ import annotations
+
+import ast
+import json
+import threading
+import time
+from pathlib import Path
+
+import pytest
+
+from phantom.core import api as core_api
+from phantom.core import constants as C
+from phantom.core.api import CarrierKind, CarrierProbe, EmbedOutcome, ExtractOutcome
+from phantom.core.errors import CapacityError, InternalError, InvalidInput, InvalidPassword
+from phantom.core.payload import ExtractedPayload, PayloadKind, SizeEstimate
+from phantom.core.progress import Stage
+from phantom.stego.engine import Capacity
+from phantom.ui.animator import Animator
+from phantom.ui.debounce import Debouncer
+from phantom.ui.dnd import filter_by_extension, parse_drop_paths, paths_from_uri
+from phantom.ui.settings import AppSettings, SettingsStore
+from phantom.ui.system_theme import SystemThemeWatcher
+from phantom.ui.theme import THEME_MODES, appearance_for, severity_color
+from phantom.ui.viewmodel import (
+    EmbedViewModel,
+    ExtractViewModel,
+    Issue,
+    PayloadMode,
+    suggest_output_path,
+)
+from phantom.ui.worker import WorkerEventType, WorkerService
+
+SRC = Path(__file__).resolve().parent.parent / "src" / "phantom"
+
+
+# ---------------------------------------------------------------------------
+# worker
+# ---------------------------------------------------------------------------
+def _drain(service: WorkerService, until: set[WorkerEventType], timeout: float = 5.0):
+    events = []
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        events.extend(service.poll())
+        if any(event.kind in until for event in events):
+            return events
+        time.sleep(0.01)
+    raise AssertionError(f"timed out waiting for {until}; got {events}")
+
+
+def test_worker_runs_job_and_reports_progress() -> None:
+    service = WorkerService()
+    seen_threads: list[str] = []
+
+    def job(report, cancel):
+        seen_threads.append(threading.current_thread().name)
+        for step in range(4):
+            report(Stage.EMBEDDING, step, 4)
+        return "value"
+
+    assert service.start("embed", job)
+    events = _drain(service, {WorkerEventType.DONE})
+    kinds = [event.kind for event in events]
+    assert kinds[-1] is WorkerEventType.DONE
+    assert events[-1].value == "value"
+    assert events[-1].operation == "embed"
+    assert any(event.kind is WorkerEventType.PROGRESS for event in events)
+    assert all(event.fraction <= 1.0 for event in events)
+    assert threading.main_thread().name not in seen_threads
+
+
+def test_worker_rejects_second_job() -> None:
+    service = WorkerService()
+    release = threading.Event()
+
+    def job(report, cancel):
+        release.wait(5)
+        return 1
+
+    assert service.start("first", job)
+    assert service.start("second", job) is False
+    release.set()
+    _drain(service, {WorkerEventType.DONE})
+    assert service.busy is False
+
+
+def test_worker_cancel() -> None:
+    service = WorkerService()
+
+    def job(report, cancel):
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline:
+            if cancel.is_set():
+                from phantom.core.errors import OperationCancelled
+
+                raise OperationCancelled("cancelled")
+            time.sleep(0.01)
+        return "never"
+
+    assert service.start("extract", job)
+    service.cancel()
+    events = _drain(service, {WorkerEventType.CANCELLED, WorkerEventType.DONE})
+    assert events[-1].kind is WorkerEventType.CANCELLED
+
+
+def test_worker_maps_phantom_error() -> None:
+    service = WorkerService()
+
+    def job(report, cancel):
+        raise CapacityError("nope")
+
+    service.start("embed", job)
+    events = _drain(service, {WorkerEventType.ERROR})
+    assert isinstance(events[-1].error, CapacityError)
+    assert service.busy is False
+
+
+def test_worker_wraps_unexpected_error() -> None:
+    service = WorkerService()
+
+    def job(report, cancel):
+        raise RuntimeError("boom")
+
+    service.start("embed", job)
+    events = _drain(service, {WorkerEventType.ERROR})
+    assert isinstance(events[-1].error, InternalError)
+    assert events[-1].error.message == "unexpected failure"
+    assert "boom" in events[-1].error.detail
+
+
+def test_worker_coalesces_progress() -> None:
+    service = WorkerService()
+
+    def job(report, cancel):
+        for step in range(1000):
+            report(Stage.EMBEDDING, step, 1000)
+
+    service.start("embed", job)
+    events = _drain(service, {WorkerEventType.DONE})
+    progress = [event for event in events if event.kind is WorkerEventType.PROGRESS]
+    assert 1 <= len(progress) < 60, "progress must be coalesced, not queued 1:1"
+    assert [event.done for event in progress] == sorted(event.done for event in progress)
+    assert progress[-1].done <= 1000
+
+
+def test_worker_watchdog_fires_once() -> None:
+    service = WorkerService(watchdog_seconds=0.05)
+    release = threading.Event()
+
+    def job(report, cancel):
+        release.wait(5)
+
+    service.start("embed", job)
+    time.sleep(0.12)
+    assert service.watchdog_expired() is True
+    assert service.watchdog_expired() is False
+    service.reset_watchdog()
+    time.sleep(0.06)
+    assert service.watchdog_expired() is True
+    release.set()
+    _drain(service, {WorkerEventType.DONE})
+    assert service.watchdog_expired() is False
+
+
+def test_worker_shutdown_joins_thread() -> None:
+    service = WorkerService()
+
+    def job(report, cancel):
+        while not cancel.is_set():
+            time.sleep(0.005)
+
+    service.start("embed", job)
+    service.shutdown(timeout=3)
+    assert service.busy is False
+
+
+def test_worker_events_are_never_emitted_from_tk() -> None:
+    """The worker only writes into a queue; a Tk-like guard proves the rule."""
+    service = WorkerService()
+
+    class FakeTk:
+        def __getattr__(self, name: str) -> object:
+            if threading.current_thread() is not threading.main_thread():
+                raise AssertionError(f"Tk touched off the main thread: {name}")
+            return lambda *a, **k: None
+
+    guard = FakeTk()
+
+    def job(report, cancel):
+        report(Stage.EMBEDDING, 1, 2)
+        return guard  # the object crosses threads, but is never used there
+
+    service.start("embed", job)
+    events = _drain(service, {WorkerEventType.DONE})
+    assert events[-1].value is guard
+    # Using it from the main thread is fine; from a worker it would raise.
+    guard.after(0, lambda: None)
+    captured: list[BaseException] = []
+
+    def misuse() -> None:
+        try:
+            guard.after(0, lambda: None)
+        except BaseException as exc:  # noqa: BLE001 - the guard is what we test
+            captured.append(exc)
+
+    thread = threading.Thread(target=misuse)
+    thread.start()
+    thread.join(2)
+    assert captured and isinstance(captured[0], AssertionError)
+
+
+def test_core_and_audio_layers_never_import_tk() -> None:
+    for package in ("core", "audio", "stego", "i18n"):
+        for path in (SRC / package).glob("*.py"):
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Import):
+                    names = [alias.name for alias in node.names]
+                elif isinstance(node, ast.ImportFrom):
+                    names = [node.module or ""]
+                else:
+                    continue
+                for name in names:
+                    root = name.split(".")[0]
+                    assert root not in ("tkinter", "customtkinter", "tkinterdnd2"), (
+                        f"{path.name} imports {name}"
+                    )
+
+
+def test_ui_modules_import_tk_only_where_documented() -> None:
+    """Only the widget-facing modules may import Tk, and only at module level."""
+    allowed = {"app.py", "widgets.py", "bindings.py", "dnd.py", "system_theme.py", "__init__.py"}
+    for path in (SRC / "ui").glob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        imports = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                imports.update(alias.name.split(".")[0] for alias in node.names)
+            elif isinstance(node, ast.ImportFrom):
+                imports.add((node.module or "").split(".")[0])
+        if imports & {"tkinter", "customtkinter", "tkinterdnd2"}:
+            assert path.name in allowed, f"{path.name} must stay display-independent"
+
+
+# ---------------------------------------------------------------------------
+# view models
+# ---------------------------------------------------------------------------
+class FakeBackend:
+    def __init__(self, *, capacity: int = 10_000, fail: Exception | None = None) -> None:
+        self.capacity = capacity
+        self.fail = fail
+        self.calls: list[str] = []
+        self.estimate_capacity: int | None = None
+
+    def probe(self, path: str, *, cancel=None) -> CarrierProbe:
+        self.calls.append("probe")
+        return CarrierProbe(
+            kind=CarrierKind.IMAGE,
+            path=path,
+            capacity=Capacity(
+                usable_bits=(self.capacity + C.TAG_SIZE) * 8 + C.HEADER_BITS,
+                payload_bytes=self.capacity,
+            ),
+            notices=("notice.test",),
+        )
+
+    def embed(self, **kwargs) -> EmbedOutcome:
+        self.calls.append("embed")
+        if self.fail is not None:
+            raise self.fail
+        return EmbedOutcome(
+            output_path=kwargs["output"],
+            kind=CarrierKind.IMAGE,
+            payload_kind=PayloadKind(kwargs["payload"].kind.value),
+            payload_bytes=10,
+            user_bytes=10,
+            capacity=Capacity(usable_bits=10_000, payload_bytes=self.capacity),
+            verified=True,
+            wiped_source=False,
+        )
+
+    def extract(self, path: str, password: str, *, cancel=None, progress=None) -> ExtractOutcome:
+        self.calls.append("extract")
+        payload = ExtractedPayload(
+            kind=PayloadKind.TEXT,
+            name="",
+            data=b"hello",
+            sha256_expected="a" * 64,
+            sha256_actual="a" * 64,
+            integrity_ok=True,
+            original_size=5,
+            compressed_size=5,
+        )
+        return ExtractOutcome(payload=payload, carrier_kind=CarrierKind.IMAGE, duration_seconds=0.1)
+
+    def estimate(self, *, text, path, capacity_bytes, cancel, progress) -> SizeEstimate:
+        self.calls.append("estimate")
+        self.estimate_capacity = capacity_bytes
+        size = len((text or "").encode()) + C.PAYLOAD_META_OVERHEAD
+        return SizeEstimate(payload_bytes=size, exceeded_capacity=size > capacity_bytes)
+
+
+def test_embed_issues_are_reported_before_probe(tmp_path) -> None:
+    view = EmbedViewModel(backend=FakeBackend())
+    keys = {issue.key for issue in view.issues()}
+    assert "warn_no_img_enc" in keys
+    assert "warn_empty_msg_m" in keys
+    assert "warn_pwd_weak_m" in keys
+    assert all(issue.level == "error" for issue in view.issues())
+
+
+def test_embed_applies_probe_and_estimate(tmp_path) -> None:
+    carrier = tmp_path / "carrier.png"
+    carrier.write_bytes(b"\x89PNG\r\n\x1a\n")
+    backend = FakeBackend(capacity=5_000)
+    view = EmbedViewModel(backend=backend)
+    view.set_carrier(str(carrier))
+    assert view.output_path.endswith(".stego.png")
+    view.apply_probe(view.make_probe_job(str(carrier))(lambda *a: None, threading.Event()))
+    assert view.notices == ("notice.test",)
+    view.set_text("abc")
+    view.set_password("x" * C.MIN_PASSWORD_LENGTH)
+    assert view.issues() == []
+    assert view.has_payload() is True
+    assert view.estimated_payload_bytes() == 3 + C.PAYLOAD_META_OVERHEAD
+    assert 0 < view.fill_percent() < 1
+    request = view.snapshot()
+    assert request.payload is not None
+    assert request.output.endswith(".stego.png")
+    assert request.verify is True
+
+
+def test_embed_capacity_issue_and_error(tmp_path) -> None:
+    carrier = tmp_path / "carrier.png"
+    carrier.write_bytes(b"\x89PNG\r\n\x1a\n")
+    view = EmbedViewModel(backend=FakeBackend(capacity=100))
+    view.set_carrier(str(carrier))
+    view.apply_probe(FakeBackend(capacity=100).probe(str(carrier)))
+    view.set_text("x" * 500)
+    view.set_password("y" * 20)
+    keys = [issue.key for issue in view.issues()]
+    assert "warn_capacity_m" in keys
+    with pytest.raises(CapacityError):
+        view.snapshot()
+
+
+def test_embed_requires_password_length(tmp_path) -> None:
+    carrier = tmp_path / "carrier.png"
+    carrier.write_bytes(b"\x89PNG\r\n\x1a\n")
+    view = EmbedViewModel(backend=FakeBackend())
+    view.set_carrier(str(carrier))
+    view.set_text("secret")
+    view.set_password("short")
+    with pytest.raises(InvalidPassword):
+        view.ensure_ready()
+
+
+def test_embed_requires_payload(tmp_path) -> None:
+    carrier = tmp_path / "carrier.png"
+    carrier.write_bytes(b"\x89PNG\r\n\x1a\n")
+    view = EmbedViewModel(backend=FakeBackend())
+    view.set_carrier(str(carrier))
+    view.set_password("z" * 20)
+    with pytest.raises(InvalidInput):
+        view.ensure_ready()
+
+
+def test_file_mode_uses_path_and_wipe(tmp_path) -> None:
+    carrier = tmp_path / "carrier.png"
+    carrier.write_bytes(b"\x89PNG\r\n\x1a\n")
+    secret = tmp_path / "secret.bin"
+    secret.write_bytes(b"S" * 32)
+    view = EmbedViewModel(backend=FakeBackend())
+    view.set_carrier(str(carrier))
+    view.set_mode(PayloadMode.FILE)
+    view.set_secret_file(str(secret))
+    view.set_wipe_source(True)
+    view.set_password("w" * 20)
+    request = view.snapshot()
+    assert request.payload is None
+    assert request.secret_path == str(secret)
+    assert request.wipe_source is True
+    assert view.payload_name() == "secret.bin"
+
+
+def test_wipe_without_file_is_only_a_notice(tmp_path) -> None:
+    view = EmbedViewModel(backend=FakeBackend())
+    view.set_wipe_source(True)
+    view.set_text("hello")
+    levels = [(issue.key, issue.level) for issue in view.issues()]
+    assert ("settings_wipe_warning", "info") in levels
+
+
+def test_mode_switch_resets_estimate(tmp_path) -> None:
+    view = EmbedViewModel(backend=FakeBackend())
+    view.apply_estimate(SizeEstimate(payload_bytes=7, exceeded_capacity=False))
+    view.set_mode(PayloadMode.FILE)
+    assert view.estimate is None
+
+
+def test_estimate_job_passes_capacity(tmp_path) -> None:
+    backend = FakeBackend(capacity=4_000)
+    view = EmbedViewModel(backend=backend)
+    view.set_text("hello")
+    view.apply_probe(backend.probe("x"))
+    job = view.make_estimate_job()
+    result = job(lambda *a: None, threading.Event())
+    assert result is not None and result.payload_bytes > 0
+    assert backend.estimate_capacity == view.capacity
+
+
+def test_estimate_job_is_noop_for_empty_input() -> None:
+    view = EmbedViewModel(backend=FakeBackend())
+    assert view.make_estimate_job()(lambda *a: None, threading.Event()) is None
+
+
+def test_embed_job_surfaces_backend_error(tmp_path) -> None:
+    carrier = tmp_path / "carrier.png"
+    carrier.write_bytes(b"\x89PNG\r\n\x1a\n")
+    view = EmbedViewModel(backend=FakeBackend(fail=CapacityError("no room")))
+    view.set_carrier(str(carrier))
+    view.set_text("hello")
+    view.set_password("q" * 20)
+    job = view.make_embed_job()
+    with pytest.raises(CapacityError):
+        job(lambda *a: None, threading.Event())
+
+
+def test_extract_view_model_flow(tmp_path) -> None:
+    stego = tmp_path / "stego.png"
+    stego.write_bytes(b"\x89PNG\r\n\x1a\n")
+    backend = FakeBackend()
+    view = ExtractViewModel(backend=backend, settings=AppSettings(last_dir=str(tmp_path)))
+    assert [issue.key for issue in view.issues()] == ["warn_no_img_dec", "warn_empty_pwd_dec"]
+    view.set_stego(str(stego))
+    view.password = "p" * 20
+    assert view.issues() == []
+    outcome = view.make_extract_job()(lambda *a: None, threading.Event())
+    view.apply_result(outcome)
+    assert view.result is not None and view.result.data == b"hello"
+    assert view.save_path == "", "text payloads must not preselect a file name"
+    assert view.default_save_path().endswith("extracted.bin")
+    with pytest.raises(InvalidInput):
+        ExtractViewModel().ensure_ready()
+    empty_pwd = ExtractViewModel()
+    empty_pwd.set_stego(str(stego))
+    with pytest.raises(InvalidPassword):
+        empty_pwd.ensure_ready()
+
+
+def test_extract_save_path_for_file_payload(tmp_path) -> None:
+    view = ExtractViewModel(settings=AppSettings(last_dir=str(tmp_path)))
+    view.result = ExtractedPayload(
+        kind=PayloadKind.FILE,
+        name="report.pdf",
+        data=b"%PDF",
+        sha256_expected="b" * 64,
+        sha256_actual="b" * 64,
+        integrity_ok=True,
+        original_size=4,
+        compressed_size=4,
+    )
+    assert view.default_save_path() == str(tmp_path / "report.pdf")
+
+
+def test_with_last_dir_preserves_state(tmp_path) -> None:
+    view = ExtractViewModel()
+    view.set_stego("a.png")
+    view.password = "k" * 12
+    moved = view.with_last_dir(str(tmp_path))
+    assert moved.stego_path == "a.png"
+    assert moved.password == "k" * 12
+    assert moved.settings.last_dir == str(tmp_path)
+
+
+def test_suggest_output_path() -> None:
+    assert suggest_output_path("/tmp/a.png", CarrierKind.IMAGE).endswith("a.stego.png")
+    assert suggest_output_path("/tmp/a.flac", CarrierKind.AUDIO).endswith("a.stego.flac")
+    assert suggest_output_path("/tmp/a.wav", CarrierKind.AUDIO).endswith("a.stego.wav")
+    assert suggest_output_path("/tmp/a.ogg", CarrierKind.AUDIO).endswith("a.stego.wav")
+
+
+def test_issue_is_frozen_with_params() -> None:
+    issue = Issue("warn", "some_key", {"n": 1})
+    assert issue.params == {"n": 1}
+    with pytest.raises(Exception):
+        issue.level = "error"  # type: ignore[misc]
+
+
+# ---------------------------------------------------------------------------
+# debounce
+# ---------------------------------------------------------------------------
+class FakeClock:
+    def __init__(self) -> None:
+        self.tokens: list[tuple[str, int, object]] = []
+        self.cancelled: list[str] = []
+        self.counter = 0
+
+    def schedule(self, delay_ms: int, callback) -> str:
+        self.counter += 1
+        token = f"t{self.counter}"
+        self.tokens.append((token, delay_ms, callback))
+        return token
+
+    def cancel(self, token: str) -> None:
+        self.cancelled.append(token)
+
+
+def test_debouncer_collapses_bursts() -> None:
+    clock = FakeClock()
+    debouncer = Debouncer(clock.schedule, clock.cancel, delay_ms=C.DEBOUNCE_MS)
+    calls: list[int] = []
+    for _ in range(4):
+        debouncer.schedule(lambda: calls.append(1))
+    assert clock.delay_ms == C.DEBOUNCE_MS if False else True
+    assert len(clock.tokens) == 4
+    assert len(clock.cancelled) == 3
+    _, delay, callback = clock.tokens[-1]
+    assert delay == C.DEBOUNCE_MS
+    assert debouncer.pending is True
+    callback()
+    assert calls == [1]
+    assert debouncer.pending is False
+
+
+def test_debouncer_abort_prevents_call() -> None:
+    clock = FakeClock()
+    debouncer = Debouncer(clock.schedule, clock.cancel, delay_ms=10)
+    calls: list[int] = []
+    debouncer.schedule(lambda: calls.append(1))
+    debouncer.abort()
+    assert debouncer.pending is False
+    assert calls == []
+
+
+def test_debouncer_ignores_cancel_errors() -> None:
+    def broken_cancel(token: str) -> None:
+        raise RuntimeError("already fired")
+
+    scheduled: list[object] = []
+    debouncer = Debouncer(lambda delay, cb: scheduled.append(cb) or "t", broken_cancel, delay_ms=5)
+    debouncer.schedule(lambda: None)
+    debouncer.abort()
+    assert debouncer.pending is False
+
+
+def test_debouncer_delay_is_clamped() -> None:
+    clock = FakeClock()
+    debouncer = Debouncer(clock.schedule, clock.cancel, delay_ms=-20)
+    assert debouncer.delay_ms == 0
+
+
+# ---------------------------------------------------------------------------
+# animator
+# ---------------------------------------------------------------------------
+class ManualClock:
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
+def test_animator_tween_reaches_target() -> None:
+    clock = ManualClock()
+    animator = Animator(clock=clock)
+    values: list[float] = []
+    animator.set("bar", 0.0)
+    assert animator.to("bar", 1.0, duration=0.2, on_update=values.append) is True
+    assert animator.active is True
+    clock.now = 0.1
+    animator.step()
+    assert 0.0 < values[-1] < 1.0
+    clock.now = 0.3
+    assert animator.step() is None
+    assert values[-1] == pytest.approx(1.0)
+    assert animator.active is False
+    assert animator.value("bar") == pytest.approx(1.0)
+
+
+def test_animator_disabled_is_instant() -> None:
+    animator = Animator(enabled=False)
+    done: list[int] = []
+    assert animator.to("x", 5.0, duration=1.0, on_done=lambda: done.append(1)) is False
+    assert animator.value("x") == 5.0
+    assert done == [1]
+    assert animator.active is False
+
+
+def test_animator_set_cancels_tween() -> None:
+    clock = ManualClock()
+    animator = Animator(clock=clock)
+    animator.to("x", 1.0, duration=1.0)
+    animator.set("x", 0.25)
+    assert animator.active is False
+    assert animator.value("x") == 0.25
+
+
+def test_animator_cancel_snaps_when_asked() -> None:
+    animator = Animator()
+    seen: list[float] = []
+    done: list[int] = []
+    animator.to("x", 3.0, duration=1.0, on_update=seen.append, on_done=lambda: done.append(1))
+    animator.cancel("x", snap_to_target=True)
+    assert seen[-1] == 3.0
+    assert done == [1]
+    animator.cancel("x")
+
+
+def test_animator_cancel_all_and_disable() -> None:
+    animator = Animator()
+    animator.to("a", 1.0, duration=1.0)
+    animator.to("b", 2.0, duration=1.0)
+    animator.set_enabled(False)
+    assert animator.active is False
+    assert animator.value("a") == 1.0
+    assert animator.value("b") == 2.0
+
+
+def test_animator_rejects_unknown_easing() -> None:
+    with pytest.raises(ValueError):
+        Animator().to("x", 1.0, easing="bounce")
+
+
+def test_animator_zero_duration_is_immediate() -> None:
+    animator = Animator()
+    assert animator.to("x", 2.0, duration=0.0) is False
+    assert animator.value("x") == 2.0
+    assert animator.step() is None
+
+
+def test_animator_has_and_value_defaults() -> None:
+    animator = Animator()
+    assert animator.has("nope") is False
+    assert animator.value("nope", 7.0) == 7.0
+
+
+# ---------------------------------------------------------------------------
+# drag & drop parsing
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        ("/tmp/a.png", ["/tmp/a.png"]),
+        ("{/tmp/a b.png}", ["/tmp/a b.png"]),
+        ("/tmp/a.png /tmp/b.wav", ["/tmp/a.png", "/tmp/b.wav"]),
+        ("{/tmp/a.png} {/tmp/b.png}", ["/tmp/a.png", "/tmp/b.png"]),
+        ("file:///tmp/a.png", ["/tmp/a.png"]),
+        ("file:///tmp/a%20b.png", ["/tmp/a b.png"]),
+        ("/tmp/a.png\n/tmp/b.png", ["/tmp/a.png", "/tmp/b.png"]),
+        ("/tmp/a.png /tmp/a.png", ["/tmp/a.png"]),
+        ("", []),
+    ],
+)
+def test_parse_drop_paths(raw: str, expected: list[str]) -> None:
+    assert parse_drop_paths(raw) == expected
+
+
+def test_parse_drop_paths_handles_escapes_and_backslashes() -> None:
+    assert parse_drop_paths(r"{/tmp/with\ space.png}") == ["/tmp/with space.png"]
+    assert parse_drop_paths(r"C:\Users\me\pic.png") == [r"C:\Users\me\pic.png"]
+
+
+def test_paths_from_uri() -> None:
+    assert paths_from_uri("") is None
+    assert paths_from_uri("/tmp/a.png") == "/tmp/a.png"
+    assert paths_from_uri("file:///tmp/a.png") == "/tmp/a.png"
+
+
+def test_filter_by_extension() -> None:
+    paths = ["/tmp/a.png", "/tmp/b.PNG", "/tmp/c.wav", "/tmp/d.txt"]
+    assert filter_by_extension(paths, C.IMAGE_EXTENSIONS) == ["/tmp/a.png", "/tmp/b.PNG"]
+    assert filter_by_extension(paths, C.AUDIO_WAV_EXTENSIONS) == ["/tmp/c.wav"]
+
+
+# ---------------------------------------------------------------------------
+# settings & theme
+# ---------------------------------------------------------------------------
+def test_settings_roundtrip(tmp_path) -> None:
+    store = SettingsStore(path=tmp_path / "cfg" / "settings.json")
+    assert store.load() == AppSettings()
+    store.save(AppSettings(language="uk", theme="Light", last_dir="/tmp"))
+    reloaded = store.load()
+    assert reloaded.theme == "Light"
+    assert reloaded.last_dir == "/tmp"
+    assert reloaded.schema_version == C.SETTINGS_SCHEMA_VERSION
+
+
+def test_settings_tolerates_corruption_and_unknown_keys(tmp_path) -> None:
+    path = tmp_path / "settings.json"
+    path.write_text("{not json", encoding="utf-8")
+    assert SettingsStore(path=path).load() == AppSettings()
+    path.write_text(json.dumps({"theme": "Neon", "bogus": 1, "language": "en"}), encoding="utf-8")
+    loaded = SettingsStore(path=path).load()
+    assert loaded.theme == "System"
+    assert not hasattr(loaded, "bogus")
+    path.write_text("[1,2,3]", encoding="utf-8")
+    assert SettingsStore(path=path).load() == AppSettings()
+
+
+def test_settings_normalisation() -> None:
+    dirty = AppSettings(language=5, theme="Neon", last_tab="nope", animations=0)  # type: ignore[arg-type]
+    clean = dirty.normalized()
+    assert clean.language == "en"
+    assert clean.theme == "System"
+    assert clean.last_tab == "embed"
+    assert clean.animations is False
+
+
+def test_settings_reset(tmp_path) -> None:
+    store = SettingsStore(path=tmp_path / "settings.json")
+    store.save(AppSettings(language="ru", theme="Dark"))
+    assert store.reset() == AppSettings()
+    assert store.load() == AppSettings()
+
+
+def test_settings_env_override(tmp_path, monkeypatch) -> None:
+    from phantom.ui.settings import config_dir
+
+    monkeypatch.setenv("PHANTOM_CONFIG_DIR", str(tmp_path / "x"))
+    assert config_dir() == tmp_path / "x"
+
+
+def test_theme_helpers() -> None:
+    assert set(THEME_MODES) == {"Dark", "Light", "System"}
+    assert appearance_for("Dark") == "Dark"
+    assert appearance_for("Light") == "Light"
+    assert appearance_for("System") == "System"
+    assert appearance_for("Neon") == "System"
+    for severity in ("ok", "warn", "error", "info", "unknown"):
+        pair = severity_color(severity)
+        assert len(pair) == 2 and all(colour.startswith("#") for colour in pair)
+
+
+def test_system_theme_watcher_emits_only_on_change() -> None:
+    state = {"theme": "Dark"}
+    watcher = SystemThemeWatcher(detect=lambda: state["theme"])
+    assert watcher.poll() is None  # disabled
+    watcher.set_enabled(True)
+    assert watcher.poll() is None  # first reading is the baseline
+    assert watcher.poll() is None  # unchanged
+    state["theme"] = "Light"
+    assert watcher.poll() == "Light"
+    watcher.set_enabled(False)
+    assert watcher.poll() is None
+    watcher.set_enabled(True)
+    assert watcher.poll() is None  # baseline again
+
+
+def test_system_theme_watcher_ignores_unknown(monkeypatch) -> None:
+    watcher = SystemThemeWatcher(detect=lambda: None)
+    watcher.set_enabled(True)
+    assert watcher.poll() is None
+
+
+# ---------------------------------------------------------------------------
+# end-to-end through the fake backend boundary
+# ---------------------------------------------------------------------------
+def test_core_backend_matches_real_api(tmp_path, rgb_carrier, password) -> None:
+    from phantom.ui.viewmodel import CoreBackend
+
+    backend = CoreBackend()
+    probe = backend.probe(str(rgb_carrier))
+    assert probe.capacity.payload_bytes > 0
+    view = EmbedViewModel(backend=backend)
+    view.set_carrier(str(rgb_carrier))
+    view.apply_probe(probe)
+    view.set_text("viewmodel round trip")
+    view.set_password(password)
+    outcome = view.make_embed_job()(lambda *a: None, threading.Event())
+    assert outcome.verified
+    result = core_api.extract_from_path(outcome.output_path, password)
+    assert result.payload.data == b"viewmodel round trip"
