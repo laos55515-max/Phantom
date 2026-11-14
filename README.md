@@ -125,10 +125,10 @@ ruff check src tests tools
 mypy src
 ```
 
-Current numbers on Linux/Python 3.11: 844 tests, 1 GUI skip, and 98% line +
-branch coverage across `core`, `stego`, `audio` and `i18n` (the Tk-only modules
-are exercised by the `gui` job under Xvfb, so they read 0% on a headless run
-without one).
+Current numbers on Linux/Python 3.11: 844 headless tests plus 8 GUI smoke tests
+under Xvfb, and 98% line + branch coverage across `core`, `stego`, `audio` and
+`i18n`. The Tk-only modules are exercised by the `gui` job, so a headless-only
+run reports them as 0% — that is expected, not missing coverage.
 
 The test suite is a safety net, not decoration:
 

@@ -38,7 +38,9 @@ readable; new files are written in the v2 format.
   no Tk call is made from any thread but the main one.
 - Test suite: stub scanner, known-answer vectors for Argon2id/PBKDF2/AES-GCM,
   legacy golden fixtures generated from the original commit, WAV/FLAC round
-  trips verified by a second decoder, property tests, GUI smoke tests.
+  trips verified by a second decoder, property tests, GUI smoke tests under
+  Xvfb. The GUI tests never open a real modal dialog — dialogs are recorded and
+  fail the test with their text, so a stuck message box cannot hang CI.
 
 ### Changed
 
@@ -52,6 +54,9 @@ readable; new files are written in the v2 format.
 ### Fixed
 
 - AES-256-GCM is now used correctly (1.x reused salt and nonce in places).
+- The GUI smoke tests drive the real widgets: the embed test used to fill only
+  the view model, so the app rejected the request and blocked on a modal error
+  box. CI also caps the GUI step and echoes its log as annotations.
 - Lossy audio is now refused by file signature before the extension is trusted,
   so a `.wav`-named OGG/MP3 (including an `ID3`-prefixed file) cannot slip
   through and be read as PCM.
