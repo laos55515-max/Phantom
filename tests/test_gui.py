@@ -35,6 +35,61 @@ if not TK_OK:  # pragma: no cover - environment dependent
     pytest.skip(TK_REASON, allow_module_level=True)
 
 
+class DialogRecorder:
+    """Replaces Tk modal dialogs, which would block the test forever."""
+
+    def __init__(self) -> None:
+        self.errors: list[str] = []
+        self.warnings: list[str] = []
+        self.answers: list[bool] = []
+        self.paths: list[str] = []
+
+    def showerror(self, title: str = "", message: str = "", **_: object) -> str:
+        self.errors.append(f"{title}: {message}")
+        raise AssertionError(f"unexpected error dialog — {title}: {message}")
+
+    def showwarning(self, title: str = "", message: str = "", **_: object) -> str:
+        self.warnings.append(f"{title}: {message}")
+        return "ok"
+
+    def showinfo(self, title: str = "", message: str = "", **_: object) -> str:
+        return "ok"
+
+    def askyesno(self, title: str = "", message: str = "", **_: object) -> bool:
+        self.answers.append(True)
+        return True
+
+    def askopenfilename(self, **_: object) -> str:
+        return self.paths.pop(0) if self.paths else ""
+
+    def asksaveasfilename(self, **_: object) -> str:
+        return self.paths.pop(0) if self.paths else ""
+
+
+@pytest.fixture(autouse=True)
+def dialogs(monkeypatch: pytest.MonkeyPatch) -> DialogRecorder:
+    """No test may open a real modal dialog: they hang until a human clicks."""
+    from phantom.ui import app as ui_app
+
+    recorder = DialogRecorder()
+    for name in ("showerror", "showwarning", "showinfo", "askyesno"):
+        monkeypatch.setattr(ui_app.messagebox, name, getattr(recorder, name), raising=False)
+    for name in ("askopenfilename", "asksaveasfilename"):
+        monkeypatch.setattr(ui_app.filedialog, name, getattr(recorder, name), raising=False)
+    return recorder
+
+
+def _pump(app, seconds: float = 30.0) -> None:
+    """Run the Tk event loop until the worker is idle (or the deadline passes)."""
+    import time
+
+    deadline = time.monotonic() + seconds
+    while app.worker.busy and time.monotonic() < deadline:
+        app.root.update()
+        time.sleep(0.02)
+    app.root.update()
+
+
 @pytest.fixture
 def app(tmp_path: Path, isolated_settings: Path, monkeypatch: pytest.MonkeyPatch):
     import customtkinter as ctk
@@ -71,7 +126,10 @@ def test_language_switch_updates_visible_text(app) -> None:
     app._on_language_click(app._label_by_lang[target])
     assert app.i18n.language == target
     assert app.settings.language == target
-    assert app._t("header_subtitle").count(C.APP_VERSION) == 1
+    subtitle = app._t("header_subtitle")
+    assert "AES-256-GCM" in subtitle
+    assert C.kdf_summary(C.default_kdf_profile()).split(" · ")[0] in subtitle
+    assert app.root.title() == app._t("window_title")
 
 
 def test_theme_switch_persists(app) -> None:
@@ -88,19 +146,17 @@ def test_tabs_switch(app) -> None:
 
 
 def test_embed_flow_through_the_ui(app, rgb_carrier: Path, password: str) -> None:
-    import time
-
     app._set_carrier(str(rgb_carrier))
-    app.embed_vm.set_password(password)
-    app.embed_vm.set_text("gui smoke payload")
+    _pump(app)  # let the probe job finish before pressing Embed
+    assert app.worker.busy is False
+    assert app.output_entry.get(), "choosing a carrier must propose an output path"
+
+    app.embed_pwd.insert(0, password)
+    app._set_textbox(app.embed_text, "gui smoke payload")
     app._refresh_all()
     app._start_embed()
 
-    deadline = time.monotonic() + 30
-    while app.worker.busy and time.monotonic() < deadline:
-        app.root.update()
-        time.sleep(0.02)
-    app.root.update()
+    _pump(app)
     assert app._busy is False
     output = Path(app.embed_vm.output_path)
     assert output.exists()

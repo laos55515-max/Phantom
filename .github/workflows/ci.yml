@@ -99,7 +99,8 @@ jobs:
           interesting = [
               line
               for line in lines
-              if re.search(r"PASSED|FAILED|ERROR|Timeout|^tests/test_gui|^E ", line)
+              if re.search(r"FAILED|ERROR|Timeout|^E |assert|Error", line)
+              and "PASSED" not in line
           ]
           for line in interesting[-10:] or lines[-10:]:
               print(f"::error::{line[:900]}")
