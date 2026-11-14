@@ -7,16 +7,22 @@ from __future__ import annotations
 
 import os
 import sys
+import json
+import queue
 import string
 import secrets
 import threading
+import tempfile
+from pathlib import Path
 import tkinter as tk
 from tkinter import filedialog, messagebox
 
 import customtkinter as ctk
 from PIL import Image as PILImage
+from tkinterdnd2 import DND_FILES, TkinterDnD
 
 import core
+from phantom import AudioSteganographyEngine
 
 IS_MACOS = sys.platform == "darwin"
 IS_WINDOWS = sys.platform.startswith("win")
@@ -51,6 +57,9 @@ CLR_ACCENT       = ("#2563EB", "#2563EB")
 CLR_ACCENT_HOVER = ("#1D4ED8", "#3B82F6")
 CLR_ACCENT_SOFT  = ("#2563EB", "#93B4FC")
 CLR_ACCENT_DIM   = ("#DBEAFE", "#1B2E4D")
+# Keep the dark label readable on selected segments in light appearance.
+CLR_SEGMENT_SELECTED = ("#BFDBFE", "#2563EB")
+CLR_SEGMENT_HOVER = ("#93C5FD", "#3B82F6")
 
 CLR_TEXT         = ("#111827", "#F9FAFB")
 CLR_TEXT_DIM     = ("#4B5563", "#9CA3AF")
@@ -147,10 +156,9 @@ def generate_secure_password(length: int = GENERATED_PASSWORD_LENGTH) -> str:
 
 def _make_thumbnail(path: str, size: int = PREVIEW_SIZE):
     try:
-        img = PILImage.open(path)
-        img.thumbnail((size, size), PILImage.LANCZOS)
-        return ctk.CTkImage(light_image=img, dark_image=img,
-                            size=(img.width, img.height))
+        with PILImage.open(path) as image:
+            image.thumbnail((size, size), PILImage.LANCZOS)
+            return image.copy()
     except Exception:
         return None
 
@@ -162,307 +170,11 @@ def _placeholder_preview(size: int = PREVIEW_SIZE):
                         size=(size, size))
 
 
-TRANSLATIONS: dict[str, dict[str, str]] = {
-    "Українська": {
-        "window_title":        "PHANTOM — LSB Matching · AES-256-GCM",
-        "header_title":        "P H A N T O M",
-        "header_subtitle":     "ПРИХОВУВАННЯ ДАНИХ У PNG  ·  AES-256-GCM  ·  LSB MATCHING (±1)",
-        "tab_embed":           "Приховати",
-        "tab_extract":         "Видобути",
-        "tab_settings":        "Налаштування",
-        "card_payload":        "КОРИСНЕ НАВАНТАЖЕННЯ",
-        "card_password":       "КЛЮЧ ДОСТУПУ",
-        "card_carrier":        "КОНТЕЙНЕР",
-        "card_stego":          "СТЕГО-ЗОБРАЖЕННЯ",
-        "card_audit":          "КРИПТОГРАФІЧНИЙ АУДИТ",
-        "card_result":         "РЕЗУЛЬТАТ",
-        "radio_text":          "Текст",
-        "radio_file":          "Файл",
-        "lbl_secret_message":  "Секретне повідомлення",
-        "lbl_secret_hint":     "Введіть або вставте (Cmd+V / Ctrl+V, або правий клік → Вставити) текст будь-якої довжини.",
-        "lbl_char_count":      "СИМВОЛІВ  {chars}   ·   БАЙТІВ UTF-8  {bytes}",
-        "lbl_password":        "Пароль",
-        "ph_password_embed":   "мінімум 12 символів",
-        "ph_password_extract": "введіть пароль",
-        "chk_show_password":   "Показати пароль",
-        "btn_generate_pwd":    "⚡  ЗГЕНЕРУВАТИ",
-        "lbl_pwd_hint":        "Мінімум {min_len} символів. PBKDF2-HMAC-SHA256 · 600 000 ітерацій.",
-        "btn_choose_carrier":  "ОБРАТИ КОНТЕЙНЕР (PNG)",
-        "btn_choose_stego":    "ОБРАТИ СТЕГО-ЗОБРАЖЕННЯ",
-        "btn_choose_file":     "ОБРАТИ ФАЙЛ ДЛЯ ПРИХОВУВАННЯ",
-        "lbl_no_file":         "файл не обрано",
-        "lbl_no_secret_file":  "файл не обрано",
-        "lbl_capacity":        "ЄМНІСТЬ  ~{size} Б   ({kb} КБ)",
-        "lbl_capacity_error":  "ПОМИЛКА ЄМНОСТІ: {error}",
-        "lbl_file_size":       "РОЗМІР  {size} Б   ({kb} КБ)",
-        "lbl_usage":           "ЗАПОВНЕНО  {pct}%",
-        "lbl_usage_exceeded":  "⚠  ПЕРЕВИЩЕНО ЄМНІСТЬ  ({pct}%)",
-        "lbl_usage_empty":     "оберіть контейнер та дані",
-        "chk_secure_delete":   "Безпечно знищити оригінальний файл після шифрування",
-        "btn_encrypt":         "ЗАШИФРУВАТИ ТА ЗБЕРЕГТИ",
-        "btn_extract":         "ВИДОБУТИ ТА РОЗШИФРУВАТИ",
-        "btn_clear":           "СКИНУТИ",
-        "lbl_decrypted":       "Розшифроване повідомлення",
-        "btn_copy":            "КОПІЮВАТИ",
-        "lbl_integrity_ok":    "● ПЕРЕВІРЕНО — SHA-256 ЗБІГАЄТЬСЯ",
-        "lbl_integrity_fail":  "● ПОРУШЕНО — SHA-256 НЕ ЗБІГАЄТЬСЯ",
-        "lbl_hash_expected":   "expected  {h}",
-        "lbl_hash_actual":     "actual    {h}",
-        "lbl_compression":     "СТИСНЕННЯ  {orig} → {comp} Б   ({ratio}%)",
-        "settings_title":      "НАЛАШТУВАННЯ",
-        "settings_hint":       "Мова інтерфейсу, тема оформлення та системна інформація.",
-        "settings_appearance": "ТЕМА ОФОРМЛЕННЯ",
-        "theme_dark":          "Темна",
-        "theme_light":         "Світла",
-        "theme_system":        "Системна",
-        "settings_language":   "МОВА ІНТЕРФЕЙСУ",
-        "settings_about":      "PHANTOM v12.1\nAES-256-GCM  ·  PBKDF2-HMAC-SHA256 600k  ·  zlib  ·  SHA-256\nLSB Matching (±1)  ·  Python · CustomTkinter · Pillow · cryptography",
-        "status_ready":        "СИСТЕМА ГОТОВА",
-        "status_embedding":    "ШИФРУВАННЯ ТА ВБУДОВУВАННЯ…",
-        "status_extracting":   "ВИДОБУВАННЯ ТА РОЗШИФРУВАННЯ…",
-        "status_done":         "ЗБЕРЕЖЕНО → {path}",
-        "status_error":        "ПОМИЛКА",
-        "status_copied":       "СКОПІЙОВАНО В БУФЕР",
-        "status_pasted":       "ВСТАВЛЕНО З БУФЕРА",
-        "status_decrypted":    "ПОВІДОМЛЕННЯ РОЗШИФРОВАНО",
-        "status_file_saved":   "ФАЙЛ ЗБЕРЕЖЕНО → {path}",
-        "status_secure_del":   "ОРИГІНАЛ БЕЗПЕЧНО ЗНИЩЕНО",
-        "status_pwd_generated": "ЗГЕНЕРОВАНО КЛЮЧ 16 СИМВОЛІВ · СКОПІЙОВАНО В БУФЕР",
-        "status_theme":        "ТЕМУ ЗМІНЕНО → {mode}",
-        "dlg_open_carrier":    "Оберіть PNG-контейнер",
-        "dlg_open_stego":      "Оберіть стего-зображення",
-        "dlg_open_secret":     "Оберіть файл для приховування",
-        "dlg_save":            "Зберегти стего-зображення",
-        "dlg_save_file":       "Зберегти видобутий файл",
-        "ft_png":              "PNG зображення",
-        "ft_all":              "Усі файли",
-        "warn_empty_msg_t":    "Порожнє повідомлення",
-        "warn_empty_msg_m":    "Введіть текст для приховування.",
-        "warn_empty_pwd_t":    "Порожній пароль",
-        "warn_empty_pwd_enc":  "Введіть пароль для шифрування.",
-        "warn_empty_pwd_dec":  "Введіть пароль для розшифрування.",
-        "warn_no_img_t":       "Немає зображення",
-        "warn_no_img_enc":     "Оберіть PNG-контейнер.",
-        "warn_no_img_dec":     "Оберіть стего-зображення.",
-        "warn_no_secret_t":    "Немає файлу",
-        "warn_no_secret_m":    "Оберіть файл для приховування.",
-        "warn_pwd_weak_t":     "Слабкий ключ доступу",
-        "warn_pwd_weak_m":     "Пароль має містити щонайменше {min_len} символів.\n\nПоточна довжина: {current}.\n\nСкористайтеся кнопкою «⚡ ЗГЕНЕРУВАТИ».",
-        "info_success_t":      "Операцію завершено",
-        "info_success_m":      "Дані зашифровано та вбудовано.\n\n{path}",
-        "info_file_saved_t":   "Файл збережено",
-        "info_file_saved_m":   "Видобутий файл збережено:\n\n{path}",
-        "err_encrypt_t":       "Помилка шифрування",
-        "err_decrypt_t":       "Помилка розшифрування",
-        "err_decrypt_m":       "Невірний пароль або зображення не містить даних.\n\nДеталі: {details}",
-        "confirm_wipe_t":      "Підтвердження знищення",
-        "confirm_wipe_m":      "Оригінальний файл буде БЕЗПОВОРОТНО перезаписано та видалено:\n\n{file}\n\nПродовжити?",
-        "ctx_paste":           "Вставити",
-        "ctx_copy":            "Копіювати",
-        "ctx_cut":             "Вирізати",
-        "ctx_select_all":      "Виділити все",
-        "ctx_clear":           "Очистити поле",
-    },
-    "Русский": {
-        "window_title":        "PHANTOM — LSB Matching · AES-256-GCM",
-        "header_title":        "P H A N T O M",
-        "header_subtitle":     "СКРЫТИЕ ДАННЫХ В PNG  ·  AES-256-GCM  ·  LSB MATCHING (±1)",
-        "tab_embed":           "Скрыть",
-        "tab_extract":         "Извлечь",
-        "tab_settings":        "Настройки",
-        "card_payload":        "ПОЛЕЗНАЯ НАГРУЗКА",
-        "card_password":       "КЛЮЧ ДОСТУПА",
-        "card_carrier":        "КОНТЕЙНЕР",
-        "card_stego":          "СТЕГО-ИЗОБРАЖЕНИЕ",
-        "card_audit":          "КРИПТОГРАФИЧЕСКИЙ АУДИТ",
-        "card_result":         "РЕЗУЛЬТАТ",
-        "radio_text":          "Текст",
-        "radio_file":          "Файл",
-        "lbl_secret_message":  "Секретное сообщение",
-        "lbl_secret_hint":     "Введите или вставьте (Cmd+V / Ctrl+V, или правый клик → Вставить) текст любой длины.",
-        "lbl_char_count":      "СИМВОЛОВ  {chars}   ·   БАЙТОВ UTF-8  {bytes}",
-        "lbl_password":        "Пароль",
-        "ph_password_embed":   "минимум 12 символов",
-        "ph_password_extract": "введите пароль",
-        "chk_show_password":   "Показать пароль",
-        "btn_generate_pwd":    "⚡  СГЕНЕРИРОВАТЬ",
-        "lbl_pwd_hint":        "Минимум {min_len} символов. PBKDF2-HMAC-SHA256 · 600 000 итераций.",
-        "btn_choose_carrier":  "ВЫБРАТЬ КОНТЕЙНЕР (PNG)",
-        "btn_choose_stego":    "ВЫБРАТЬ СТЕГО-ИЗОБРАЖЕНИЕ",
-        "btn_choose_file":     "ВЫБРАТЬ ФАЙЛ ДЛЯ СКРЫТИЯ",
-        "lbl_no_file":         "файл не выбран",
-        "lbl_no_secret_file":  "файл не выбран",
-        "lbl_capacity":        "ЁМКОСТЬ  ~{size} Б   ({kb} КБ)",
-        "lbl_capacity_error":  "ОШИБКА ЁМКОСТИ: {error}",
-        "lbl_file_size":       "РАЗМЕР  {size} Б   ({kb} КБ)",
-        "lbl_usage":           "ЗАПОЛНЕНО  {pct}%",
-        "lbl_usage_exceeded":  "⚠  ПРЕВЫШЕНА ЁМКОСТЬ  ({pct}%)",
-        "lbl_usage_empty":     "выберите контейнер и данные",
-        "chk_secure_delete":   "Безопасно уничтожить оригинальный файл после шифрования",
-        "btn_encrypt":         "ЗАШИФРОВАТЬ И СОХРАНИТЬ",
-        "btn_extract":         "ИЗВЛЕЧЬ И РАСШИФРОВАТЬ",
-        "btn_clear":           "СБРОС",
-        "lbl_decrypted":       "Расшифрованное сообщение",
-        "btn_copy":            "КОПИРОВАТЬ",
-        "lbl_integrity_ok":    "● ПРОВЕРЕНО — SHA-256 СОВПАДАЕТ",
-        "lbl_integrity_fail":  "● НАРУШЕНА — SHA-256 НЕ СОВПАДАЕТ",
-        "lbl_hash_expected":   "expected  {h}",
-        "lbl_hash_actual":     "actual    {h}",
-        "lbl_compression":     "СЖАТИЕ  {orig} → {comp} Б   ({ratio}%)",
-        "settings_title":      "НАСТРОЙКИ",
-        "settings_hint":       "Язык интерфейса, тема оформления и системная информация.",
-        "settings_appearance": "ТЕМА ОФОРМЛЕНИЯ",
-        "theme_dark":          "Тёмная",
-        "theme_light":         "Светлая",
-        "theme_system":        "Системная",
-        "settings_language":   "ЯЗЫК ИНТЕРФЕЙСА",
-        "settings_about":      "PHANTOM v12.1\nAES-256-GCM  ·  PBKDF2-HMAC-SHA256 600k  ·  zlib  ·  SHA-256\nLSB Matching (±1)  ·  Python · CustomTkinter · Pillow · cryptography",
-        "status_ready":        "СИСТЕМА ГОТОВА",
-        "status_embedding":    "ШИФРОВАНИЕ И ВСТРАИВАНИЕ…",
-        "status_extracting":   "ИЗВЛЕЧЕНИЕ И РАСШИФРОВКА…",
-        "status_done":         "СОХРАНЕНО → {path}",
-        "status_error":        "ОШИБКА",
-        "status_copied":       "СКОПИРОВАНО В БУФЕР",
-        "status_pasted":       "ВСТАВЛЕНО ИЗ БУФЕРА",
-        "status_decrypted":    "СООБЩЕНИЕ РАСШИФРОВАНО",
-        "status_file_saved":   "ФАЙЛ СОХРАНЁН → {path}",
-        "status_secure_del":   "ОРИГИНАЛ БЕЗОПАСНО УНИЧТОЖЕН",
-        "status_pwd_generated": "СГЕНЕРИРОВАН КЛЮЧ 16 СИМВОЛОВ · СКОПИРОВАН В БУФЕР",
-        "status_theme":        "ТЕМА ИЗМЕНЕНА → {mode}",
-        "dlg_open_carrier":    "Выберите PNG-контейнер",
-        "dlg_open_stego":      "Выберите стего-изображение",
-        "dlg_open_secret":     "Выберите файл для скрытия",
-        "dlg_save":            "Сохранить стего-изображение",
-        "dlg_save_file":       "Сохранить извлечённый файл",
-        "ft_png":              "PNG изображения",
-        "ft_all":              "Все файлы",
-        "warn_empty_msg_t":    "Пустое сообщение",
-        "warn_empty_msg_m":    "Введите текст для скрытия.",
-        "warn_empty_pwd_t":    "Пустой пароль",
-        "warn_empty_pwd_enc":  "Введите пароль для шифрования.",
-        "warn_empty_pwd_dec":  "Введите пароль для расшифровки.",
-        "warn_no_img_t":       "Нет изображения",
-        "warn_no_img_enc":     "Выберите PNG-контейнер.",
-        "warn_no_img_dec":     "Выберите стего-изображение.",
-        "warn_no_secret_t":    "Нет файла",
-        "warn_no_secret_m":    "Выберите файл для скрытия.",
-        "warn_pwd_weak_t":     "Слабый ключ доступа",
-        "warn_pwd_weak_m":     "Пароль должен содержать не менее {min_len} символов.\n\nТекущая длина: {current}.\n\nВоспользуйтесь кнопкой «⚡ СГЕНЕРИРОВАТЬ».",
-        "info_success_t":      "Операция завершена",
-        "info_success_m":      "Данные зашифрованы и встроены.\n\n{path}",
-        "info_file_saved_t":   "Файл сохранён",
-        "info_file_saved_m":   "Извлечённый файл сохранён:\n\n{path}",
-        "err_encrypt_t":       "Ошибка шифрования",
-        "err_decrypt_t":       "Ошибка расшифровки",
-        "err_decrypt_m":       "Неверный пароль или изображение не содержит данных.\n\nДетали: {details}",
-        "confirm_wipe_t":      "Подтверждение уничтожения",
-        "confirm_wipe_m":      "Оригинальный файл будет БЕЗВОЗВРАТНО перезаписан и удалён:\n\n{file}\n\nПродолжить?",
-        "ctx_paste":           "Вставить",
-        "ctx_copy":            "Копировать",
-        "ctx_cut":             "Вырезать",
-        "ctx_select_all":      "Выделить всё",
-        "ctx_clear":           "Очистить поле",
-    },
-    "English": {
-        "window_title":        "PHANTOM — LSB Matching · AES-256-GCM",
-        "header_title":        "P H A N T O M",
-        "header_subtitle":     "DATA CONCEALMENT IN PNG  ·  AES-256-GCM  ·  LSB MATCHING (±1)",
-        "tab_embed":           "Hide",
-        "tab_extract":         "Extract",
-        "tab_settings":        "Settings",
-        "card_payload":        "PAYLOAD",
-        "card_password":       "ACCESS KEY",
-        "card_carrier":        "CARRIER",
-        "card_stego":          "STEGO IMAGE",
-        "card_audit":          "CRYPTOGRAPHIC AUDIT",
-        "card_result":         "RESULT",
-        "radio_text":          "Text",
-        "radio_file":          "File",
-        "lbl_secret_message":  "Secret message",
-        "lbl_secret_hint":     "Type or paste (Cmd+V / Ctrl+V, or right-click → Paste) text of any length.",
-        "lbl_char_count":      "CHARS  {chars}   ·   BYTES UTF-8  {bytes}",
-        "lbl_password":        "Password",
-        "ph_password_embed":   "minimum 12 characters",
-        "ph_password_extract": "enter password",
-        "chk_show_password":   "Show password",
-        "btn_generate_pwd":    "⚡  GENERATE",
-        "lbl_pwd_hint":        "Minimum {min_len} characters. PBKDF2-HMAC-SHA256 · 600,000 iterations.",
-        "btn_choose_carrier":  "SELECT CARRIER (PNG)",
-        "btn_choose_stego":    "SELECT STEGO IMAGE",
-        "btn_choose_file":     "SELECT FILE TO HIDE",
-        "lbl_no_file":         "no file selected",
-        "lbl_no_secret_file":  "no file selected",
-        "lbl_capacity":        "CAPACITY  ~{size} B   ({kb} KB)",
-        "lbl_capacity_error":  "CAPACITY ERROR: {error}",
-        "lbl_file_size":       "SIZE  {size} B   ({kb} KB)",
-        "lbl_usage":           "UTILISATION  {pct}%",
-        "lbl_usage_exceeded":  "⚠  CAPACITY EXCEEDED  ({pct}%)",
-        "lbl_usage_empty":     "select carrier and payload",
-        "chk_secure_delete":   "Securely destroy the original file after encryption",
-        "btn_encrypt":         "ENCRYPT & SAVE",
-        "btn_extract":         "EXTRACT & DECRYPT",
-        "btn_clear":           "RESET",
-        "lbl_decrypted":       "Decrypted message",
-        "btn_copy":            "COPY",
-        "lbl_integrity_ok":    "● VERIFIED — SHA-256 MATCH",
-        "lbl_integrity_fail":  "● COMPROMISED — SHA-256 MISMATCH",
-        "lbl_hash_expected":   "expected  {h}",
-        "lbl_hash_actual":     "actual    {h}",
-        "lbl_compression":     "COMPRESSION  {orig} → {comp} B   ({ratio}%)",
-        "settings_title":      "SETTINGS",
-        "settings_hint":       "Interface language, appearance theme and system information.",
-        "settings_appearance": "APPEARANCE THEME",
-        "theme_dark":          "Dark",
-        "theme_light":         "Light",
-        "theme_system":        "System",
-        "settings_language":   "INTERFACE LANGUAGE",
-        "settings_about":      "PHANTOM v12.1\nAES-256-GCM  ·  PBKDF2-HMAC-SHA256 600k  ·  zlib  ·  SHA-256\nLSB Matching (±1)  ·  Python · CustomTkinter · Pillow · cryptography",
-        "status_ready":        "SYSTEM READY",
-        "status_embedding":    "ENCRYPTING & EMBEDDING…",
-        "status_extracting":   "EXTRACTING & DECRYPTING…",
-        "status_done":         "SAVED → {path}",
-        "status_error":        "ERROR",
-        "status_copied":       "COPIED TO CLIPBOARD",
-        "status_pasted":       "PASTED FROM CLIPBOARD",
-        "status_decrypted":    "MESSAGE DECRYPTED",
-        "status_file_saved":   "FILE SAVED → {path}",
-        "status_secure_del":   "ORIGINAL SECURELY DESTROYED",
-        "status_pwd_generated": "16-CHAR KEY GENERATED · COPIED TO CLIPBOARD",
-        "status_theme":        "THEME CHANGED → {mode}",
-        "dlg_open_carrier":    "Select carrier PNG image",
-        "dlg_open_stego":      "Select stego image",
-        "dlg_open_secret":     "Select file to hide",
-        "dlg_save":            "Save stego image",
-        "dlg_save_file":       "Save extracted file",
-        "ft_png":              "PNG images",
-        "ft_all":              "All files",
-        "warn_empty_msg_t":    "Empty message",
-        "warn_empty_msg_m":    "Enter the text you want to hide.",
-        "warn_empty_pwd_t":    "Empty password",
-        "warn_empty_pwd_enc":  "Enter a password for encryption.",
-        "warn_empty_pwd_dec":  "Enter the password for decryption.",
-        "warn_no_img_t":       "No image",
-        "warn_no_img_enc":     "Select a PNG carrier image first.",
-        "warn_no_img_dec":     "Select a stego image first.",
-        "warn_no_secret_t":    "No file",
-        "warn_no_secret_m":    "Select a file to hide.",
-        "warn_pwd_weak_t":     "Weak access key",
-        "warn_pwd_weak_m":     "Password must be at least {min_len} characters.\n\nCurrent length: {current}.\n\nUse the “⚡ GENERATE” button.",
-        "info_success_t":      "Operation complete",
-        "info_success_m":      "Data encrypted and embedded.\n\n{path}",
-        "info_file_saved_t":   "File saved",
-        "info_file_saved_m":   "Extracted file saved:\n\n{path}",
-        "err_encrypt_t":       "Encryption error",
-        "err_decrypt_t":       "Decryption error",
-        "err_decrypt_m":       "Wrong password or the image contains no valid data.\n\nDetails: {details}",
-        "confirm_wipe_t":      "Confirm destruction",
-        "confirm_wipe_m":      "The original file will be IRREVERSIBLY overwritten and deleted:\n\n{file}\n\nContinue?",
-        "ctx_paste":           "Paste",
-        "ctx_copy":            "Copy",
-        "ctx_cut":             "Cut",
-        "ctx_select_all":      "Select All",
-        "ctx_clear":           "Clear field",
-    },
+# Localized strings are loaded once, and widgets are updated on language changes.
+_LOCAL_DIR = Path(__file__).resolve().parent / "locales"
+TRANSLATIONS = {
+    name: json.loads((_LOCAL_DIR / f"{code}.json").read_text(encoding="utf-8"))
+    for name, code in (("Українська", "ua"), ("Русский", "ru"), ("English", "en"))
 }
 
 
@@ -475,6 +187,7 @@ class App(ctk.CTk):
         self._theme_mode = "Dark"
         self._status_key = "status_ready"
         self._status_args: dict = {}
+        self._last_appearance = ctk.get_appearance_mode()
 
         self._embed_image_path = None
         self._embed_secret_file = None
@@ -492,6 +205,18 @@ class App(ctk.CTk):
         self.embed_scroll_frame = None
         self.extract_scroll_frame = None
         self.settings_scroll_frame = None
+        self.audio_scroll_frame = None
+        self._audio_path = None
+        self._audio_secret_file = None
+        self._events = queue.Queue()
+        self._busy = False
+        self._audio_i18n = []
+        self._dnd_enabled = False
+        try:
+            TkinterDnD.require(self)
+            self._dnd_enabled = True
+        except (RuntimeError, tk.TclError):
+            pass  # File pickers remain usable where the native extension is unavailable.
 
         self._build_fonts()
 
@@ -502,41 +227,51 @@ class App(ctk.CTk):
 
         self._build_header()
 
-        self._tab_names = {
-            "embed":    self._t("tab_embed"),
-            "extract":  self._t("tab_extract"),
-            "settings": self._t("tab_settings"),
-        }
+        self._tab_names = {key: self._t(f"tab_{key}") for key in ("embed", "extract")}
+        self._main_tab_names = {key: self._t(f"tab_{key}") for key in ("image", "audio", "settings")}
+
+        self.main_tabs = ctk.CTkTabview(
+            self, bg_color=TRANSPARENT, fg_color=CLR_LAYER,
+            corner_radius=CORNER_CARD, segmented_button_selected_color=CLR_SEGMENT_SELECTED,
+            segmented_button_selected_hover_color=CLR_SEGMENT_HOVER,
+            segmented_button_unselected_color=CLR_CARD_ALT, text_color=CLR_TEXT)
+        self.main_tabs.pack(fill="both", expand=True, padx=24, pady=(8, 10))
+        for name in self._main_tab_names.values():
+            self.main_tabs.add(name)
 
         self.tabview = ctk.CTkTabview(
-            self,
+            self.main_tabs.tab(self._main_tab_names["image"]),
             bg_color=TRANSPARENT,
             fg_color=CLR_LAYER,
             corner_radius=CORNER_CARD,
             border_width=1,
             border_color=CLR_BORDER,
             segmented_button_fg_color=CLR_CARD_ALT,
-            segmented_button_selected_color=CLR_ACCENT,
-            segmented_button_selected_hover_color=CLR_ACCENT_HOVER,
+            segmented_button_selected_color=CLR_SEGMENT_SELECTED,
+            segmented_button_selected_hover_color=CLR_SEGMENT_HOVER,
             segmented_button_unselected_color=CLR_CARD_ALT,
             segmented_button_unselected_hover_color=CLR_ACCENT_DIM,
             text_color=CLR_TEXT,
             anchor="center")
-        self.tabview.pack(fill="both", expand=True, padx=24, pady=(8, 10))
+        self.tabview.pack(fill="both", expand=True)
         try:
             self.tabview._segmented_button.configure(font=self.f_tab)
         except Exception:
             pass
 
-        for key in ("embed", "extract", "settings"):
+        for key in ("embed", "extract"):
             self.tabview.add(self._tab_names[key])
 
         self._build_statusbar()
 
         self._build_embed_tab(self.tabview.tab(self._tab_names["embed"]))
         self._build_extract_tab(self.tabview.tab(self._tab_names["extract"]))
-        self._build_settings_tab(self.tabview.tab(self._tab_names["settings"]))
+        self._build_audio_tab(self.main_tabs.tab(self._main_tab_names["audio"]))
+        self._build_settings_tab(self.main_tabs.tab(self._main_tab_names["settings"]))
         self.tabview.set(self._tab_names["embed"])
+        self.main_tabs.set(self._main_tab_names["image"])
+        self._register_drop_targets()
+        self.after(50, self._poll_queue)
 
         self.bind_all("<MouseWheel>", self._mac_global_scroll)
         if IS_LINUX:
@@ -544,6 +279,7 @@ class App(ctk.CTk):
             self.bind_all("<Button-5>", self._mac_global_scroll)
 
         self.after(60, self._sync_surfaces)
+        self.after(500, self._watch_appearance)
 
     def _build_fonts(self):
         disp = pick_font(self, _display_pref(), _display_fallback())
@@ -577,15 +313,18 @@ class App(ctk.CTk):
             if "text" in widget_name or "entry" in widget_name:
                 return
 
+            main_tab = self.main_tabs.get()
             active_tab = self.tabview.get()
             target_canvas = None
 
-            if active_tab in ["Приховати", "Скрыть", "Hide"] and getattr(self, "embed_scroll_frame", None):
-                target_canvas = self.embed_scroll_frame._parent_canvas
-            elif active_tab in ["Видобути", "Извлечь", "Extract"] and getattr(self, "extract_scroll_frame", None):
-                target_canvas = self.extract_scroll_frame._parent_canvas
-            elif active_tab in ["Налаштування", "Настройки", "Settings"] and getattr(self, "settings_scroll_frame", None):
+            if main_tab == self._main_tab_names["audio"]:
+                target_canvas = self.audio_scroll_frame._parent_canvas
+            elif main_tab == self._main_tab_names["settings"]:
                 target_canvas = self.settings_scroll_frame._parent_canvas
+            elif active_tab == self._tab_names["embed"] and getattr(self, "embed_scroll_frame", None):
+                target_canvas = self.embed_scroll_frame._parent_canvas
+            elif active_tab == self._tab_names["extract"] and getattr(self, "extract_scroll_frame", None):
+                target_canvas = self.extract_scroll_frame._parent_canvas
 
             if target_canvas:
                 if IS_LINUX and getattr(event, "num", None) in (4, 5):
@@ -745,6 +484,7 @@ class App(ctk.CTk):
         page_bg = resolve(CLR_LAYER)
         for sf in (self.embed_scroll_frame,
                    self.extract_scroll_frame,
+                   self.audio_scroll_frame,
                    self.settings_scroll_frame):
             if sf is None:
                 continue
@@ -764,6 +504,14 @@ class App(ctk.CTk):
                             activebackground=accent, activeforeground="#FFFFFF")
             except Exception:
                 pass
+
+    def _watch_appearance(self):
+        # Native Tk canvases and menus need explicit refresh when the OS changes theme.
+        current = ctk.get_appearance_mode()
+        if current != self._last_appearance:
+            self._last_appearance = current
+            self._sync_surfaces()
+        self.after(500, self._watch_appearance)
 
     def _t(self, key: str) -> str:
         pack = TRANSLATIONS.get(self.language, TRANSLATIONS["English"])
@@ -842,6 +590,7 @@ class App(ctk.CTk):
         self.settings_theme.set(
             self._theme_values[THEME_MODES.index(self._theme_mode)])
         self.settings_lang.set(self.language)
+        self._refresh_audio_language()
 
         self._refresh_all_context_menus()
         self._render_status()
@@ -850,8 +599,8 @@ class App(ctk.CTk):
         current = self.tabview.get()
         active_key = next(
             (k for k, v in self._tab_names.items() if v == current), "embed")
-        new = {k: self._t(f"tab_{k}") for k in ("embed", "extract", "settings")}
-        for key in ("embed", "extract", "settings"):
+        new = {k: self._t(f"tab_{k}") for k in ("embed", "extract")}
+        for key in ("embed", "extract"):
             old_n, new_n = self._tab_names[key], new[key]
             if old_n != new_n:
                 try:
@@ -863,6 +612,14 @@ class App(ctk.CTk):
             self.tabview.set(self._tab_names[active_key])
         except Exception:
             pass
+        current = self.main_tabs.get()
+        active_key = next((k for k, v in self._main_tab_names.items() if v == current), "image")
+        new_main = {k: self._t(f"tab_{k}") for k in ("image", "audio", "settings")}
+        for key in new_main:
+            if self._main_tab_names[key] != new_main[key]:
+                self.main_tabs.rename(self._main_tab_names[key], new_main[key])
+        self._main_tab_names = new_main
+        self.main_tabs.set(new_main[active_key])
 
     def _build_header(self):
         hdr = ctk.CTkFrame(self, bg_color=TRANSPARENT, fg_color=TRANSPARENT)
@@ -905,11 +662,110 @@ class App(ctk.CTk):
             bg_color=TRANSPARENT, fg_color=TRANSPARENT, width=16)
         self.status_dot.pack(side="left", padx=(16, 6))
 
+        self.operation_progress = ctk.CTkProgressBar(
+            bar, width=180, height=7, fg_color=CLR_CARD_ALT, progress_color=CLR_ACCENT)
+        self.operation_progress.pack(side="right", padx=(8, 16))
+        self.operation_progress.set(0)
+
         self.lbl_status = ctk.CTkLabel(
             bar, text=self._t("status_ready"), anchor="w",
             font=self.f_status, text_color=CLR_TEXT_DIM,
             bg_color=TRANSPARENT, fg_color=TRANSPARENT)
         self.lbl_status.pack(side="left", fill="x", expand=True, padx=(0, 16))
+
+    def _toast(self, message):
+        previous = getattr(self, "_toast_widget", None)
+        if previous is not None:
+            previous.destroy()
+        toast = ctk.CTkLabel(self, text=message, fg_color=CLR_CARD,
+                             text_color=CLR_TEXT, corner_radius=12, padx=18, pady=10)
+        self._toast_widget = toast
+
+        def slide(step=0):
+            if not toast.winfo_exists():
+                return
+            toast.place(relx=0.5, rely=1, y=-30 - min(step * 5, 30), anchor="s")
+            if step < 6:
+                self.after(15, lambda: slide(step + 1))
+        slide()
+        self.after(2800, lambda: toast.destroy() if toast.winfo_exists() else None)
+
+    def _buttons_busy(self, busy):
+        self._busy = busy
+        for name in ("embed_btn_run", "extract_btn_run", "embed_btn_reset", "extract_btn_reset",
+                     "audio_btn_hide", "audio_btn_extract"):
+            button = getattr(self, name, None)
+            if button is not None:
+                button.configure(state="disabled" if busy else "normal")
+
+    def _start_job(self, job, success, error=None):
+        if self._busy:
+            self._toast(self._t("busy"))
+            return
+        self._buttons_busy(True)
+        self.operation_progress.stop()
+        self.operation_progress.set(0)
+
+        def progress(stage, done, total):
+            self._events.put(("progress", stage, done, total))
+
+        def worker():
+            try:
+                self._events.put(("result", success, job(progress)))
+            except Exception as exc:
+                self._events.put(("error", error or self._operation_error, exc))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _poll_queue(self):
+        try:
+            while True:
+                event = self._events.get_nowait()
+                if event[0] == "progress":
+                    _, stage, done, total = event
+                    self._set_status("phase_" + stage)
+                    if total is None:
+                        if self.operation_progress.cget("mode") != "indeterminate":
+                            self.operation_progress.configure(mode="indeterminate")
+                            self.operation_progress.start()
+                    else:
+                        self.operation_progress.stop()
+                        self.operation_progress.configure(mode="determinate")
+                        self.operation_progress.set(done / total if total else 0)
+                elif event[0] in ("result", "error"):
+                    self.operation_progress.stop()
+                    self.operation_progress.configure(mode="determinate")
+                    if event[0] == "error":
+                        self.operation_progress.set(0)
+                    self._buttons_busy(False)
+                    try:
+                        event[1](event[2])
+                    except Exception as exc:
+                        self._operation_error(exc)
+                elif event[0] == "preview":
+                    _, path, image, target = event
+                    current = self._embed_image_path if target == "embed" else self._extract_image_path
+                    if image is not None and path == current:
+                        thumbnail = ctk.CTkImage(light_image=image, dark_image=image,
+                                                 size=(image.width, image.height))
+                        setattr(self, "_" + target + "_preview_img", thumbnail)
+                        getattr(self, target + "_lbl_preview").configure(image=thumbnail)
+        except queue.Empty:
+            pass
+        finally:
+            self.after(50, self._poll_queue)
+
+    def _operation_error(self, exc):
+        self._set_status("status_error")
+        if isinstance(exc, core.AuthenticationError):
+            text = self._t("error_auth")
+        elif isinstance(exc, core.CapacityError):
+            text = self._t("error_capacity")
+        elif isinstance(exc, core.CarrierError):
+            text = self._t("error_wrong_carrier")
+        else:
+            text = self._t("error_generic").format(detail=str(exc))
+        messagebox.showerror(self._t("status_error"), text, parent=self)
 
     def _set_status(self, key: str, **kw):
         self._status_key = key
@@ -1126,7 +982,7 @@ class App(ctk.CTk):
         pwd_row.grid_columnconfigure(1, weight=0)
 
         self.embed_pwd = ctk.CTkEntry(
-            pwd_row, show="•",
+            pwd_row, show="*",
             placeholder_text=self._t("ph_password_embed"),
             height=46, corner_radius=CORNER_CTRL,
             font=self.f_mono, bg_color=TRANSPARENT,
@@ -1248,11 +1104,6 @@ class App(ctk.CTk):
         self.embed_chk_pwd.select()
         self.embed_pwd.configure(show="")
         try:
-            self.clipboard_clear()
-            self.clipboard_append(pwd)
-        except Exception:
-            pass
-        try:
             self.embed_pwd.configure(border_color=CLR_GREEN)
             self.after(1100,
                        lambda: self.embed_pwd.configure(border_color=CLR_BORDER))
@@ -1265,7 +1116,7 @@ class App(ctk.CTk):
         self._refresh_capacity_bar()
 
     def _get_embed_text(self) -> str:
-        return self.embed_txt.get("1.0", "end").rstrip("\n")
+        return self.embed_txt.get("1.0", "end-1c")
 
     def _refresh_char_count(self):
         if not hasattr(self, "embed_lbl_chars"):
@@ -1294,7 +1145,7 @@ class App(ctk.CTk):
         self._refresh_capacity_bar()
 
     def _embed_toggle_pwd(self):
-        self.embed_pwd.configure(show="" if self.embed_chk_pwd.get() else "•")
+        self.embed_pwd.configure(show="" if self.embed_chk_pwd.get() else "*")
 
     def _refresh_capacity_label(self):
         if self._embed_capacity_error:
@@ -1377,18 +1228,24 @@ class App(ctk.CTk):
             title=self._t("dlg_open_carrier"), filetypes=self._filetypes_png())
         if not path:
             return
+        self._set_embed_image(path)
+
+    def _load_preview_async(self, path, target):
+        def worker():
+            self._events.put(("preview", path, _make_thumbnail(path), target))
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _set_embed_image(self, path):
+        try:
+            capacity = core.image_capacity_bytes(path)
+        except Exception as exc:
+            self._operation_error(exc)
+            return
         self._embed_image_path = path
         self.embed_lbl_img.configure(text=os.path.basename(path))
-        thumb = _make_thumbnail(path)
-        if thumb:
-            self._embed_preview_img = thumb
-            self.embed_lbl_preview.configure(image=thumb)
-        try:
-            self._embed_capacity = core.image_capacity_bytes(path)
-            self._embed_capacity_error = None
-        except Exception as e:
-            self._embed_capacity = None
-            self._embed_capacity_error = str(e)
+        self._embed_capacity = capacity
+        self._embed_capacity_error = None
+        self._load_preview_async(path, "embed")
         self._refresh_capacity_label()
         self._refresh_capacity_bar()
 
@@ -1397,6 +1254,9 @@ class App(ctk.CTk):
             title=self._t("dlg_open_secret"), filetypes=self._filetypes_all())
         if not path:
             return
+        self._set_embed_secret(path)
+
+    def _set_embed_secret(self, path):
         self._embed_secret_file = path
         self.embed_lbl_secret_file.configure(text=os.path.basename(path))
         self._refresh_file_size_label()
@@ -1452,45 +1312,52 @@ class App(ctk.CTk):
         if not out:
             return
 
+        if core._same_path(self._embed_image_path, out) or (
+                mode == MODE_FILE and (core._same_path(self._embed_secret_file, out) or
+                                       core._same_path(self._embed_secret_file, self._embed_image_path))):
+            messagebox.showerror(self._t("status_error"), self._t("source_conflict"))
+            return
         wipe = (self._embed_wipe_var.get() == 1 and mode == MODE_FILE)
         wipe_path = self._embed_secret_file if wipe else None
         if wipe and wipe_path:
-            if not messagebox.askyesno(
-                    self._t("confirm_wipe_t"),
-                    self._t("confirm_wipe_m").format(file=wipe_path)):
-                wipe_path = None
-
-        self.embed_btn_run.configure(state="disabled")
-        self._set_status("status_embedding")
+            if not messagebox.askyesno(self._t("confirm_wipe_t"),
+                                       self._t("warning_wipe") + "\n\n" + wipe_path):
+                return
 
         img_path = self._embed_image_path
         secret_file = self._embed_secret_file
 
-        def work():
-            try:
-                if mode == MODE_TEXT:
-                    core.embed_data_in_image(img_path, out, msg_text, pwd)
-                else:
-                    core.embed_file_in_image(img_path, out, secret_file, pwd)
+        def work(progress):
+            if mode == MODE_TEXT:
+                core.embed_data_in_image(img_path, out, msg_text, pwd, progress)
+            else:
+                core.embed_file_in_image(img_path, out, secret_file, pwd, progress)
+            if wipe_path:
+                try:
+                    # Verify the saved output and current source before any deletion.
+                    restored = core.extract_raw_from_image(out, pwd, progress)
+                    original = core._read_file(wipe_path)
+                    if not secrets.compare_digest(core.hashlib.sha256(restored.data).digest(),
+                                                  core.hashlib.sha256(original).digest()):
+                        raise core.PhantomError("Source changed after embedding")
+                except Exception as exc:
+                    return out, ("wipe_failed", str(exc))
+                try:
+                    core.secure_delete(wipe_path)
+                except Exception as exc:
+                    return out, ("wipe_partial", str(exc))
+            return out, None
 
-                if wipe_path:
-                    try:
-                        core.secure_delete(wipe_path)
-                        self.after(0, lambda: self._set_status("status_secure_del"))
-                    except Exception:
-                        pass
+        self._start_job(work, self._embed_ok)
 
-                self.after(0, lambda: self._embed_ok(out))
-            except Exception as exc:
-                self.after(0, lambda e=exc: self._embed_err(e))
-
-        threading.Thread(target=work, daemon=True).start()
-
-    def _embed_ok(self, path):
-        self.embed_btn_run.configure(state="normal")
+    def _embed_ok(self, outcome):
+        path, warning = outcome
         self._set_status("status_done", path=path)
-        messagebox.showinfo(self._t("info_success_t"),
-                            self._t("info_success_m").format(path=path))
+        if warning:
+            key, detail = warning
+            messagebox.showwarning(self._t("status_error"), self._t(key).format(detail=detail))
+        else:
+            self._toast(self._t("file_saved"))
 
     def _embed_err(self, exc):
         self.embed_btn_run.configure(state="normal")
@@ -1502,7 +1369,7 @@ class App(ctk.CTk):
         self.embed_pwd.delete(0, "end")
         self.embed_pwd.configure(border_color=CLR_BORDER)
         self.embed_chk_pwd.deselect()
-        self.embed_pwd.configure(show="•")
+        self.embed_pwd.configure(show="*")
         self._embed_image_path = None
         self._embed_secret_file = None
         self._embed_capacity = None
@@ -1571,7 +1438,7 @@ class App(ctk.CTk):
         kr += 1
 
         self.extract_pwd = ctk.CTkEntry(
-            body_k, show="•", placeholder_text=self._t("ph_password_extract"),
+            body_k, show="*", placeholder_text=self._t("ph_password_extract"),
             height=46, corner_radius=CORNER_CTRL, font=self.f_mono,
             bg_color=TRANSPARENT,
             fg_color=CLR_FIELD, border_color=CLR_BORDER, border_width=1,
@@ -1702,19 +1569,24 @@ class App(ctk.CTk):
         self.extract_btn_copy.grid(row=rr, column=0, sticky="e")
 
     def _extract_toggle_pwd(self):
-        self.extract_pwd.configure(show="" if self.extract_chk_pwd.get() else "•")
+        self.extract_pwd.configure(show="" if self.extract_chk_pwd.get() else "*")
 
     def _extract_choose_image(self):
         path = filedialog.askopenfilename(
             title=self._t("dlg_open_stego"), filetypes=self._filetypes_png())
         if not path:
             return
+        self._set_extract_image(path)
+
+    def _set_extract_image(self, path):
+        try:
+            core.image_capacity_bits(path)
+        except Exception as exc:
+            self._operation_error(exc)
+            return
         self._extract_image_path = path
         self.extract_lbl_img.configure(text=os.path.basename(path))
-        thumb = _make_thumbnail(path)
-        if thumb:
-            self._extract_preview_img = thumb
-            self.extract_lbl_preview.configure(image=thumb)
+        self._load_preview_async(path, "extract")
 
     def _extract_run(self):
         pwd = self.extract_pwd.get()
@@ -1727,50 +1599,22 @@ class App(ctk.CTk):
                                    self._t("warn_empty_pwd_dec"))
             return
 
-        self.extract_btn_run.configure(state="disabled")
-        self._set_status("status_extracting")
         stego = self._extract_image_path
+        self._start_job(lambda progress: core.extract_raw_from_image(stego, pwd, progress),
+                        lambda result: self._extract_ok(result, stego))
 
-        def work():
-            try:
-                result = core.extract_raw_from_image(stego, pwd)
-                self.after(0, lambda: self._extract_ok(result))
-            except Exception as exc:
-                self.after(0, lambda e=exc: self._extract_err(e))
-
-        threading.Thread(target=work, daemon=True).start()
-
-    def _extract_ok(self, result):
-        self.extract_btn_run.configure(state="normal")
+    def _extract_ok(self, result, source):
         self._last_audit = result
         self._render_audit(result)
 
         if result.payload_type == core.TYPE_FILE:
-            ext = os.path.splitext(result.filename)[1] if result.filename else ""
-            out = filedialog.asksaveasfilename(
-                title=self._t("dlg_save_file"),
-                initialfile=result.filename or "extracted_file",
-                defaultextension=ext,
-                filetypes=self._filetypes_all())
-            if not out:
-                self._set_status("status_ready")
-                return
-            try:
-                with open(out, "wb") as fh:
-                    fh.write(result.data)
-                self._set_status("status_file_saved", path=out)
-                messagebox.showinfo(self._t("info_file_saved_t"),
-                                    self._t("info_file_saved_m").format(path=out))
-            except Exception as exc:
-                self._set_status("status_error")
-                messagebox.showerror(self._t("err_decrypt_t"), str(exc))
-
-            self.extract_txt.configure(state="normal")
-            self.extract_txt.delete("1.0", "end")
-            self.extract_txt.insert("1.0", f"[FILE]  {result.filename}\n  ↳  {out}")
-            self.extract_txt.configure(state="disabled")
+            self._save_extracted(result, source, self.extract_txt)
         else:
-            text = result.data.decode("utf-8")
+            try:
+                text = result.data.decode("utf-8")
+            except UnicodeDecodeError:
+                self._operation_error(core.AuthenticationError("Invalid UTF-8"))
+                return
             self._set_status("status_decrypted")
             self.extract_txt.configure(state="normal")
             self.extract_txt.delete("1.0", "end")
@@ -1818,7 +1662,7 @@ class App(ctk.CTk):
                              self._t("err_decrypt_m").format(details=details))
 
     def _extract_copy(self):
-        text = self.extract_txt.get("1.0", "end").strip()
+        text = self.extract_txt.get("1.0", "end-1c")
         if text:
             self.clipboard_clear()
             self.clipboard_append(text)
@@ -1832,7 +1676,7 @@ class App(ctk.CTk):
         self.extract_lbl_preview.configure(image=self._extract_preview_img)
         self.extract_pwd.delete(0, "end")
         self.extract_chk_pwd.deselect()
-        self.extract_pwd.configure(show="•")
+        self.extract_pwd.configure(show="*")
         self.extract_txt.configure(state="normal")
         self.extract_txt.delete("1.0", "end")
         self.extract_txt.configure(state="disabled")
@@ -1843,6 +1687,285 @@ class App(ctk.CTk):
         self.extract_lbl_hash_actual.configure(text="")
         self.extract_lbl_compression.configure(text="")
         self._set_status("status_ready")
+
+    def _save_extracted(self, result, source, target_widget):
+        """Choose a destination on the UI thread; perform disk writes in a worker."""
+        name = result.filename or "extracted_file"
+        out = filedialog.asksaveasfilename(title=self._t("dlg_save_file"),
+                                           initialfile=name,
+                                           defaultextension=os.path.splitext(name)[1],
+                                           filetypes=self._filetypes_all())
+        if not out:
+            self._set_status("status_ready")
+            return
+        if core._same_path(source, out):
+            messagebox.showerror(self._t("status_error"), self._t("source_conflict"))
+            return
+
+        def save(progress):
+            fd, temporary = tempfile.mkstemp(prefix=".phantom-extracted-",
+                                              dir=os.path.dirname(os.path.abspath(out)))
+            try:
+                with os.fdopen(fd, "wb") as handle:
+                    view = memoryview(result.data)
+                    for offset in range(0, len(view), 1024 * 1024):
+                        handle.write(view[offset:offset + 1024 * 1024])
+                        progress("save", min(offset + 1024 * 1024, len(view)), len(view))
+                os.replace(temporary, out)
+            finally:
+                if os.path.exists(temporary):
+                    os.unlink(temporary)
+            return out
+
+        def saved(path):
+            self._set_status("status_file_saved", path=path)
+            target_widget.configure(state="normal")
+            target_widget.delete("1.0", "end")
+            target_widget.insert("1.0", f"{result.filename}\n{path}")
+            target_widget.configure(state="disabled")
+            self._toast(self._t("file_saved"))
+        self._start_job(save, saved)
+
+    def _audio_label(self, widget, key, option="text"):
+        self._audio_i18n.append((widget, option, key))
+        widget.configure(**{option: self._t(key)})
+        return widget
+
+    def _build_audio_tab(self, tab):
+        self.audio_scroll_frame = self._make_scroll_container(tab)
+        page = self.audio_scroll_frame
+        row = 0
+        title = ctk.CTkLabel(page, font=self.f_section, text_color=CLR_TEXT, anchor="w")
+        self._audio_label(title, "tab_audio").grid(row=row, column=0, sticky="ew", padx=PAD_OUT, pady=(PAD_OUT, 2))
+        row += 1
+        subtitle = ctk.CTkLabel(page, font=self.f_hint, text_color=CLR_MUTED, anchor="w")
+        self._audio_label(subtitle, "audio_hint").grid(row=row, column=0, sticky="ew", padx=PAD_OUT, pady=(0, GAP))
+        row += 1
+
+        _, body, title = self._make_card(page, row, "card_carrier")
+        self._audio_i18n.append((title, "text", "card_carrier"))
+        row += 1
+        self.audio_btn_carrier = ctk.CTkButton(body, height=44, corner_radius=CORNER_CTRL,
+                                               fg_color=CLR_CARD_ALT, hover_color=CLR_ACCENT_DIM,
+                                               text_color=CLR_TEXT, command=self._audio_choose)
+        self._audio_label(self.audio_btn_carrier, "audio_choose").grid(row=0, column=0, sticky="ew")
+        self.audio_carrier_label = ctk.CTkLabel(body, text=self._t("audio_drop"),
+                                               text_color=CLR_TEXT_DIM, anchor="w")
+        self.audio_carrier_label.grid(row=1, column=0, sticky="ew", pady=(10, 0))
+        self.audio_capacity_label = ctk.CTkLabel(body, text="", text_color=CLR_MUTED, anchor="w")
+        self.audio_capacity_label.grid(row=2, column=0, sticky="ew", pady=(5, 0))
+
+        _, body, title = self._make_card(page, row, "card_payload")
+        self._audio_i18n.append((title, "text", "card_payload"))
+        row += 1
+        choices = ctk.CTkFrame(body, fg_color="transparent")
+        choices.grid(row=0, column=0, sticky="w", pady=(0, 10))
+        self._audio_mode_var = tk.StringVar(value=MODE_TEXT)
+        self.audio_radio_text = ctk.CTkRadioButton(choices, variable=self._audio_mode_var,
+                                                   value=MODE_TEXT, command=self._audio_mode_changed)
+        self._audio_label(self.audio_radio_text, "audio_text").pack(side="left", padx=(0, 25))
+        self.audio_radio_file = ctk.CTkRadioButton(choices, variable=self._audio_mode_var,
+                                                   value=MODE_FILE, command=self._audio_mode_changed)
+        self._audio_label(self.audio_radio_file, "audio_file").pack(side="left")
+        self.audio_txt = ctk.CTkTextbox(body, height=135, corner_radius=CORNER_CTRL,
+                                         fg_color=CLR_FIELD, text_color=CLR_TEXT,
+                                         border_width=1, border_color=CLR_BORDER)
+        self.audio_txt.grid(row=1, column=0, sticky="ew")
+        self._bind_shortcuts(self.audio_txt)
+        self._register_textbox(self.audio_txt)
+        self.audio_btn_secret = ctk.CTkButton(body, command=self._audio_choose_secret,
+                                               fg_color=CLR_CARD_ALT, hover_color=CLR_ACCENT_DIM,
+                                               text_color=CLR_TEXT, height=42)
+        self._audio_label(self.audio_btn_secret, "audio_secret").grid(row=2, column=0, sticky="ew", pady=(8, 0))
+        self.audio_secret_label = ctk.CTkLabel(body, text=self._t("lbl_no_file"),
+                                              text_color=CLR_MUTED, anchor="w")
+        self.audio_secret_label.grid(row=3, column=0, sticky="ew", pady=(4, 0))
+
+        _, body, title = self._make_card(page, row, "card_password")
+        self._audio_i18n.append((title, "text", "card_password"))
+        row += 1
+        self.audio_pwd = ctk.CTkEntry(body, show="*", height=46, fg_color=CLR_FIELD,
+                                       border_color=CLR_BORDER, text_color=CLR_TEXT)
+        self._audio_label(self.audio_pwd, "audio_password", "placeholder_text").grid(row=0, column=0, sticky="ew")
+        self._bind_shortcuts(self.audio_pwd)
+        self.audio_show = tk.BooleanVar(value=False)
+        show = ctk.CTkCheckBox(body, variable=self.audio_show,
+                               command=lambda: self.audio_pwd.configure(show="" if self.audio_show.get() else "*"))
+        self._audio_label(show, "chk_show_password").grid(row=1, column=0, sticky="w", pady=(12, 0))
+
+        buttons = ctk.CTkFrame(page, fg_color="transparent")
+        buttons.grid(row=row, column=0, sticky="ew", padx=PAD_OUT, pady=(0, GAP))
+        buttons.grid_columnconfigure((0, 1), weight=1)
+        row += 1
+        self.audio_btn_hide = ctk.CTkButton(buttons, height=48, corner_radius=CORNER_CTRL,
+                                            fg_color=CLR_ACCENT, command=self._audio_hide)
+        self._audio_label(self.audio_btn_hide, "audio_hide").grid(row=0, column=0, sticky="ew", padx=(0, 6))
+        self.audio_btn_extract = ctk.CTkButton(buttons, height=48, corner_radius=CORNER_CTRL,
+                                               fg_color=CLR_CARD_ALT, text_color=CLR_TEXT,
+                                               command=self._audio_extract)
+        self._audio_label(self.audio_btn_extract, "audio_extract").grid(row=0, column=1, sticky="ew", padx=(6, 0))
+
+        _, body, title = self._make_card(page, row, "audio_result")
+        self._audio_i18n.append((title, "text", "audio_result"))
+        self.audio_result = ctk.CTkTextbox(body, height=120, fg_color=CLR_FIELD,
+                                           text_color=CLR_TEXT, state="disabled")
+        self.audio_result.grid(row=0, column=0, sticky="ew")
+        copy = ctk.CTkButton(body, command=self._audio_copy, fg_color=CLR_CARD_ALT,
+                             hover_color=CLR_ACCENT_DIM, text_color=CLR_TEXT)
+        self._audio_label(copy, "btn_copy").grid(row=1, column=0, sticky="e", pady=(10, 0))
+        self._audio_mode_changed()
+
+    def _audio_mode_changed(self):
+        if self._audio_mode_var.get() == MODE_TEXT:
+            self.audio_txt.grid()
+            self.audio_btn_secret.grid_remove()
+            self.audio_secret_label.grid_remove()
+        else:
+            self.audio_txt.grid_remove()
+            self.audio_btn_secret.grid()
+            self.audio_secret_label.grid()
+
+    def _refresh_audio_language(self):
+        for widget, option, key in self._audio_i18n:
+            widget.configure(**{option: self._t(key)})
+        if self._audio_path:
+            self.audio_capacity_label.configure(text=self._t("audio_capacity").format(size=f"{self._audio_capacity:,}"))
+        else:
+            self.audio_carrier_label.configure(text=self._t("audio_drop"))
+        if not self._audio_secret_file:
+            self.audio_secret_label.configure(text=self._t("lbl_no_file"))
+
+    def _audio_choose(self):
+        path = filedialog.askopenfilename(filetypes=[(self._t("audio_filetypes"), "*.wav *.flac"),
+                                                      (self._t("ft_all"), "*.*")])
+        if path:
+            self._set_audio(path)
+
+    def _set_audio(self, path):
+        try:
+            engine = AudioSteganographyEngine()
+            info = engine._info(path)
+            capacity = engine.check_capacity(path)
+        except Exception as exc:
+            self._operation_error(exc)
+            return
+        self._audio_path = path
+        self._audio_format = info.format
+        self._audio_capacity = capacity
+        self.audio_carrier_label.configure(text=os.path.basename(path))
+        self.audio_capacity_label.configure(text=self._t("audio_capacity").format(size=f"{capacity:,}"))
+
+    def _audio_choose_secret(self):
+        path = filedialog.askopenfilename(filetypes=self._filetypes_all())
+        if path:
+            self._set_audio_secret(path)
+
+    def _set_audio_secret(self, path):
+        self._audio_secret_file = path
+        self.audio_secret_label.configure(text=os.path.basename(path))
+        self._audio_mode_var.set(MODE_FILE)
+        self._audio_mode_changed()
+
+    def _audio_hide(self):
+        source, password = self._audio_path, self.audio_pwd.get()
+        if not source:
+            messagebox.showwarning(self._t("warn_no_img_t"), self._t("audio_choose"))
+            return
+        if len(password) < MIN_PASSWORD_LENGTH:
+            messagebox.showwarning(self._t("warn_pwd_weak_t"), self._t("warn_pwd_weak_m").format(
+                min_len=MIN_PASSWORD_LENGTH, current=len(password)))
+            return
+        mode, secret = self._audio_mode_var.get(), self._audio_secret_file
+        text = self.audio_txt.get("1.0", "end-1c")
+        if mode == MODE_TEXT and not text:
+            messagebox.showwarning(self._t("warn_empty_msg_t"), self._t("warn_empty_msg_m"))
+            return
+        if mode == MODE_FILE and not secret:
+            messagebox.showwarning(self._t("warn_no_secret_t"), self._t("warn_no_secret_m"))
+            return
+        extension = ".wav" if self._audio_format in ("WAV", "WAVEX") else ".flac"
+        output = filedialog.asksaveasfilename(title=self._t("audio_save"), defaultextension=extension,
+                     initialfile=Path(source).stem + "_stego" + extension,
+                     filetypes=[(self._t("audio_filetypes"), "*" + extension)])
+        if not output:
+            return
+        if core._same_path(source, output) or (mode == MODE_FILE and
+                (core._same_path(secret, source) or core._same_path(secret, output))):
+            messagebox.showerror(self._t("status_error"), self._t("source_conflict"))
+            return
+
+        def work(progress):
+            data = core._read_file(secret, progress) if mode == MODE_FILE else text
+            AudioSteganographyEngine().hide(source, output, data, password,
+                      filename=os.path.basename(secret) if mode == MODE_FILE else None, progress=progress)
+            return output
+        self._start_job(work, self._audio_saved)
+
+    def _audio_saved(self, path):
+        self._set_status("status_done", path=path)
+        self._toast(self._t("file_saved"))
+
+    def _audio_extract(self):
+        source, password = self._audio_path, self.audio_pwd.get()
+        if not source:
+            messagebox.showwarning(self._t("warn_no_img_t"), self._t("audio_choose"))
+            return
+        if not password:
+            messagebox.showwarning(self._t("warn_empty_pwd_t"), self._t("warn_empty_pwd_dec"))
+            return
+        self._start_job(lambda progress: AudioSteganographyEngine().extract(source, password, progress=progress),
+                        lambda result: self._audio_extracted(result, source))
+
+    def _audio_extracted(self, result, source):
+        if result.payload_type == core.TYPE_FILE:
+            self._save_extracted(result, source, self.audio_result)
+            return
+        try:
+            value = result.data.decode("utf-8")
+        except UnicodeDecodeError:
+            self._operation_error(core.AuthenticationError("Invalid UTF-8"))
+            return
+        self.audio_result.configure(state="normal")
+        self.audio_result.delete("1.0", "end")
+        self.audio_result.insert("1.0", value)
+        self.audio_result.configure(state="disabled")
+        self._set_status("status_decrypted")
+        self._toast(self._t("phase_done"))
+
+    def _audio_copy(self):
+        value = self.audio_result.get("1.0", "end-1c")
+        if value:
+            self.clipboard_clear()
+            self.clipboard_append(value)
+            self._toast(self._t("copied"))
+
+    def _register_drop_targets(self):
+        if not self._dnd_enabled:
+            return
+        targets = ((self.embed_btn_img, self._set_embed_image),
+                   (self.embed_lbl_preview, self._set_embed_image),
+                   (self.extract_btn_img, self._set_extract_image),
+                   (self.extract_lbl_preview, self._set_extract_image),
+                   (self.embed_btn_secret_file, self._set_embed_secret),
+                   (self.audio_btn_carrier, self._set_audio),
+                   (self.audio_carrier_label, self._set_audio),
+                   (self.audio_btn_secret, self._set_audio_secret))
+        for widget, callback in targets:
+            def on_drop(event, callback=callback):
+                if self._busy:
+                    return
+                paths = self.tk.splitlist(event.data)
+                if paths:
+                    callback(paths[0])
+            # CustomTkinter often draws a control into child canvases or labels.
+            for target in (widget, getattr(widget, "_canvas", None),
+                           getattr(widget, "_text_label", None), getattr(widget, "_label", None)):
+                if target is not None and hasattr(target, "drop_target_register"):
+                    try:
+                        target.drop_target_register(DND_FILES)
+                        target.dnd_bind("<<Drop>>", on_drop)
+                    except tk.TclError:
+                        pass
 
     def _build_settings_tab(self, tab):
         self.settings_scroll_frame = self._make_scroll_container(tab)
@@ -1880,7 +2003,7 @@ class App(ctk.CTk):
             command=self._on_theme_change,
             corner_radius=CORNER_CTRL, height=44, font=self.f_body,
             bg_color=TRANSPARENT, fg_color=CLR_CARD_ALT,
-            selected_color=CLR_ACCENT, selected_hover_color=CLR_ACCENT_HOVER,
+            selected_color=CLR_SEGMENT_SELECTED, selected_hover_color=CLR_SEGMENT_HOVER,
             unselected_color=CLR_CARD_ALT, unselected_hover_color=CLR_ACCENT_DIM,
             text_color=CLR_TEXT)
         self.settings_theme.set(
@@ -1896,7 +2019,7 @@ class App(ctk.CTk):
             body_l, values=LANGUAGES, command=self.change_language,
             corner_radius=CORNER_CTRL, height=44, font=self.f_body,
             bg_color=TRANSPARENT, fg_color=CLR_CARD_ALT,
-            selected_color=CLR_ACCENT, selected_hover_color=CLR_ACCENT_HOVER,
+            selected_color=CLR_SEGMENT_SELECTED, selected_hover_color=CLR_SEGMENT_HOVER,
             unselected_color=CLR_CARD_ALT, unselected_hover_color=CLR_ACCENT_DIM,
             text_color=CLR_TEXT)
         self.settings_lang.set(self.language)
