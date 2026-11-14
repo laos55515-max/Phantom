@@ -1,0 +1,127 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "phantom-stego"
+version = "2.0.0"
+description = "PHANTOM — offline AES-256-GCM payload hiding in PNG images and WAV/FLAC audio"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "PHANTOM project" }]
+dependencies = [
+    "cryptography==50.0.2",
+    "Pillow==13.0.0",
+    "numpy==2.4.6",
+    "soundfile==0.14.0",
+    "mutagen==1.48.1",
+    "customtkinter==6.0.0",
+    "platformdirs==4.14.5",
+    "tkinterdnd2==0.7.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest==9.2.0",
+    "pytest-cov==7.1.0",
+    "hypothesis==6.170.15",
+    "ruff==0.17.5",
+    "mypy==2.4.1",
+]
+
+[project.scripts]
+phantom = "phantom.ui.app:main"
+
+[project.gui-scripts]
+phantom-gui = "phantom.ui.app:main"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+phantom = ["locales/*.json"]
+
+[tool.pytest.ini_options]
+minversion = "7.0"
+addopts = "-ra --strict-markers --strict-config"
+testpaths = ["tests"]
+pythonpath = ["src"]
+markers = [
+    "slow: performance / long-running tests (deselect with -m 'not slow')",
+    "gui: tests that need a Tk display (run under xvfb on Linux CI)",
+]
+filterwarnings = [
+    "error::DeprecationWarning:phantom.*",
+]
+
+[tool.coverage.run]
+branch = true
+source = ["phantom"]
+parallel = false
+
+[tool.coverage.report]
+show_missing = true
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests"]
+extend-exclude = [".venv", "build", "dist"]
+
+[tool.ruff.lint]
+select = [
+    "E", "W", "F", "I", "N", "UP", "B", "A", "C4", "DTZ", "T20", "PT",
+    "RET", "SIM", "TID", "ARG", "PL", "RUF", "S", "BLE", "ANN",
+]
+ignore = [
+    "ANN401",   # Any in a few adapter signatures
+    "PLR0913",  # many kwargs are legitimate for a UI/API surface
+    "PLR0915",  # long but linear construction functions in the UI
+    "PLR0912",  # ditto
+    "PLR2004",  # magic values in tests are acceptable and often clearer
+    "S101",     # asserts are the point of a test suite
+    "S603",     # no subprocess with untrusted input; guarded uses only
+    "S607",     # partial executable paths in tests (ffprobe probing)
+    "T201",     # CLI probes print by design
+    "ANN001", "ANN201", "ANN202",
+    "N812",     # ``from phantom.core import constants as C`` is the project idiom
+    "RUF001",   # Ukrainian/Russian strings legitimately contain Cyrillic look-alikes
+    "RUF002",   # same, inside docstrings; the locales are the source of truth
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests intentionally build fixtures with lazy imports, temp paths and
+# multi-step assertions; the strictness that matters lives in src/.
+"tests/*" = [
+    "ANN", "ARG", "PLR0915", "S105", "S106", "S108", "S311", "B011", "PT011",
+    "PLC0415", "PT018", "PT006", "PT012", "B017", "SIM117", "SIM115", "C416",
+    "RUF100", "E501", "B905",
+]
+"tools/*" = ["T201", "ANN", "S311", "S105", "S108", "SIM115", "PLC0415"]
+"src/phantom/ui/*" = ["ANN", "TID252"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+warn_unreachable = true
+disallow_untyped_decorators = false
+show_error_codes = true
+files = ["src/phantom/core", "src/phantom/stego", "src/phantom/audio", "src/phantom/i18n"]
+
+[[tool.mypy.overrides]]
+module = ["soundfile.*", "mutagen.*", "tkinterdnd2.*", "customtkinter.*", "darkdetect.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["phantom.stego.image", "phantom.audio.*"]
+# numpy's stubs are strict enough; keep the rest of the flags
+disallow_untyped_calls = false

@@ -1,0 +1,130 @@
+"""Typed error hierarchy for PHANTOM.
+
+Rules:
+* every failure the user can cause surfaces as a :class:`PhantomError`;
+* ``WrongPasswordOrNoData`` deliberately merges "wrong password" and
+  "no payload here" so the app cannot be used as a decryption oracle;
+* messages are stable i18n keys (``err.<code>``), never English prose.
+"""
+
+from __future__ import annotations
+
+from enum import Enum, unique
+
+
+@unique
+class ErrorCode(Enum):
+    WRONG_PASSWORD_OR_NO_DATA = "wrong_password_or_no_data"  # noqa: S105 - an error id
+    CAPACITY = "capacity"
+    UNSUPPORTED_FORMAT = "unsupported_format"
+    UNSUPPORTED_CARRIER = "unsupported_carrier"
+    INTEGRITY = "integrity"
+    CANCELLED = "cancelled"
+    INVALID_PASSWORD = "invalid_password"  # noqa: S105 - an error id
+    INVALID_INPUT = "invalid_input"
+    IO = "io"
+    OUTPUT_IS_CARRIER = "output_is_carrier"
+    UNSAFE_PATH = "unsafe_path"
+    WIPE_FAILED = "wipe_failed"
+    AUDIO_LOSSY = "audio_lossy"
+    AUDIO_FORMAT = "audio_format"
+    AUDIO_SILENCE = "audio_silence"
+    INTERNAL = "internal"
+
+
+class PhantomError(Exception):
+    """Base class for all expected PHANTOM failures."""
+
+    code: ErrorCode = ErrorCode.INTERNAL
+
+    def __init__(self, message: str = "", *, detail: str | None = None) -> None:
+        super().__init__(message or self.code.value)
+        self.message = message
+        self.detail = detail
+        self.params: dict[str, object] = {}
+
+    @property
+    def i18n_key(self) -> str:
+        return f"err.{self.code.value}"
+
+    def with_params(self, **params: object) -> PhantomError:
+        self.params.update(params)
+        return self
+
+    def __str__(self) -> str:
+        if self.detail:
+            return f"{self.message or self.code.value} ({self.detail})"
+        return self.message or self.code.value
+
+    def __repr__(self) -> str:
+        return f"{type(self).__name__}(code={self.code.value!r}, message={self.message!r})"
+
+
+class WrongPasswordOrNoData(PhantomError):  # noqa: N818 - name is the user-facing contract
+    """Wrong password, damaged payload, or simply no payload in the carrier."""
+
+    code = ErrorCode.WRONG_PASSWORD_OR_NO_DATA
+
+
+class CapacityError(PhantomError):
+    code = ErrorCode.CAPACITY
+
+
+class UnsupportedFormat(PhantomError):  # noqa: N818 - name is the user-facing contract
+    code = ErrorCode.UNSUPPORTED_FORMAT
+
+
+class UnsupportedCarrier(PhantomError):  # noqa: N818 - name is the user-facing contract
+    code = ErrorCode.UNSUPPORTED_CARRIER
+
+
+class IntegrityError(PhantomError):
+    code = ErrorCode.INTEGRITY
+
+
+class OperationCancelled(PhantomError):  # noqa: N818 - name is the user-facing contract
+    code = ErrorCode.CANCELLED
+
+
+class InvalidPassword(PhantomError):  # noqa: N818 - name is the user-facing contract
+    code = ErrorCode.INVALID_PASSWORD
+
+
+class InvalidInput(PhantomError):  # noqa: N818 - name is the user-facing contract
+    code = ErrorCode.INVALID_INPUT
+
+
+class PhantomIOError(PhantomError):
+    code = ErrorCode.IO
+
+
+class OutputIsCarrierError(PhantomError):
+    code = ErrorCode.OUTPUT_IS_CARRIER
+
+
+class UnsafePathError(PhantomError):
+    code = ErrorCode.UNSAFE_PATH
+
+
+class WipeError(PhantomError):
+    code = ErrorCode.WIPE_FAILED
+
+
+class LossyAudioError(PhantomError):
+    code = ErrorCode.AUDIO_LOSSY
+
+
+class AudioFormatError(PhantomError):
+    code = ErrorCode.AUDIO_FORMAT
+
+
+class SilenceError(PhantomError):
+    code = ErrorCode.AUDIO_SILENCE
+
+
+class InternalError(PhantomError):
+    code = ErrorCode.INTERNAL
+
+
+#: Convenience alias used by the UI to render a localized message.
+ERROR_CODES: tuple[ErrorCode, ...] = tuple(ErrorCode)

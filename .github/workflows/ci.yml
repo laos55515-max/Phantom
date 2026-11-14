@@ -1,0 +1,136 @@
+name: CI
+
+on:
+  push:
+    branches: ["main", "arena/**"]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHONUNBUFFERED: "1"
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+
+jobs:
+  lint:
+    name: lint and types
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-dev.txt
+      - name: Ruff
+        run: ruff check src tests tools
+      - name: Mypy
+        run: mypy src
+
+  test:
+    name: tests (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+      - name: System libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libsndfile1 python3-tk xvfb
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-dev.txt
+      - name: Verify the environment is real
+        run: |
+          python -V
+          python -m pip freeze
+          python -c "import phantom, sys; print('phantom', phantom.__version__, sys.version)"
+        env:
+          PYTHONPATH: src
+      - name: Tests (headless, without a display)
+        run: python -m pytest -ra -m "not gui"
+        env:
+          MPLBACKEND: Agg
+      - name: GUI smoke tests (Xvfb)
+        # A stuck Tk main loop must fail the job instead of hanging for hours:
+        # pytest-timeout dumps every thread of a test that stops making
+        # progress, faulthandler covers stalls outside a test, and the step has
+        # a hard limit.  The log is echoed as annotations because Actions log
+        # downloads are not always reachable.
+        id: gui
+        timeout-minutes: 12
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          xvfb-run -a -s "-screen 0 1280x1024x24" python -m pytest -ra -m gui -v \
+            --durations=20 --timeout=120 --timeout-method=thread \
+            -o faulthandler_timeout=120 2>&1 | tee gui.log
+      - name: GUI log
+        if: always()
+        run: |
+          python - <<'PY'
+          import pathlib
+          import re
+
+          path = pathlib.Path("gui.log")
+          lines = path.read_text(errors="replace").splitlines() if path.exists() else []
+          interesting = [
+              line
+              for line in lines
+              if re.search(r"FAILED|ERROR|Timeout|^E |assert|Error", line)
+              and "PASSED" not in line
+          ]
+          for line in interesting[-10:] or lines[-10:]:
+              print(f"::error::{line[:900]}")
+          print(f"::notice::gui.log: {len(lines)} lines")
+          PY
+          if [ "${{ steps.gui.outcome }}" != "success" ]; then
+            echo "GUI smoke tests failed or timed out"
+            exit 1
+          fi
+
+  benchmark:
+    name: slow benchmarks
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+      - name: System libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libsndfile1
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-dev.txt
+      - name: Slow tests
+        run: python -m pytest -ra -m slow
