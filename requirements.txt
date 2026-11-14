@@ -1,0 +1,6 @@
+customtkinter>=5.2.2,<7
+Pillow>=10.4,<14
+cryptography>=42,<52
+numpy>=1.26,<3
+soundfile>=0.13.1,<0.15
+tkinterdnd2>=0.6,<0.8

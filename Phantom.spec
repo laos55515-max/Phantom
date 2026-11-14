@@ -1,11 +1,15 @@
 # -*- mode: python ; coding: utf-8 -*-
 from PyInstaller.utils.hooks import collect_all
 
-datas = []
+datas = [('locales', 'locales')]
 binaries = []
-hiddenimports = []
-tmp_ret = collect_all('customtkinter')
-datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
+# Pillow loads these at runtime when CustomTkinter creates image previews.
+hiddenimports = ['PIL._imagingtk', 'PIL._tkinter_finder']
+for package in ('customtkinter', 'tkinterdnd2', 'soundfile', '_soundfile_data'):
+    tmp_ret = collect_all(package)
+    datas += tmp_ret[0]
+    binaries += tmp_ret[1]
+    hiddenimports += tmp_ret[2]
 
 
 a = Analysis(
