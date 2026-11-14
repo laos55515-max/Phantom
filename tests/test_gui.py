@@ -80,11 +80,16 @@ def dialogs(monkeypatch: pytest.MonkeyPatch) -> DialogRecorder:
 
 
 def _pump(app, seconds: float = 30.0) -> None:
-    """Run the Tk event loop until the worker is idle (or the deadline passes)."""
+    """Run the Tk event loop until no operation is in flight.
+
+    ``worker.busy`` goes False when the thread exits, but ``_busy`` (the app's
+    own "an operation is running" flag) is only cleared by the poll callback, so
+    both have to settle.
+    """
     import time
 
     deadline = time.monotonic() + seconds
-    while app.worker.busy and time.monotonic() < deadline:
+    while (app.worker.busy or app._busy) and time.monotonic() < deadline:
         app.root.update()
         time.sleep(0.02)
     app.root.update()
@@ -126,7 +131,7 @@ def test_language_switch_updates_visible_text(app) -> None:
     app._on_language_click(app._label_by_lang[target])
     assert app.i18n.language == target
     assert app.settings.language == target
-    subtitle = app._t("header_subtitle")
+    subtitle = app._t("header_subtitle", **app._security_params())
     assert "AES-256-GCM" in subtitle
     assert C.kdf_summary(C.default_kdf_profile()).split(" · ")[0] in subtitle
     assert app.root.title() == app._t("window_title")
@@ -185,7 +190,12 @@ def test_clipboard_is_cleared_after_delay(app) -> None:
     app._copy_to_clipboard("secret-value")
     assert app.root.clipboard_get() == "secret-value"
     app._clear_clipboard_if("secret-value")
-    assert app.root.clipboard_get() != "secret-value"
+    # After the clear Tk may own no selection at all, which raises on read.
+    try:
+        remaining = app.root.clipboard_get()
+    except Exception:  # noqa: BLE001 - TclError: nothing owns the clipboard
+        remaining = ""
+    assert remaining != "secret-value"
 
 
 def test_worker_poll_drains_events(app) -> None:
