@@ -75,12 +75,40 @@ jobs:
           MPLBACKEND: Agg
       - name: GUI smoke tests (Xvfb)
         # A stuck Tk main loop must fail the job instead of hanging for hours:
-        # the step has a hard limit and faulthandler dumps every thread if a
-        # single test stops making progress.
-        timeout-minutes: 10
+        # pytest-timeout dumps every thread of a test that stops making
+        # progress, faulthandler covers stalls outside a test, and the step has
+        # a hard limit.  The log is echoed as annotations because Actions log
+        # downloads are not always reachable.
+        id: gui
+        timeout-minutes: 12
+        continue-on-error: true
         run: |
+          set -o pipefail
           xvfb-run -a -s "-screen 0 1280x1024x24" python -m pytest -ra -m gui -v \
-            --durations=20 -o faulthandler_timeout=120
+            --durations=20 --timeout=120 --timeout-method=thread \
+            -o faulthandler_timeout=120 2>&1 | tee gui.log
+      - name: GUI log
+        if: always()
+        run: |
+          python - <<'PY'
+          import pathlib
+          import re
+
+          path = pathlib.Path("gui.log")
+          lines = path.read_text(errors="replace").splitlines() if path.exists() else []
+          interesting = [
+              line
+              for line in lines
+              if re.search(r"PASSED|FAILED|ERROR|Timeout|^tests/test_gui|^E ", line)
+          ]
+          for line in interesting[-10:] or lines[-10:]:
+              print(f"::error::{line[:900]}")
+          print(f"::notice::gui.log: {len(lines)} lines")
+          PY
+          if [ "${{ steps.gui.outcome }}" != "success" ]; then
+            echo "GUI smoke tests failed or timed out"
+            exit 1
+          fi
 
   benchmark:
     name: slow benchmarks
