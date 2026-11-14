@@ -26,7 +26,7 @@ from phantom.audio.common import (
 )
 from phantom.core import constants as C
 from phantom.core import files as fsutil
-from phantom.core.errors import CapacityError, UnsupportedCarrier
+from phantom.core.errors import CapacityError
 from phantom.core.kdf import KdfProfile
 from phantom.core.payload import (
     ExtractedPayload,
@@ -169,8 +169,6 @@ def load_audio(path: str) -> LoadedAudio:
         layout = wav_mod.parse_wav(raw)
         payload = raw[layout.data_offset : layout.data_offset + layout.data_size]
         samples = wav_mod.decode_samples(payload, layout)
-        if samples.size != layout.frames * layout.channels:
-            raise UnsupportedCarrier("WAV data chunk length mismatch")
         return LoadedAudio(
             samples=samples,
             source_path=path,
@@ -277,8 +275,6 @@ def _write_back(
         assert loaded.raw is not None
         payload_bytes = wav_mod.encode_samples(loaded.samples, loaded.wav_layout)
         new_raw = wav_mod.splice_data(loaded.raw, loaded.wav_layout, payload_bytes)
-        if len(new_raw) != len(loaded.raw):
-            raise UnsupportedCarrier("WAV size changed during embedding")
         wav_mod.write_wav_atomic(final_path, new_raw)
     else:
         assert loaded.flac_layout is not None

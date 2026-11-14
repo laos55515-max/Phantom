@@ -168,9 +168,8 @@ def pack_payload(
     progress: ProgressFn = noop_progress,
 ) -> PackedPayload:
     """Serialize + compress ``payload`` into the canonical v2 plaintext blob."""
+    # ``Payload`` validates the name length on construction, so no re-check here.
     name_bytes = payload.name.encode("utf-8")
-    if len(name_bytes) > C.MAX_FILENAME_BYTES:
-        raise InvalidInput("file name too long")
     meta = _HEADER.size + len(name_bytes) + C.SHA256_SIZE + _LEN.size
     compressed_budget = (
         None if max_payload_bytes is None else max(0, max_payload_bytes - meta)

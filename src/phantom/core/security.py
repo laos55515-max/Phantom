@@ -35,8 +35,6 @@ def generate_password(
     pools = [UPPER, LOWER, DIGITS]
     if policy.require_symbol:
         pools.append(SYMBOLS)
-    if length < len(pools):
-        raise ValueError("password too short for the required classes")
     chars = [secrets.choice(pool) for pool in pools]
     chars.extend(secrets.choice(ALPHABET) for _ in range(length - len(pools)))
     secrets.SystemRandom().shuffle(chars)

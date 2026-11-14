@@ -772,3 +772,283 @@ def test_core_backend_matches_real_api(tmp_path, rgb_carrier, password) -> None:
     assert outcome.verified
     result = core_api.extract_from_path(outcome.output_path, password)
     assert result.payload.data == b"viewmodel round trip"
+
+
+# ---------------------------------------------------------------------------
+# DnD provider without a display
+# ---------------------------------------------------------------------------
+def test_dnd_provider_without_tk_reports_a_reason() -> None:
+    from phantom.ui.dnd import DndProvider, DropTarget
+
+    provider = DndProvider()
+    provider._dnd_module = None  # force the no-Tk path deterministically
+    assert provider.available is False
+    target = DropTarget(widget=object(), on_drop=lambda paths: None, extensions=(".png",))
+    assert provider.register(target) is False
+
+
+def test_dnd_provider_marks_broken_registration() -> None:
+    from phantom.ui.dnd import DndProvider, DropTarget
+
+    class BrokenWidget:
+        def drop_target_register(self, *_args: object) -> None:
+            raise RuntimeError("no drop support")
+
+    provider = DndProvider()
+    provider._dnd_module = object()
+    target = DropTarget(widget=BrokenWidget(), on_drop=lambda paths: None, extensions=(".png",))
+    assert provider.register(target) is False
+    assert provider.reason is not None and "drop registration failed" in provider.reason
+
+
+def test_parse_drop_paths_with_nested_braces() -> None:
+    assert parse_drop_paths("{{/tmp/a b.png}}") == ["/tmp/a b.png"]
+    # Tk always braces paths with spaces; an unbraced payload is a Tcl list,
+    # so it legitimately splits into two tokens.
+    assert parse_drop_paths("/tmp/a b.png") == ["/tmp/a", "b.png"]
+    assert parse_drop_paths("{/tmp/a.png} /tmp/b.png") == ["/tmp/a.png", "/tmp/b.png"]
+
+
+# ---------------------------------------------------------------------------
+# view model: clearing, estimates and capacity pressure
+# ---------------------------------------------------------------------------
+def test_embed_clear_resets_everything(tmp_path) -> None:
+    carrier = tmp_path / "carrier.png"
+    carrier.write_bytes(b"\x89PNG\r\n\x1a\n")
+    view = EmbedViewModel(backend=FakeBackend())
+    view.set_carrier(str(carrier))
+    view.set_text("hello")
+    view.set_password("p" * 20)
+    view.set_wipe_source(True)
+    view.apply_estimate(SizeEstimate(payload_bytes=10, exceeded_capacity=False))
+    view.clear()
+    assert view.carrier_path == "" and view.text == "" and view.password == ""
+    assert view.estimate is None and view.notices == () and view.wipe_source is False
+    assert view.capacity == 0 and view.user_capacity() == 0
+    assert view.fill_percent() is None
+
+
+def test_embed_payload_name_and_sizes(tmp_path) -> None:
+    secret = tmp_path / "payload.bin"
+    secret.write_bytes(b"x" * 40)
+    view = EmbedViewModel(backend=FakeBackend())
+    view.set_mode(PayloadMode.FILE)
+    view.set_secret_file(str(secret))
+    assert view.payload_name() == "payload.bin"
+    assert view.estimated_payload_bytes() == 40 + C.PAYLOAD_META_OVERHEAD
+    view.set_secret_file(str(tmp_path / "missing.bin"))
+    assert view.estimated_payload_bytes() is None
+    assert view.has_payload() is False
+    view.set_mode(PayloadMode.TEXT)
+    assert view.payload_name() == ""
+    view.set_text("   ")
+    assert view.has_payload() is False
+
+
+def test_embed_estimate_overrides_the_guess(tmp_path) -> None:
+    carrier = tmp_path / "carrier.png"
+    carrier.write_bytes(b"\x89PNG\r\n\x1a\n")
+    backend = FakeBackend(capacity=1_000)
+    view = EmbedViewModel(backend=backend)
+    view.set_carrier(str(carrier))
+    view.apply_probe(backend.probe(str(carrier)))
+    view.set_text("tiny")
+    view.apply_estimate(SizeEstimate(payload_bytes=2_000, exceeded_capacity=True))
+    assert view.estimated_payload_bytes() == 2_000
+    assert view.exceeds_capacity() is True
+    assert view.fill_percent() == pytest.approx(100.0)
+    keys = [issue.key for issue in view.issues()]
+    assert "warn_capacity_m" in keys
+
+
+def test_embed_issues_for_a_missing_carrier(tmp_path) -> None:
+    view = EmbedViewModel(backend=FakeBackend())
+    view.set_carrier(str(tmp_path / "gone.png"))
+    keys = [issue.key for issue in view.issues()]
+    assert "err.io" in keys
+    with pytest.raises(InvalidInput):
+        view.ensure_ready()
+
+
+def test_extract_clear_and_probe(tmp_path) -> None:
+    backend = FakeBackend()
+    stego = tmp_path / "stego.png"
+    stego.write_bytes(b"\x89PNG\r\n\x1a\n")
+    view = ExtractViewModel(backend=backend)
+    view.set_stego(str(stego))
+    view.password = "x" * 20
+    view.apply_probe(backend.probe(str(stego)))
+    assert view.notices == ("notice.test",)
+    view.clear()
+    assert view.stego_path == "" and view.result is None and view.password == ""
+    assert [issue.key for issue in view.issues()] == ["warn_no_img_dec", "warn_empty_pwd_dec"]
+
+
+def test_extract_default_save_path_falls_back_to_cwd() -> None:
+    view = ExtractViewModel()
+    assert view.default_save_path() == ""
+    view.result = ExtractedPayload(
+        kind=PayloadKind.FILE,
+        name="",
+        data=b"x",
+        sha256_expected="c" * 64,
+        sha256_actual="c" * 64,
+        integrity_ok=True,
+        original_size=1,
+        compressed_size=1,
+    )
+    assert view.default_save_path().endswith("extracted.bin")
+
+
+def test_extract_issues_for_missing_stego(tmp_path) -> None:
+    view = ExtractViewModel()
+    view.set_stego(str(tmp_path / "missing.png"))
+    keys = [issue.key for issue in view.issues()]
+    assert "err.io" in keys
+    with pytest.raises(InvalidInput):
+        view.make_extract_job()
+
+
+# ---------------------------------------------------------------------------
+# worker: idle paths and stall detection
+# ---------------------------------------------------------------------------
+def test_worker_idle_state() -> None:
+    service = WorkerService()
+    assert service.busy is False
+    assert service.operation == ""
+    assert service.seconds_since_progress() == 0.0
+    assert service.poll() == []
+    assert service.watchdog_expired() is False
+    service.reset_watchdog()
+    service.shutdown(timeout=0.1)
+    service.cancel()
+
+
+def test_worker_operation_name_while_running() -> None:
+    service = WorkerService()
+    release = threading.Event()
+
+    def job(report, cancel):
+        release.wait(5)
+        return "done"
+
+    assert service.start("probe-file", job) is True
+    assert service.operation == "probe-file"
+    release.set()
+    events = _drain(service, {WorkerEventType.DONE})
+    assert events[-1].operation == "probe-file"
+    assert service.operation == ""
+
+
+def test_worker_watchdog_ignores_idle_service() -> None:
+    service = WorkerService(watchdog_seconds=0.01)
+    time.sleep(0.05)
+    assert service.watchdog_expired() is False
+
+
+# ---------------------------------------------------------------------------
+# system theme detection
+# ---------------------------------------------------------------------------
+def test_system_theme_detector_swallows_platform_errors(monkeypatch) -> None:
+    from phantom.ui import system_theme
+
+    class BrokenDarkdetect:
+        @staticmethod
+        def theme() -> str:
+            raise RuntimeError("platform blew up")
+
+    monkeypatch.setitem(__import__("sys").modules, "darkdetect", BrokenDarkdetect())
+    assert system_theme._detect_darkdetect() is None
+
+
+def test_system_theme_detector_returns_known_values(monkeypatch) -> None:
+    from phantom.ui import system_theme
+
+    class FakeDarkdetect:
+        @staticmethod
+        def theme() -> str:
+            return "Dark"
+
+    monkeypatch.setitem(__import__("sys").modules, "darkdetect", FakeDarkdetect())
+    assert system_theme._detect_darkdetect() == "Dark"
+
+    class Weird:
+        @staticmethod
+        def theme() -> str:
+            return "Solarized"
+
+    monkeypatch.setitem(__import__("sys").modules, "darkdetect", Weird())
+    assert system_theme._detect_darkdetect() is None
+
+
+# ---------------------------------------------------------------------------
+# animator extras
+# ---------------------------------------------------------------------------
+def test_animator_with_default_clock() -> None:
+    animator = Animator()
+    assert animator.to("x", 1.0, duration=0.01) is True
+    deadline = time.monotonic() + 2
+    while animator.active and time.monotonic() < deadline:
+        animator.step()
+        time.sleep(0.002)
+    assert animator.value("x") == pytest.approx(1.0)
+
+
+def test_animator_step_without_tweens() -> None:
+    assert Animator().step() is None
+
+
+def test_worker_event_properties_and_cancel_event() -> None:
+    from phantom.ui.worker import WorkerEvent
+
+    indeterminate = WorkerEvent(WorkerEventType.PROGRESS, stage=Stage.KDF)
+    assert indeterminate.indeterminate is True
+    assert indeterminate.fraction == 0.0
+    service = WorkerService()
+    assert isinstance(service.cancel_event, threading.Event)
+    service.cancel()
+    assert service.cancel_event.is_set()
+
+
+def test_paths_from_uri_edge_cases() -> None:
+    assert paths_from_uri("file://") is None
+    assert parse_drop_paths("{}") == []
+    assert parse_drop_paths("   ") == []
+
+
+def test_config_dir_uses_platformdirs(monkeypatch) -> None:
+    from phantom.ui.settings import config_dir
+
+    monkeypatch.delenv("PHANTOM_CONFIG_DIR", raising=False)
+    path = config_dir()
+    assert "Phantom" in str(path)
+
+
+def test_system_theme_disable_resets_the_baseline() -> None:
+    from phantom.ui.system_theme import SystemThemeWatcher
+
+    state = {"theme": "Dark"}
+    watcher = SystemThemeWatcher(detect=lambda: state["theme"])
+    watcher.set_enabled(True)
+    assert watcher.poll() is None
+    watcher.set_enabled(False)
+    assert watcher.enabled is False
+    watcher.set_enabled(True)
+    assert watcher.poll() is None
+
+
+def test_audio_file_payload_through_the_api(tmp_path, wav_factory, password) -> None:
+    from phantom.core import api
+
+    carrier = wav_factory(bits=16, channels=1, frames=4_000, kind="noise")
+    secret = tmp_path / "through-api.bin"
+    secret.write_bytes(b"api audio file" * 20)
+    outcome = api.embed_payload(
+        str(carrier),
+        str(tmp_path / "api.wav"),
+        secret_path=str(secret),
+        password=password,
+    )
+    assert outcome.kind is CarrierKind.AUDIO
+    result = api.extract_from_path(outcome.output_path, password)
+    assert result.payload.data == secret.read_bytes()

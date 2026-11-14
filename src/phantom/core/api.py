@@ -196,6 +196,10 @@ def embed_payload(
     if not os.path.isfile(carrier_path):
         raise PhantomIOError("carrier not found", detail=carrier_path)
     fsutil.ensure_distinct(carrier_path, output_path)
+    if wipe_source and secret_path is not None:
+        # Refuse an output that would replace the very file we are about to
+        # wipe, before a single byte of the carrier is rewritten.
+        fsutil.ensure_distinct(secret_path, output_path)
     started = time.perf_counter()
     kind = detect_carrier_kind(carrier_path)
 

@@ -19,8 +19,9 @@ readable; new files are written in the v2 format.
   PBKDF2-HMAC-SHA256 (600000 iterations) selectable.
 - Feistel permutation spreading the payload across the whole bit plane instead
   of sequential LSB, seeded from the public header.
-- PNG carriers: 8-bit, colour types 0/2/3/4/6, transparency-aware capacity,
-  palette and bitmap notices, deliberate refusal of 16-bit and APNG.
+- PNG carriers: 1/2/4/8-bit, colour types 0/2/3/4/6, transparency-aware capacity,
+  palette and bitmap notices, lossless expansion of 1/2/4-bit images,
+  deliberate refusal of 16-bit and APNG.
 - Audio carriers: WAV 8/16/24/32-bit and FLAC 16/24-bit, with a hand-written
   RIFF parser that preserves chunk layout, odd-size padding and metadata;
   lossy formats refused before reading.
@@ -51,11 +52,21 @@ readable; new files are written in the v2 format.
 ### Fixed
 
 - AES-256-GCM is now used correctly (1.x reused salt and nonce in places).
+- Lossy audio is now refused by file signature before the extension is trusted,
+  so a `.wav`-named OGG/MP3 (including an `ID3`-prefixed file) cannot slip
+  through and be read as PCM.
+- A missing `libsndfile`/`soundfile` reports `AudioFormatError` instead of
+  escaping as a bare `ImportError` from the FLAC reader.
 - LSB matching no longer skips pixels whose channel is 0 or 255.
 - v1 extraction no longer reports a spurious integrity failure when the payload
   was written by the original application.
 
 ### Removed
+
+- Unreachable validation branches that duplicated a check already enforced by
+  the caller (`Payload` filename length, capacity after compression, WAV splice
+  length, the password-class guard in `generate_password`), and an unreachable
+  FLAC sample-range guard.
 
 - The monolithic `core.py` and the duplicated logic it carried.
 - Any wording in the interface that implied undetectability.

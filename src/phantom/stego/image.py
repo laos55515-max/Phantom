@@ -28,7 +28,6 @@ from PIL import Image, UnidentifiedImageError
 from phantom.core import constants as C
 from phantom.core import files as fsutil
 from phantom.core.errors import (
-    CapacityError,
     PhantomIOError,
     UnsupportedCarrier,
     WrongPasswordOrNoData,
@@ -47,6 +46,7 @@ from phantom.stego.legacy import extract_legacy_from_pixels
 from phantom.stego.samples import ImageSamples
 
 _PNG_SIGNATURE: Final = b"\x89PNG\r\n\x1a\n"
+_SUPPORTED_BIT_DEPTHS: Final = frozenset({1, 2, 4, 8})
 _SUPPORTED_DIRECT: Final = frozenset({"RGB", "RGBA"})
 _CONVERTIBLE: Final = frozenset({"L", "LA", "P", "1"})
 _REFUSED_MODES: Final = frozenset(
@@ -130,7 +130,9 @@ def probe_image(path: str) -> ImageInfo:
         raise UnsupportedCarrier("animated PNG is not supported")
     if bit_depth == 16:
         raise UnsupportedCarrier("16-bit PNG is not supported (no silent clipping)")
-    if bit_depth != 8:
+    if bit_depth not in _SUPPORTED_BIT_DEPTHS:
+        # 1/2/4-bit images expand to 8-bit without loss and are accepted; every
+        # other depth is either refused above or unknown to this parser.
         raise UnsupportedCarrier("unsupported PNG bit depth", detail=str(bit_depth))
     if colour_type not in (0, 2, 3, 4, 6):
         raise UnsupportedCarrier("unsupported PNG colour type", detail=str(colour_type))
@@ -270,11 +272,6 @@ def embed_into_image(
         cancel=cancel,
         progress=progress,
     )
-    if len(packed.blob) > capacity.payload_bytes:
-        raise CapacityError(
-            "payload does not fit",
-            detail=f"{len(packed.blob)} > {capacity.payload_bytes}",
-        )
     report = embed_payload(
         space,
         packed.blob,

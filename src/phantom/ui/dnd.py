@@ -85,7 +85,8 @@ def parse_drop_paths(raw: str) -> list[str]:
             tokens = [chunk]
         for token in tokens:
             decoded = paths_from_uri(token)
-            if decoded:
+            # An empty Tcl list arrives as ``{}`` or whitespace; drop those.
+            if decoded and decoded.strip("{} \t"):
                 candidates.append(decoded)
     seen: set[str] = set()
     unique: list[str] = []

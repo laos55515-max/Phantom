@@ -20,6 +20,8 @@ _SNIFF: Final[dict[bytes, str]] = {
     b"ID3": "mp3",
     b"FORM": "aiff",
 }
+#: Containers that always re-encode the samples, so a payload cannot survive.
+_LOSSY_SIGNATURES: Final[frozenset[bytes]] = frozenset({b"OggS", b"FORM"})
 
 
 @unique
@@ -66,17 +68,19 @@ def detect_audio_kind(path: str) -> AudioKind:
             head = handle.read(12)
     except OSError as exc:
         raise PhantomIOError("cannot read file", detail=str(exc)) from exc
-    if head[:4] in _SNIFF:
-        kind = _SNIFF[head[:4]]
-        if kind == "wav":
-            if head[8:12] != b"WAVE":
-                raise UnsupportedCarrier("RIFF file is not a WAVE file")
-            return AudioKind.WAV
-        if kind == "flac":
-            return AudioKind.FLAC
-        if kind in {"ogg", "mp3", "aiff"}:
-            raise LossyAudioError("lossy audio destroys embedded data", detail=kind)
-        raise UnsupportedCarrier("unsupported audio container", detail=kind)
+
+    signature = head[:4]
+    # ``ID3`` is a three-byte tag, so the four-byte comparison alone is not enough.
+    if signature in _LOSSY_SIGNATURES or head[:3] == b"ID3":
+        raise LossyAudioError(
+            "lossy audio destroys embedded data", detail=_SNIFF.get(signature, "mp3")
+        )
+    if signature == b"RIFF":
+        if head[8:12] != b"WAVE":
+            raise UnsupportedCarrier("RIFF file is not a WAVE file")
+        return AudioKind.WAV
+    if signature == b"fLaC":
+        return AudioKind.FLAC
     if head[:2] in (b"\xff\xfb", b"\xff\xf3", b"\xff\xf2"):
         raise LossyAudioError("lossy audio destroys embedded data", detail="mp3")
     if extension in C.AUDIO_WAV_EXTENSIONS:

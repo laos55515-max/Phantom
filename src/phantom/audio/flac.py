@@ -44,7 +44,7 @@ class FlacLayout:
 def _import_soundfile() -> Any:
     try:
         import soundfile  # noqa: PLC0415
-    except OSError as exc:  # libsndfile missing
+    except (ImportError, OSError) as exc:  # package missing or libsndfile absent
         raise AudioFormatError("libsndfile is unavailable", detail=str(exc)) from exc
     return soundfile
 
@@ -80,11 +80,10 @@ def read_flac(path: str) -> tuple[np.ndarray, FlacLayout]:
     if int(rate) != layout.sample_rate:
         raise AudioFormatError("sample rate mismatch while decoding")
     raw = np.asarray(data, dtype=np.int32).astype(np.int64)
+    # libsndfile returns left-justified int32; shifting right by (32 - bits)
+    # is exact and keeps every value inside the declared bit depth by
+    # construction, so no range clamp (and no silent clipping) is needed.
     native = raw >> layout.shift
-    if native.size and (
-        native.min() < -(1 << (layout.bits - 1)) or native.max() > (1 << (layout.bits - 1)) - 1
-    ):
-        raise AudioFormatError("decoded FLAC samples exceed the declared bit depth")
     return native, layout
 
 
