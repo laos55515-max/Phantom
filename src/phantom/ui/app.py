@@ -127,6 +127,7 @@ class PhantomApp:
         self._wire_shortcuts()
         self._render_all_labels()
         self._refresh_all()
+        self._wheel.refresh()
         self._log_startup_state()
 
     # ------------------------------------------------------------------
@@ -801,6 +802,9 @@ class PhantomApp:
         self._render_mode_labels()
         self._render_tab_labels()
         self.binder.apply()
+        # A segmented button rebuilds its children whenever its values change,
+        # so the wheel has to be handed to the fresh widgets.
+        self._wheel.refresh()
 
     def _render_language_labels(self) -> None:
         codes = list(self.i18n.languages)
@@ -1736,6 +1740,7 @@ class PhantomApp:
         self.theme_watcher.set_enabled(self.settings.theme == "System")
         self._schedule_theme_poll()
         self._render_theme_labels()
+        self._wheel.refresh()
         if persist:
             self._save_settings()
 

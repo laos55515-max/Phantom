@@ -1361,17 +1361,17 @@ class CTkScrollbar(FakeWidget):
 class CTkLabel(FakeWidget):
     """A wrapper that forwards ``bind`` to the Tk widget it is made of.
 
-    CustomTkinter does exactly this and returns nothing, which used to be read
-    as "binding failed" — and the forwarded copy stayed behind, so one notch
-    scrolled twice.
+    CustomTkinter does exactly this and returns nothing: binding the wrapper as
+    well as the widget underneath it would run the handler twice per notch.
     """
+
+    __module__ = "customtkinter.windows.widgets.ctk_label"
 
     def __init__(self, master: object | None = None) -> None:
         super().__init__(master)
         self._label = FakeWidget(master=self)
         self._children.append(self._label)
         self.forwarded: list[str] = []
-        self.undone: list[str] = []
 
     def bind(self, sequence: str, handler: object | None = None, add: str = ""):
         if handler is None:
@@ -1381,8 +1381,13 @@ class CTkLabel(FakeWidget):
         return None
 
     def unbind(self, sequence: str, funcid: str | None = None) -> None:
-        self.undone.append(sequence)
         self._label.unbind(sequence, funcid or "")
+
+
+class CTkScrollableFrame(FakeWidget):
+    """A CTk class that is a plain Tk frame: no ``bind`` of its own, bindable."""
+
+    __module__ = "customtkinter.windows.widgets.ctk_scrollable_frame"
 
 
 def test_every_widget_is_created_with_an_explicit_text() -> None:
@@ -1469,18 +1474,29 @@ def test_bind_to_children_skips_text_areas_and_scrollbars() -> None:
         )
 
 
-def test_wrapper_binding_is_undone_and_the_inner_widget_keeps_it() -> None:
-    """CTk forwards ``bind`` and returns nothing; the forward must not survive."""
+def test_a_forwarding_wrapper_is_left_alone_and_its_inner_widget_is_bound() -> None:
+    """CustomTkinter wrappers are skipped; the widgets underneath are bound."""
     canvas, frame = FakeCanvas(), FakeWidget()
     wrapper = frame.add(CTkLabel())
     bound = scroll._bind_to_children(frame, canvas)
 
-    assert wrapper.forwarded, "the walk must try the wrapper first"
-    assert wrapper.undone == wrapper.forwarded, "the forwarded copy must be undone"
+    assert wrapper.forwarded == [], "the wrapper must not be bound at all"
     assert "<MouseWheel>" in wrapper._label.bindings
+    assert "<Button-4>" in wrapper._label.bindings
     inner = [item for item in bound if item.widget is wrapper._label]
     assert len(inner) == len(scroll.WHEEL_SEQUENCES), "one handler per sequence"
     assert not any(item.widget is wrapper for item in bound)
+
+
+def test_a_ctk_frame_without_its_own_bind_is_bound() -> None:
+    """``CTkScrollableFrame`` defines no ``bind``; the area itself is bound."""
+    canvas, frame = FakeCanvas(), FakeWidget()
+    area = frame.add(CTkScrollableFrame())
+
+    bound = scroll._bind_to_children(area, canvas)
+
+    assert "<MouseWheel>" in area.bindings
+    assert any(item.widget is area for item in bound)
 
 
 def test_bind_to_children_is_idempotent() -> None:

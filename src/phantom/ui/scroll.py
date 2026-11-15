@@ -167,14 +167,21 @@ def _handler(canvas: Any, platform: str | None) -> Any:
     return handle
 
 
-def _undo_bind(widget: Any, sequence: str) -> None:
-    unbind = getattr(widget, "unbind", None)
-    if not callable(unbind):
-        return
-    try:
-        unbind(sequence)  # the only form CustomTkinter wrappers accept
-    except Exception as exc:  # noqa: BLE001 - composite widgets refuse it too
-        LOGGER.debug("unbind %s on %r failed: %s", sequence, widget, exc)
+def _forwards_bind(widget: Any) -> bool:
+    """True for a CustomTkinter wrapper that forwards ``bind`` to its innards.
+
+    Such a wrapper defines ``bind`` itself and applies it to the Tk widgets it
+    is made of, returning nothing.  Binding the wrapper as well as those inner
+    widgets would run the handler twice per notch, and unbinding the wrapper
+    would take away whatever those widgets already had — so the wrapper is left
+    alone and the walk binds the widgets underneath it.
+
+    ``CTkScrollableFrame`` is the exception that matters: it does not define
+    ``bind``, it *is* a ``tkinter.Frame``, and it is bound like any other.
+    """
+    cls = type(widget)
+    module = getattr(cls, "__module__", "") or ""
+    return module.startswith("customtkinter") and "bind" in vars(cls)
 
 
 def _bind_one(
@@ -184,29 +191,24 @@ def _bind_one(
     platform: str | None,
     bound: list[WheelBinding],
 ) -> None:
-    if is_text_area(widget) or is_scrollbar(widget):
-        return
-    binder = getattr(widget, "bind", None)
-    if callable(binder):
-        for sequence in WHEEL_SEQUENCES:
-            if sequence in _marked(widget):
-                continue
-            try:
-                funcid = binder(sequence, handler, "+")
-            except Exception as exc:  # noqa: BLE001 - CTkBaseClass raises for some
-                LOGGER.debug("bind %s on %r failed: %s", sequence, widget, exc)
-                continue
-            if funcid:
+    if not (is_text_area(widget) or is_scrollbar(widget) or _forwards_bind(widget)):
+        binder = getattr(widget, "bind", None)
+        if callable(binder):
+            for sequence in WHEEL_SEQUENCES:
+                if sequence in _marked(widget):
+                    continue
+                try:
+                    funcid = binder(sequence, handler, "+")
+                except Exception as exc:  # noqa: BLE001 - CTkBaseClass raises
+                    LOGGER.debug("bind %s on %r failed: %s", sequence, widget, exc)
+                    continue
+                if not funcid:
+                    # Not one of ours to keep: a wrapper that did not forward.
+                    continue
                 _mark(widget, sequence)
                 bound.append(
                     WheelBinding(widget=widget, sequence=sequence, funcid=str(funcid))
                 )
-                continue
-            # A CustomTkinter wrapper forwarded the binding to the Tk widgets it
-            # is made of and returned nothing.  Those widgets are visited as
-            # children and bound on their own, so keeping the forward would run
-            # the handler twice per notch.
-            _undo_bind(widget, sequence)
     # Bound here so the recursion below never needs to know about the canvas.
     if canvas is not None and widget is not canvas:
         _bind_one(canvas, handler, None, platform, bound)
@@ -296,10 +298,7 @@ class MouseWheelRouter:
         """Remove every binding this router created (safe to call twice)."""
         for binding in self.bindings:
             try:
-                if binding.funcid:
-                    binding.widget.unbind(binding.sequence, binding.funcid)
-                else:
-                    binding.widget.unbind(binding.sequence)
+                binding.widget.unbind(binding.sequence, binding.funcid)
             except Exception as exc:  # noqa: BLE001 - the widget may be gone
                 LOGGER.debug("unbind %s failed: %s", binding.sequence, exc)
             _marked(binding.widget).discard(binding.sequence)
