@@ -332,8 +332,13 @@ def test_wheel_bindings_reach_the_cards_inside_the_tab(app) -> None:
     frame = app._scroll_frames[0]
     bound = 0
     for widget in _descendants(frame):
-        if any(widget.bind(sequence) for sequence in WHEEL_SEQUENCES):
-            bound += 1
+        try:
+            has_wheel = any(widget.bind(sequence) for sequence in WHEEL_SEQUENCES)
+        except NotImplementedError:
+            # Some composite CTk widgets refuse bind() queries; the router
+            # skips them the same way.
+            continue
+        bound += 1 if has_wheel else 0
     assert bound >= 10
 
 
