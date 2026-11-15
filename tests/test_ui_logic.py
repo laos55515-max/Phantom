@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import json
+import re
 import threading
 import time
 from pathlib import Path
@@ -14,7 +15,12 @@ from phantom.core import api as core_api
 from phantom.core import constants as C
 from phantom.core.api import CarrierKind, CarrierProbe, EmbedOutcome, ExtractOutcome
 from phantom.core.errors import CapacityError, InternalError, InvalidInput, InvalidPassword
-from phantom.core.payload import ExtractedPayload, PayloadKind, SizeEstimate
+from phantom.core.payload import (
+    ExtractedPayload,
+    PayloadKind,
+    SizeEstimate,
+    carried_bytes,
+)
 from phantom.core.progress import Stage
 from phantom.i18n import I18n
 from phantom.stego.engine import Capacity
@@ -1675,3 +1681,81 @@ def test_the_embed_hint_mentions_the_layout_it_will_write() -> None:
     text = i18n.t("lbl_embed_format", layout=ui_format.written_layout_text(i18n))
     assert f"v{C.CONTAINER_VERSION}" in text
     assert "{" not in text, "a placeholder was left unfilled"
+
+
+# ---------------------------------------------------------------------------
+# audit SIZE line
+# ---------------------------------------------------------------------------
+def _extracted(original: int, compressed: int, name: str = "") -> ExtractedPayload:
+    return ExtractedPayload(
+        kind=PayloadKind.TEXT if not name else PayloadKind.FILE,
+        name=name,
+        data=b"x" * original,
+        sha256_expected="a" * 64,
+        sha256_actual="a" * 64,
+        integrity_ok=True,
+        original_size=original,
+        compressed_size=compressed,
+    )
+
+
+def test_size_line_reports_the_share_of_the_carrier() -> None:
+    i18n = I18n("en", locales_dir=LOCALES_DIR)
+    capacity = Capacity(usable_bits=57_600, payload_bytes=(57_600 - 400) // 8 - C.TAG_SIZE)
+
+    text = ui_format.size_text(_extracted(284, 306), capacity, i18n)
+
+    assert text.startswith("284 B → 306 B · ")
+    assert "of the carrier" in text
+    assert "100 %" not in text
+
+
+def _share(text: str) -> int:
+    match = re.search(r"(\d+) %", text)
+    assert match, f"no share in {text!r}"
+    return int(match.group(1))
+
+
+def test_size_line_share_grows_with_the_payload() -> None:
+    i18n = I18n("en", locales_dir=LOCALES_DIR)
+    capacity = Capacity(usable_bits=57_600, payload_bytes=(57_600 - 400) // 8 - C.TAG_SIZE)
+    small = _share(ui_format.size_text(_extracted(10, 10), capacity, i18n))
+    large = _share(ui_format.size_text(_extracted(5_000, 5_000), capacity, i18n))
+    assert small < large <= 100
+
+
+def test_size_line_counts_the_metadata_around_the_stream() -> None:
+    """The share is built from the ciphertext, which carries name and tag too."""
+    plain = _extracted(1_000, 1_000)
+    named = _extracted(1_000, 1_000, name="report.pdf")
+    assert carried_bytes(named) - carried_bytes(plain) == len("report.pdf")
+    assert carried_bytes(plain) == (
+        C.PAYLOAD_META_OVERHEAD + 1_000 + C.TAG_SIZE
+    ), "type, name length, digest and length are part of the ciphertext"
+
+    i18n = I18n("en", locales_dir=LOCALES_DIR)
+    capacity = Capacity(usable_bits=57_600, payload_bytes=(57_600 - 400) // 8 - C.TAG_SIZE)
+    long_name = _extracted(1_000, 1_000, name="r" * 400)
+    assert ui_format.size_text(named, capacity, i18n) != ui_format.size_text(
+        long_name, capacity, i18n
+    )
+
+
+def test_size_line_without_a_carrier_omits_the_share() -> None:
+    i18n = I18n("en", locales_dir=LOCALES_DIR)
+    assert ui_format.size_text(_extracted(284, 306), None, i18n) == "284 B → 306 B"
+    empty = Capacity(usable_bits=0, payload_bytes=0)
+    assert ui_format.size_text(_extracted(284, 306), empty, i18n) == "284 B → 306 B"
+
+
+def test_size_line_is_localised() -> None:
+    payload = _extracted(284, 306)
+    capacity = Capacity(usable_bits=57_600, payload_bytes=7_118)
+    texts = {
+        code: ui_format.size_text(payload, capacity, I18n(code, locales_dir=LOCALES_DIR))
+        for code in ("en", "ru", "uk")
+    }
+    assert len(set(texts.values())) == 3, "each language says it its own way"
+    for code, text in texts.items():
+        assert text.startswith("284 B → 306 B · "), code
+        assert "{" not in text, f"{code} left a placeholder unfilled"

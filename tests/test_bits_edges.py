@@ -230,6 +230,16 @@ def test_capacity_helpers() -> None:
     assert empty.fill_ratio(10) == 1.0
 
 
+def test_carrier_share_counts_header_and_ciphertext_bits() -> None:
+    capacity = Capacity(usable_bits=57_600, payload_bytes=7_118)
+    # 400 header bits + 1000 bytes of ciphertext.
+    assert capacity.carrier_share(1_000) == pytest.approx(100.0 * 8_400 / 57_600)
+    assert capacity.carrier_share(0) == pytest.approx(100.0 * 400 / 57_600)
+    assert capacity.carrier_share(-5) == pytest.approx(100.0 * 400 / 57_600)
+    assert capacity.carrier_share(10**9) == 100.0, "clamped, never above the carrier"
+    assert Capacity(usable_bits=0, payload_bytes=0).carrier_share(10) == 0.0
+
+
 def test_capacity_for_reserves_the_tag() -> None:
     space = ArraySamples(np.zeros(10_000, dtype=np.int16))
     capacity = capacity_for(space)

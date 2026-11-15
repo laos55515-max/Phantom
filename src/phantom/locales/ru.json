@@ -95,6 +95,7 @@
   "lbl_capacity": "ЁМКОСТЬ  ~{size} Б   ({kb} КБ)",
   "lbl_capacity_bits": "ЁМКОСТЬ  ~{size} Б   ({kb} КБ)   ·   {bits} бит",
   "lbl_capacity_error": "ОШИБКА ЁМКОСТИ: {error}",
+  "lbl_capacity_share": "{pct} % носителя",
   "lbl_carrier_info": "НОСИТЕЛЬ: {info}",
   "lbl_char_count": "СИМВОЛОВ  {chars}   ·   БАЙТОВ UTF-8  {bytes}",
   "lbl_compression": "СЖАТИЕ  {orig} → {comp} Б   ({ratio}%)",

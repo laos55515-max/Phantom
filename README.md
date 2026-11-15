@@ -83,8 +83,10 @@ from a checkout.
    or file. Output file names are sanitised and the extension is forced. The
    audit card then names the layout the file was written with — v3 (positions
    derived from the password) or v2 (older public header, still readable) —
-   together with the cipher, KDF profile, integrity check and sizes. The embed
-   tab states the layout this build writes before you press Save.
+   together with the cipher, KDF profile, integrity check and sizes. The size
+   row also says how much of the carrier the payload takes, counted in bits the
+   container really wrote: `284 B → 306 B · 12 % of the carrier`. The embed tab
+   states the layout this build writes before you press Save.
 
 ### Editing, scrolling and reading results
 
@@ -105,7 +107,13 @@ Text fields behave like native ones on every platform:
 
 Capacity warnings: above 70 % of the carrier the bit plane becomes
 statistically noticeable; above 90 % the app warns that the change is large.
-Both thresholds are constants, not opinions.
+Both thresholds are constants, not opinions, and they are the cautious kind:
+`tools/bench_steganalysis.py` measures what they mean in practice. On eight
+generated 512×512 carriers the classic chi-square and RS attacks do not fire at
+any payload PHANTOM can carry — LSB matching moves samples by ±1 and leaves the
+histogram intact, which is exactly what those detectors look for. The `SIZE` row
+uses the same bookkeeping as that table: header bits plus eight bits per
+ciphertext byte, against the carrier's usable bits.
 
 ## Limits
 
@@ -177,9 +185,9 @@ src/phantom/core/          crypto, container, payload, files, API
 src/phantom/stego/         bits, permutation, image carriers, legacy v1 reader
 src/phantom/audio/         WAV/FLAC containers, capacity, probing
 src/phantom/ui/            CustomTkinter app, worker, view model, theme
-src/phantom/locales/       uk / ru / en JSON, 205 keys with parity
+src/phantom/locales/       uk / ru / en JSON, 213 keys with parity
 tests/                     safety net, fixtures, property tests
-tools/                     fixture generators
+tools/                     fixture generators, benchmarks, steganalysis
 ```
 
 ## License

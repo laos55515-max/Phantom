@@ -95,6 +95,7 @@
   "lbl_capacity": "CAPACITY  ~{size} B   ({kb} KB)",
   "lbl_capacity_bits": "CAPACITY  ~{size} B   ({kb} KB)   ·   {bits} bits",
   "lbl_capacity_error": "CAPACITY ERROR: {error}",
+  "lbl_capacity_share": "{pct} % of the carrier",
   "lbl_carrier_info": "CARRIER: {info}",
   "lbl_char_count": "CHARS  {chars}   ·   BYTES UTF-8  {bytes}",
   "lbl_compression": "COMPRESSION  {orig} → {comp} B   ({ratio}%)",

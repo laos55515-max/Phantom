@@ -84,7 +84,20 @@ class Capacity:
         return payload_bytes / self.payload_bytes
 
     def fill_percent(self, payload_bytes: int) -> float:
+        """Heuristic gauge for the fill bar (plaintext bytes against capacity)."""
         return min(100.0, 100.0 * self.fill_ratio(payload_bytes))
+
+    def carrier_share(self, ciphertext_bytes: int) -> float:
+        """Percent of the carrier's usable bits the container actually writes.
+
+        Unlike :meth:`fill_percent` this is not a heuristic: it counts the header
+        bits plus eight bits per ciphertext byte, so an extracted payload can be
+        reported against the carrier it really sits in.
+        """
+        if self.usable_bits <= 0:
+            return 0.0
+        used = self.header_bits + 8 * max(0, ciphertext_bytes)
+        return min(100.0, 100.0 * used / self.usable_bits)
 
 
 @dataclass(frozen=True, slots=True)
