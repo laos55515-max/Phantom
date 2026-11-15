@@ -1648,6 +1648,8 @@ def test_layout_label_names_the_version_of_every_supported_layout() -> None:
         assert f"v{C.V2_CONTAINER_VERSION}" in legacy
         assert current != legacy
         assert ui_format.written_layout_text(i18n) == current
+        for version in (C.ADAPTIVE_CONTAINER_VERSION, C.STC_CONTAINER_VERSION):
+            assert f"v{version}" in ui_format.layout_text(i18n, version)
 
 
 def test_layout_labels_exist_in_every_locale() -> None:
@@ -1672,8 +1674,24 @@ def test_unknown_layout_is_named_without_inventing_a_version() -> None:
 def test_layout_keys_cover_exactly_the_supported_versions() -> None:
     assert set(ui_format.LAYOUT_KEYS) == {
         C.CONTAINER_VERSION,
+        C.ADAPTIVE_CONTAINER_VERSION,
+        C.STC_CONTAINER_VERSION,
         C.V2_CONTAINER_VERSION,
     }
+
+
+def test_every_layout_the_engine_can_write_has_its_own_label() -> None:
+    """A v5 file must not fall into the "unknown layout" bucket."""
+    i18n = I18n("en", locales_dir=LOCALES_DIR)
+    texts = [
+        ui_format.layout_text(i18n, version)
+        for version in sorted(ui_format.LAYOUT_KEYS)
+    ]
+    assert len(set(texts)) == len(texts), "labels must differ per layout"
+    for version in sorted(ui_format.LAYOUT_KEYS):
+        text = ui_format.layout_text(i18n, version)
+        assert f"v{version}" in text
+        assert text != i18n.t("layout_unknown")
 
 
 def test_the_embed_hint_mentions_the_layout_it_will_write() -> None:

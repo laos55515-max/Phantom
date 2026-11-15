@@ -51,7 +51,12 @@ _LEN_STRUCT: Final = struct.Struct(">BBI")
 #: Versions this module can write and read.  v1 is a different format entirely
 #: and lives in ``stego.legacy``.
 SUPPORTED_VERSIONS: Final = frozenset(
-    {C.V2_CONTAINER_VERSION, C.CONTAINER_VERSION, C.ADAPTIVE_CONTAINER_VERSION}
+    {
+        C.V2_CONTAINER_VERSION,
+        C.CONTAINER_VERSION,
+        C.ADAPTIVE_CONTAINER_VERSION,
+        C.STC_CONTAINER_VERSION,
+    }
 )
 
 

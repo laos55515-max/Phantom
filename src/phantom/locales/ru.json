@@ -91,6 +91,8 @@
   "lang.uk": "Українська",
   "layout_current": "v{version} · ключевые позиции",
   "layout_legacy": "v{version} · открытый заголовок · старый файл",
+  "layout_adaptive": "v{version} · адаптивные позиции",
+  "layout_trellis": "v{version} · синдромный решётчатый код",
   "layout_unknown": "раскладка неизвестна",
   "lbl_capacity": "ЁМКОСТЬ  ~{size} Б   ({kb} КБ)",
   "lbl_capacity_bits": "ЁМКОСТЬ  ~{size} Б   ({kb} КБ)   ·   {bits} бит",

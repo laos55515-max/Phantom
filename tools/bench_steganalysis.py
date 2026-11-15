@@ -1,11 +1,12 @@
 """Baseline steganalysis of the v3 and v4 layouts: how much payload shows up.
 
 Run with ``.venv/bin/python tools/bench_steganalysis.py``.  Eight deterministic
-512x512 carriers are generated, embedded through the real engine twice — once
-with the v3 keyed layout (LSB matching, positions ignore the image) and once with
-the v4 adaptive layout (S-UNIWARD-style cost map, changes go where the image is
-busy) — written out as PNG, read back, extracted again to prove the file is still
-readable, and handed to two classic blind detectors:
+512x512 carriers are generated and embedded through the real engine three times —
+v3 (keyed positions, LSB matching, the layout looks at nothing), v4 (S-UNIWARD
+style cost map, greedy pick of the cheapest samples) and v5 (the same cost map
+driven by a syndrome-trellis code) — written out as PNG, read back, extracted
+again to prove the file is still readable, and handed to two classic blind
+detectors:
 
 * **chi-square** (Westfeld & Pfitzmann, 1999) — tests whether the histogram
   pairs ``(2i, 2i+1)`` have equalised, which is what LSB randomisation does.
@@ -21,12 +22,18 @@ noise-like textures.  A carrier therefore only counts as *detected* when its
 stego is flagged while its cover was not.
 
 The comparison table is the point of the run: the same payload, the same
-carriers, two ways of choosing which samples to touch.  Distortion (PSNR) and the
-number of changes are the same by construction — what differs is *where* they
-land, and whether the detectors notice.  ``перцентиль`` / ``в гладких 50%``
-show that directly: an adaptive embedder should pick changes from the cheapest
-end of the cost map (percentile near 0) and put almost nothing into the smooth
-half, while an image-blind one lands at 50 % / 50 % by definition.
+carriers, three ways of choosing which samples to touch.  Three columns say what
+each layout actually bought:
+
+* ``перцентиль`` / ``в гладких 50%`` — *where* the changes landed.  An adaptive
+  embedder picks from the cheap end of the cost map (percentile near 0) and puts
+  almost nothing into the smooth half; an image-blind one lands at 50 % / 50 % by
+  definition.
+* ``Σρ/бит`` — the total cost of the changes divided by the payload, using the
+  same cost map for every layout.  This is the number a syndrome-trellis code is
+  built to minimise, so v5 has to win it — and by how much is the interesting
+  part.  Greedy v4 cannot: it must put one bit into every sample it selects,
+  whether that sample needs changing or not.
 
 SRM / rich-model features are deliberately out of scope: this is the cheap
 baseline that says at which payload a PHANTOM file stops looking innocent.
@@ -61,10 +68,11 @@ from phantom.stego.samples import ImageSamples
 SIZE: Final = 512
 PASSWORD: Final = "benchmark password, not a secret"
 LOAD_LEVELS: Final[tuple[float, ...]] = (0.05, 0.1, 0.2, 0.4)
-LAYOUTS: Final[tuple[str, ...]] = ("v3", "v4")
+LAYOUTS: Final[tuple[str, ...]] = ("v3", "v4", "v5")
 LAYOUT_VERSIONS: Final[dict[str, int]] = {
     "v3": C.CONTAINER_VERSION,
     "v4": C.ADAPTIVE_CONTAINER_VERSION,
+    "v5": C.STC_CONTAINER_VERSION,
 }
 
 # Detector thresholds.  They are heuristics picked so that an ordinary cover
@@ -354,6 +362,7 @@ class Measurement:
     cheap_share: float = math.nan
     cost_percentile: float = math.nan
     smooth_share: float = math.nan
+    distortion: float = math.nan
     verified: bool = False
 
     @property
@@ -375,7 +384,9 @@ class Measurement:
         return chi2_hit or rs_hit
 
 
-def adaptivity(cover: np.ndarray, stego: np.ndarray) -> tuple[float, float, float]:
+def adaptivity(
+    costs: np.ndarray, cover: np.ndarray, stego: np.ndarray
+) -> tuple[float, float, float]:
     """Where the changes landed relative to the cost map of the untouched cover.
 
     Three numbers, all of them 20 / 50 / 50 for a change set chosen without looking
@@ -388,7 +399,6 @@ def adaptivity(cover: np.ndarray, stego: np.ndarray) -> tuple[float, float, floa
     The percentile is the one to read when the payload is large enough to fill the
     cheap region completely: the share saturates at 100 %, the percentile does not.
     """
-    costs = adaptive.layout_costs(cover).reshape(-1)
     changed = np.flatnonzero((cover != stego).reshape(-1))
     if changed.size == 0:
         return math.nan, math.nan, math.nan
@@ -405,19 +415,26 @@ def adaptivity(cover: np.ndarray, stego: np.ndarray) -> tuple[float, float, floa
     )
 
 
+def distortion_cost(costs: np.ndarray, cover: np.ndarray, stego: np.ndarray) -> float:
+    """Total cost of the changes under the same cover-derived map for every layout."""
+    changed = np.flatnonzero((cover != stego).reshape(-1))
+    return float(costs[changed].sum()) if changed.size else 0.0
+
+
 def measure(
     name: str,
     cover: np.ndarray,
     image: np.ndarray,
     bpp: float,
     *,
+    costs: np.ndarray,
     layout: str = "v3",
     version: int = C.CONTAINER_VERSION,
     verified: bool = False,
 ) -> Measurement:
     pixels_pct, samples_pct = changed_percent(cover, image)
     chi2, rs = _detect(image)
-    cheap_share, cost_percentile, smooth_share = adaptivity(cover, image)
+    cheap_share, cost_percentile, smooth_share = adaptivity(costs, cover, image)
     return Measurement(
         carrier=name,
         bpp=bpp,
@@ -431,6 +448,7 @@ def measure(
         cheap_share=cheap_share,
         cost_percentile=cost_percentile,
         smooth_share=smooth_share,
+        distortion=distortion_cost(costs, cover, image),
         verified=verified,
     )
 
@@ -638,17 +656,20 @@ def print_summary(summary: list[dict[str, Any]], covers: dict[str, Measurement])
 
 
 def print_comparison(rows: list[Measurement], covers: dict[str, Measurement]) -> None:
-    """v3 against v4 at the same payload: distortion, placement, detector verdicts."""
+    """v3, v4 and v5 at the same payload: placement, distortion, detector verdicts."""
     usable = {name for name, cover in covers.items() if not cover.flagged}
     loads = sorted({row.bpp for row in rows if not row.is_cover})
-    width = 116
+    width = 132
     print("\n" + "=" * width)
-    print("v3 (LSB matching) против v4 (адаптивная раскладка) — те же носители, та же нагрузка")
+    print(
+        "v3 (слепые позиции) против v4 (жадный выбор) против v5 (свёрточный код + Витерби)"
+        " — те же носители, та же нагрузка"
+    )
     print("=" * width)
     header = (
-        f"  {'bpp':>5} | {'раскладка':<10} | {'PSNR dB':>8} | {'изменено px %':>13} | "
-        f"{'перцентиль':>10} | {'в гладких 50%':>13} | {'χ² p̂':>6} | {'RS p̂':>6} | "
-        f"{'обнаружено':>10} | файл"
+        f"  {'bpp':>5} | {'раскладка':<12} | {'PSNR dB':>8} | {'изменено px %':>13} | "
+        f"{'перцентиль':>10} | {'в гладких 50%':>13} | {'Σρ/бит':>8} | {'χ² p̂':>6} | "
+        f"{'RS p̂':>6} | {'обнаружено':>10} | файл"
     )
     print(header)
     print("  " + "-" * (len(header) - 2))
@@ -672,11 +693,12 @@ def print_comparison(rows: list[Measurement], covers: dict[str, Measurement]) ->
             if layout == "v4" and fallbacks:
                 state += f", {fallbacks} откат"
             print(
-                f"  {bpp:>5.2f} | {layout + ' ' + _layout_note(layout):<10} | "
+                f"  {bpp:>5.2f} | {layout + ' ' + _layout_note(layout):<12} | "
                 f"{np.median([row.psnr_db for row in group]):>8.2f} | "
                 f"{np.median([row.changed_pixels_pct for row in group]):>13.2f} | "
                 f"{np.median([row.cost_percentile for row in group]):>10.1f} | "
                 f"{np.median([row.smooth_share for row in group]):>13.1f} | "
+                f"{np.median([row.distortion for row in group]) / (bpp * SIZE * SIZE):>8.2f} | "
                 f"{_cell(float(np.median([row.chi2 for row in group])), 6)} | "
                 f"{_cell(float(np.nanmedian([row.rs for row in group])), 6)} | "
                 f"{detected:>10} | {state}"
@@ -684,14 +706,16 @@ def print_comparison(rows: list[Measurement], covers: dict[str, Measurement]) ->
     print("  " + "-" * (len(header) - 2))
     print(
         "«перцентиль» — медианный перцентиль стоимости изменённых сэмплов (0 = самые дешёвые);\n"
-        "«в гладких 50%» — доля изменений в самой дорогой половине карты (небо, кожа, заливки)."
-        "\nСлепой выбор по построению даёт 50 % и 50 %: так выглядит v3."
-        "\n«файл» — сколько стенограмм удалось извлечь обратно после записи в PNG."
+        "«в гладких 50%» — доля изменений в самой дорогой половине карты (небо, кожа, заливки);\n"
+        "«Σρ/бит» — суммарная стоимость изменений на бит нагрузки по одной и той же карте:"
+        " именно её минимизирует свёрточный код;\n"
+        "слепой выбор по построению даёт 50 % и 50 % — так выглядит v3.\n"
+        "«файл» — сколько стенограмм удалось извлечь обратно после записи в PNG."
     )
 
 
 def _layout_note(layout: str) -> str:
-    return "matching" if layout == "v3" else "adaptive"
+    return {"v3": "matching", "v4": "greedy", "v5": "trellis"}[layout]
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -707,12 +731,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--layout",
-        choices=(*LAYOUTS, "both"),
-        default="both",
-        help="which layout to run (default: both, for the comparison table)",
+        choices=(*LAYOUTS, "all", "both"),
+        default="all",
+        help="which layout to run (default: all, for the comparison table)",
     )
     args = parser.parse_args(argv)
-    layouts: tuple[str, ...] = LAYOUTS if args.layout == "both" else (args.layout,)
+    layouts: tuple[str, ...] = LAYOUTS if args.layout in ("all", "both") else (args.layout,)
     loads: tuple[float, ...] = tuple(args.bpp)
 
     workdir = args.keep or Path(tempfile.mkdtemp(prefix="phantom-steganalysis-"))
@@ -737,7 +761,8 @@ def main(argv: list[str] | None = None) -> int:
             slug = name.replace(" ", "-")
             cover_path = workdir / f"{index:02d}-{slug}.png"
             Image.fromarray(carrier, mode="RGB").save(cover_path, format="PNG")
-            covers[name] = measure(name, carrier, carrier, 0.0)
+            costs = adaptive.rgb_cost_map(carrier).reshape(-1)
+            covers[name] = measure(name, carrier, carrier, 0.0, costs=costs)
             print(
                 f"  cover {name:<18} chi2={_cell(covers[name].chi2, 6, 3)}"
                 f" RS={_cell(covers[name].rs, 6, 3)}"
@@ -752,6 +777,7 @@ def main(argv: list[str] | None = None) -> int:
                             carrier,
                             stego,
                             bpp,
+                            costs=costs,
                             layout=layout,
                             version=version,
                             verified=verified,
@@ -802,6 +828,7 @@ def main(argv: list[str] | None = None) -> int:
                     "version": row.version,
                     "cheap_share": row.cheap_share,
                     "cost_percentile": row.cost_percentile,
+                    "distortion": row.distortion,
                     "smooth_share": row.smooth_share,
                     "verified": row.verified,
                     "verdict": verdict(row, covers[row.carrier]),

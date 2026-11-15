@@ -25,6 +25,8 @@ class Translator(Protocol):
 #: Locale key per layout version this build can read.
 LAYOUT_KEYS: Final[dict[int, str]] = {
     C.CONTAINER_VERSION: "layout_current",
+    C.ADAPTIVE_CONTAINER_VERSION: "layout_adaptive",
+    C.STC_CONTAINER_VERSION: "layout_trellis",
     C.V2_CONTAINER_VERSION: "layout_legacy",
 }
 #: Key used for a version this build has never heard of (or no payload yet).

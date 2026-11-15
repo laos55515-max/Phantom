@@ -8,6 +8,61 @@ All notable changes to PHANTOM are recorded here. The format follows
 
 ### Added
 
+- **Experimental syndrome-trellis layout (v5).** The adaptive layout picked the
+  cheapest samples and wrote one bit into each — greedy, and blind to the fact
+  that one ±1 change can satisfy several parity constraints at once. The new
+  `phantom.stego.stc` module embeds with a **syndrome-trellis code**: it looks for
+  the change vector `e` that minimises the total distortion `Σ ρᵢeᵢ` subject to
+  `H e = σ`, where `σ` is the syndrome carrying the payload. `Ĥ` is a
+  `height × width` binary matrix placed block-wise on the diagonal, the trellis
+  has `2**height` states holding the block's partial syndrome, and a Viterbi pass
+  finds the shortest path; with `height ≤ 8` and blocks of 6–256 samples the whole
+  thing runs as a handful of NumPy operations per layer, batched across every
+  block at once. Each file uses the widest block it can afford, because a wider
+  block carries a bit with fewer changes (`≈ 1 / log₂ width` per bit).
+
+  `Ĥ` is derived from the password, so the syndromes cannot even be computed
+  without it, and — unlike v4 — **nothing about extraction depends on the image**:
+  the trellis comes from the carrier size, the payload length and the key, so the
+  layout cannot drift and needs no verification, no mask invariant and no fallback
+  check. `engine.embed_payload(..., container_version=5)` writes it; v3 stays the
+  default and every earlier file still opens.
+
+  Same eight carriers, same payloads, all three layouts, extraction verified on
+  every file (96/96 readable). `Σρ/бит` is the total cost of the changes divided
+  by the payload under one shared cover-derived map — the number a trellis is
+  built to minimise:
+
+  | load, bpp | layout | PSNR, dB | changed px, % | Σρ/bit | χ² p | RS p̂ | detected |
+  |---|---|---|---|---|---|---|---|
+  | 0.05 | v3 keyed | 68.95 | 2.47 | 0.49 | 0.000 | 0.011 | 0/6 |
+  | 0.05 | v4 greedy | 68.93 | 2.39 | 0.46 | 0.000 | 0.023 | 0/6 |
+  | 0.05 | **v5 trellis** | **72.83** | **1.01** | **0.18** | 0.000 | 0.010 | 0/6 |
+  | 0.10 | v3 | 65.93 | 4.89 | 0.50 | 0.000 | 0.013 | 0/6 |
+  | 0.10 | v4 | 65.92 | 4.70 | 0.46 | 0.000 | 0.039 | 0/6 +1 suspect |
+  | 0.10 | **v5** | **70.28** | **1.80** | **0.17** | 0.000 | **0.008** | 0/6 |
+  | 0.20 | v3 | 62.91 | 9.65 | 0.50 | 0.000 | 0.016 | 0/6 |
+  | 0.20 | v4 | 62.91 | 9.22 | 0.46 | 0.000 | 0.056 | 0/6 +3 suspect |
+  | 0.20 | **v5** | **67.36** | **3.51** | **0.17** | 0.000 | **0.014** | 0/6 |
+  | 0.40 | v3 | 59.89 | 18.72 | 0.50 | 0.000 | 0.014 | 0/6 |
+  | 0.40 | v4 | 59.89 | 17.63 | 0.46 | 0.000 | 0.098 | 0/6 +3 suspect |
+  | 0.40 | **v5** | **63.23** | **8.77** | **0.22** | 0.000 | **0.014** | 0/6 |
+
+  The code wins on every axis it can control: three to four decibels more PSNR,
+  2–2.9× lower total distortion, 2–3× fewer changed samples, chi-square still at
+  zero. The RS estimator — which reads the *density* of changes and had climbed to
+  0.098 (three carriers in the "suspect" band) under greedy v4 — comes back to the
+  v3 level, 0.008–0.014, and no carrier is flagged at any load. Spreading a
+  smaller number of changes over the whole carrier beats concentrating a larger
+  number in the cheapest corner, even though the greedy layout wins the placement
+  columns (`перцентиль`, `в гладких 50%`): the cost model is additive and does not
+  know that a dense cluster is easier to see than the same changes spread out.
+
+  Limits, stated in the module: blocks are independent, so the optimum is
+  per-block rather than global (the published trellis slides by one sample, which
+  is hundreds of times slower in pure Python and buys a fraction of a percent);
+  and the *number* of changes is public — only their placement is keyed.
+
 - **Experimental adaptive layout (v4).** LSB matching spreads its changes
   blindly, and blind changes are what a texture-aware detector looks for. The new
   `phantom.stego.adaptive` module computes a cost map from the image itself — a
