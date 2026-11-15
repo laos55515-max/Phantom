@@ -101,6 +101,7 @@ class PhantomApp:
         self._anim_token: str | None = None
         self._theme_token: str | None = None
         self._clipboard_token: str | None = None
+        self._clipboard_value: str | None = None
         self._operation = ""
         self._status_key = "status_ready"
         self._status_params: dict[str, object] = {}
@@ -1188,28 +1189,48 @@ class PhantomApp:
     def _copy_to_clipboard(self, value: str) -> None:
         self.root.clipboard_clear()
         self.root.clipboard_append(value)
+        self._clipboard_value = value
         if self._clipboard_token is not None:
             self.root.after_cancel(self._clipboard_token)
         self._clipboard_token = self.root.after(
             int(C.CLIPBOARD_CLEAR_SECONDS * 1000), lambda: self._clear_clipboard_if(value)
         )
 
+    def _clipboard_holds(self, value: str) -> bool:
+        """Is ``value`` still on the clipboard?  Tk only answers while it owns it."""
+        current = clip.read_clipboard(self.root)
+        if current is None:
+            return False
+        return current.rstrip("\n") == value.rstrip("\n")
+
     def _clear_clipboard_if(self, value: str) -> None:
         self._clipboard_token = None
-        try:
-            current = self.root.clipboard_get()
-        except Exception as exc:  # noqa: BLE001 - empty or non-text clipboard
-            LOGGER.debug("clipboard read failed: %s", exc)
-            return
-        if current != value:
+        if not self._clipboard_holds(value):
+            self._clipboard_value = None
             return
         try:
             self.root.clipboard_clear()
         except Exception as exc:  # noqa: BLE001 - pragma: no cover, Tk dependent
             LOGGER.warning("clipboard clear failed: %s", exc)
-            return
+        # Tk stops being the clipboard owner as soon as another app writes, and
+        # the text outlives the window on macOS: ask the OS to empty it as well.
+        clip.clear_clipboard()
+        self._clipboard_value = None
         self._generated_password = ""
         self._set_status_key("status_clipboard_cleared", severity="info")
+
+    def _forget_clipboard(self) -> None:
+        """Drop our copy when the window goes away, so it cannot outlive us."""
+        value, self._clipboard_value = self._clipboard_value, None
+        if value is None:
+            return
+        if not self._clipboard_holds(value):
+            return
+        try:
+            self.root.clipboard_clear()
+        except Exception as exc:  # noqa: BLE001 - pragma: no cover, Tk dependent
+            LOGGER.debug("clipboard clear on close failed: %s", exc)
+        clip.clear_clipboard()
 
     def _on_wipe_toggle(self) -> None:
         self.embed_vm.set_wipe_source(bool(self.wipe_checkbox.get()))
@@ -1860,6 +1881,7 @@ class PhantomApp:
         if self._clipboard_token is not None:
             self.root.after_cancel(self._clipboard_token)
             self._clipboard_token = None
+        self._forget_clipboard()
         if self._result_window is not None:
             self._result_window.close()
             self._result_window = None

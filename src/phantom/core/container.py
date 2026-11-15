@@ -43,6 +43,7 @@ from phantom.core.kdf import (
     normalize_password,
 )
 from phantom.core.progress import ProgressFn, Stage, check_cancel, noop_progress
+from phantom.core.security import secure_zeroize
 
 _LEN_STRUCT: Final = struct.Struct(">BBI")
 
@@ -128,7 +129,7 @@ def seal(
         normalized, salt, profile, cancel=cancel, progress=progress, normalize=False
     )
     keys = derive_message_keys(master, salt)
-    master[:] = b"\x00" * len(master)
+    secure_zeroize(master)
     try:
         # Store the *ciphertext* length: it includes the GCM tag and is exactly
         # the number of bytes the carrier must hold.
@@ -192,7 +193,7 @@ def open_header(
         )
         try:
             keys = derive_message_keys(master, salt)
-            master[:] = b"\x00" * len(master)
+            secure_zeroize(master)
             try:
                 plain = AESGCM(bytes(keys.length_key)).decrypt(nonce, len_ct, C.LEN_AAD)
             except InvalidTag:
@@ -219,7 +220,7 @@ def open_header(
                 version=version, profile=profile, payload_len=payload_len, keys=keys
             )
         except BaseException:
-            master[:] = b"\x00" * len(master)
+            secure_zeroize(master)
             raise
     raise WrongPasswordOrNoData("no authenticating KDF profile")
 

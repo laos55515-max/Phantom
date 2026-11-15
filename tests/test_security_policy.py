@@ -7,7 +7,9 @@ import threading
 import pytest
 
 from phantom.core import constants as C
+from phantom.core import kdf, security
 from phantom.core.errors import OperationCancelled
+from phantom.core.kdf import MessageKeys
 from phantom.core.progress import (
     INDETERMINATE_STAGES,
     ProgressEvent,
@@ -154,3 +156,56 @@ def test_every_stage_value_is_a_locale_suffix() -> None:
     for stage in Stage:
         assert stage.value.islower()
         assert "." not in stage.value
+
+
+def test_secure_zeroize_overwrites_the_buffer() -> None:
+    buffer = bytearray(b"correct horse battery staple")
+    security.secure_zeroize(buffer)
+    assert bytes(buffer) == b"\x00" * 28
+    assert len(buffer) == 28, "the buffer keeps its length, the content is gone"
+
+
+def test_secure_zeroize_keeps_the_object_identity() -> None:
+    """Callers hold references; wiping must change them, not replace them."""
+    buffer = bytearray(b"secret")
+    identity = id(buffer)
+    security.secure_zeroize(buffer)
+    assert id(buffer) == identity
+
+
+def test_secure_zeroize_accepts_an_empty_buffer() -> None:
+    buffer = bytearray()
+    security.secure_zeroize(buffer)
+    assert bytes(buffer) == b""
+
+
+@pytest.mark.parametrize("value", [b"bytes are immutable", "a str", memoryview(b"mv"), None, 42])
+def test_secure_zeroize_refuses_what_it_cannot_wipe(value: object) -> None:
+    with pytest.raises(TypeError):
+        security.secure_zeroize(value)  # type: ignore[arg-type]
+
+
+def test_kdf_wipes_through_secure_zeroize(monkeypatch: pytest.MonkeyPatch) -> None:
+    """One implementation: the KDF wipe has to be the checked one."""
+    seen: list[bytearray] = []
+
+    def spy(buffer: bytearray) -> None:
+        seen.append(buffer)
+        security.secure_zeroize(buffer)
+
+    monkeypatch.setattr(kdf, "secure_zeroize", spy)
+    keys = bytearray(b"key material")
+    kdf.wipe_all(keys)
+    assert seen and bytes(keys) == b"\x00" * len(keys)
+
+
+def test_message_keys_wipe_zeroes_every_field() -> None:
+    keys = MessageKeys(
+        length_key=bytearray(b"a" * 32),
+        payload_key=bytearray(b"b" * 32),
+        payload_nonce=bytearray(b"c" * 12),
+        position_key=bytearray(b"d" * 32),
+    )
+    keys.wipe()
+    for buffer in (keys.length_key, keys.payload_key, keys.payload_nonce, keys.position_key):
+        assert bytes(buffer) == b"\x00" * len(buffer)

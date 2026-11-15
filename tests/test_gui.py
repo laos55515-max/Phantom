@@ -118,6 +118,63 @@ def app(tmp_path: Path, isolated_settings: Path, monkeypatch: pytest.MonkeyPatch
         root.destroy()
 
 
+def test_clipboard_timer_clears_the_secret_natively(app, monkeypatch) -> None:
+    """The 30 s promise must reach the OS clipboard, not just Tk's own copy."""
+    from phantom.ui import app as ui_app
+
+    cleared: list[bool] = []
+    monkeypatch.setattr(ui_app.clip, "clear_clipboard", lambda: cleared.append(True) or True)
+
+    app._copy_to_clipboard("generated-Passw0rd!")
+    assert app._clipboard_value == "generated-Passw0rd!"
+
+    app._clear_clipboard_if("generated-Passw0rd!")
+
+    assert cleared == [True], "the native tool is what empties the system clipboard"
+    assert app._clipboard_value is None
+    assert app._clipboard_token is None
+    assert app._generated_password == ""
+
+
+def test_clipboard_timer_leaves_another_apps_copy_alone(app, monkeypatch) -> None:
+    from phantom.ui import app as ui_app
+
+    cleared: list[bool] = []
+    monkeypatch.setattr(ui_app.clip, "clear_clipboard", lambda: cleared.append(True) or True)
+
+    app._copy_to_clipboard("generated-Passw0rd!")
+    app.root.clipboard_clear()
+    app.root.clipboard_append("something the user copied later")
+
+    app._clear_clipboard_if("generated-Passw0rd!")
+
+    assert cleared == [], "never wipe a clipboard someone else filled"
+    assert app._clipboard_value is None
+
+
+def test_closing_the_window_does_not_leave_the_password_behind(app, monkeypatch) -> None:
+    from phantom.ui import app as ui_app
+
+    cleared: list[bool] = []
+    monkeypatch.setattr(ui_app.clip, "clear_clipboard", lambda: cleared.append(True) or True)
+
+    app._copy_to_clipboard("generated-Passw0rd!")
+    app._forget_clipboard()
+
+    assert cleared == [True], "macOS keeps the text after the window is gone"
+    assert app._clipboard_value is None
+
+
+def test_closing_the_window_keeps_a_foreign_clipboard(app, monkeypatch) -> None:
+    from phantom.ui import app as ui_app
+
+    cleared: list[bool] = []
+    monkeypatch.setattr(ui_app.clip, "clear_clipboard", lambda: cleared.append(True) or True)
+
+    app._forget_clipboard()
+    assert cleared == [], "nothing was copied, nothing to drop"
+
+
 def test_window_builds_and_shows_default_language(app) -> None:
     assert app.current_tab in ("embed", "extract", "settings")
     assert app.i18n.language in ("uk", "ru", "en")

@@ -41,6 +41,7 @@ from phantom.core.payload import (
     unpack_payload,
 )
 from phantom.core.progress import ProgressFn, Stage, check_cancel, noop_progress
+from phantom.core.security import secure_zeroize
 from phantom.stego.lsb import BitReader, BitWriter, bits_to_bytes, bytes_to_bits
 from phantom.stego.permute import (
     FeistelPermutation,
@@ -134,7 +135,7 @@ def bootstrap_for(
     try:
         return bootstrap_permutation(bytes(key), usable)
     finally:
-        key[:] = b"\x00" * len(key)
+        secure_zeroize(key)
 
 
 def header_positions(

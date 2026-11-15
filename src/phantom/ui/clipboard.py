@@ -15,10 +15,17 @@ changes is the text inside a widget or the OS clipboard.
 from __future__ import annotations
 
 import logging
+import shutil
+import subprocess
+import sys
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Final
 
 LOGGER: Final = logging.getLogger("phantom.clipboard")
+
+#: A clipboard tool that hangs should not hold up a GUI callback.
+CLIPBOARD_TOOL_TIMEOUT: Final = 2.0
 
 
 @dataclass(slots=True, frozen=True)
@@ -281,3 +288,61 @@ class ClipboardActions:
 
     def text(self) -> str:
         return all_text(self.widget)
+
+
+
+def clear_command(
+    platform: str | None = None,
+    which: Callable[[str], str | None] = shutil.which,
+) -> tuple[str, ...] | None:
+    """This system's own way of emptying the clipboard, or ``None``.
+
+    macOS and Windows ship one; on Linux the answer depends on the session, so
+    Wayland is asked first and X11 tools are the fallback.
+    """
+    system = sys.platform if platform is None else platform
+    if system == "darwin":
+        return ("pbcopy",)
+    if system.startswith("win"):
+        return ("clip",)
+    for candidate in (
+        ("wl-copy", "--clear"),
+        ("xclip", "-selection", "clipboard", "-i", "/dev/null"),
+        ("xsel", "--clipboard", "--delete"),
+    ):
+        if which(candidate[0]):
+            return candidate
+    return None
+
+
+def clear_clipboard(
+    *,
+    runner: Callable[..., Any] = subprocess.run,
+    platform: str | None = None,
+    which: Callable[[str], str | None] = shutil.which,
+    timeout: float = CLIPBOARD_TOOL_TIMEOUT,
+) -> bool:
+    """Empty the OS clipboard through a native tool; ``False`` when there is none.
+
+    Tk's ``clipboard_clear`` only reaches the system clipboard while Tk owns the
+    selection, and on macOS the text outlives the window, so the native call is
+    the part that really removes a copied password.  No shell is involved: the
+    command is an argument vector and the tool gets an empty stdin.
+    """
+    command = clear_command(platform, which)
+    if command is None:
+        LOGGER.debug("no native clipboard tool on this system")
+        return False
+    try:
+        runner(
+            list(command),
+            input=b"",
+            timeout=timeout,
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except Exception as exc:  # noqa: BLE001 - a missing tool must not break the app
+        LOGGER.warning("native clipboard clear failed: %s", exc)
+        return False
+    return True
