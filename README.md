@@ -26,12 +26,14 @@ mode, audio transcoding, resizing, cropping, or a screenshot. In messengers
 always send the file **as a document**.
 
 LSB steganography is detectable by statistical steganalysis. The app never
-claims that a payload cannot be found, because that would be false. The header
-positions are not secret either: anyone with the file and this document knows
-which bits to read. What the encryption guarantees is different — those bits
-cannot be decrypted without the password, and a wrong password is
-indistinguishable from a carrier with no payload. The *presence* of
-steganography is a separate question, and statistical analysis can answer it.
+claims that a payload cannot be found, because that would be false. What the
+format does do is put nothing at a known place: since v3 the positions of every
+bit in the carrier — the sealed header included — are derived from the password,
+so without it there is no region to read, and a wrong password is
+indistinguishable from a carrier with no payload. Carriers written in the v2
+layout, whose header sat at constant-seeded positions, are still read. The
+*presence* of steganography is a separate question, and statistical analysis can
+answer it.
 
 Read [`SECURITY.md`](SECURITY.md) for the threat model, and the in-app
 "Threat model" block for the same text in your language.

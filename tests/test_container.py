@@ -1,4 +1,4 @@
-"""v2 container: negotiation, AAD binding, tamper detection, versioning (D4)."""
+"""Container format: negotiation, AAD binding, tamper detection, versioning (D4)."""
 
 from __future__ import annotations
 
@@ -10,8 +10,8 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from phantom.core import constants as C
 from phantom.core import container
-from phantom.core.errors import CapacityError, WrongPasswordOrNoData
-from phantom.core.kdf import derive_master_key, derive_message_keys
+from phantom.core.errors import CapacityError, InvalidInput, WrongPasswordOrNoData
+from phantom.core.kdf import MessageKeys, derive_master_key, derive_message_keys
 
 PASSWORD = "correct horse battery staple"
 PAYLOAD = b"type-one payload used by the container tests" * 3
@@ -141,21 +141,65 @@ def test_header_bound_to_payload_via_aad() -> None:
         second.wipe()
 
 
-def test_version_inside_aead_is_validated() -> None:
-    """A header that authenticates but claims another version is rejected."""
+def _forged_header(version: int) -> tuple[bytes, MessageKeys]:
     salt = os.urandom(C.SALT_SIZE)
     nonce = os.urandom(C.NONCE_SIZE)
     profile = C.default_kdf_profile()
     master = derive_master_key(PASSWORD, salt, profile, normalize=False)
     keys = derive_message_keys(master, salt)
+    forged = struct.pack(">BBI", version, profile.profile_id, 64)
+    len_ct = AESGCM(bytes(keys.length_key)).encrypt(nonce, forged, C.LEN_AAD)
+    return salt + nonce + len_ct, keys
+
+
+def test_version_inside_aead_is_validated() -> None:
+    """A header that authenticates but claims another version is rejected."""
+    header, keys = _forged_header(4)
     try:
-        forged = struct.pack(">BBI", 3, profile.profile_id, 64)
-        len_ct = AESGCM(bytes(keys.length_key)).encrypt(nonce, forged, C.LEN_AAD)
-        header = salt + nonce + len_ct
         with pytest.raises(WrongPasswordOrNoData):
             container.open_header(header, PASSWORD, max_payload_len=1 << 20)
     finally:
         keys.wipe()
+
+
+def test_expected_version_selects_the_layout_a_header_must_match() -> None:
+    """The v2 reader accepts only a v2 header, the v3 reader only a v3 one."""
+    v2_header, v2_keys = _forged_header(C.V2_CONTAINER_VERSION)
+    v3_header, v3_keys = _forged_header(C.CONTAINER_VERSION)
+    try:
+        opened = container.open_header(
+            v2_header,
+            PASSWORD,
+            max_payload_len=1 << 20,
+            expected_version=C.V2_CONTAINER_VERSION,
+        )
+        opened.wipe()
+        with pytest.raises(WrongPasswordOrNoData):
+            container.open_header(
+                v2_header, PASSWORD, max_payload_len=1 << 20
+            )
+        with pytest.raises(WrongPasswordOrNoData):
+            container.open_header(
+                v3_header,
+                PASSWORD,
+                max_payload_len=1 << 20,
+                expected_version=C.V2_CONTAINER_VERSION,
+            )
+    finally:
+        v2_keys.wipe()
+        v3_keys.wipe()
+
+
+def test_unsupported_version_is_refused_up_front() -> None:
+    with pytest.raises(InvalidInput):
+        container.seal(PAYLOAD, PASSWORD, version=7)
+    with pytest.raises(InvalidInput):
+        container.open_header(
+            b"\x00" * C.HEADER_BYTES,
+            PASSWORD,
+            max_payload_len=1 << 20,
+            expected_version=7,
+        )
 
 
 def test_declared_length_above_capacity_rejected() -> None:

@@ -14,7 +14,7 @@ from phantom.stego.engine import (
     embed_payload,
     embed_text,
     extract_payload,
-    read_header,
+    header_positions,
 )
 from phantom.stego.samples import ArraySamples, ImageSamples, SampleSpace
 
@@ -146,6 +146,9 @@ def test_public_and_keyed_permutation_factories() -> None:
     keyed = permute.keyed_permutation(b"k" * 32, 256)
     assert keyed.domain == 256
     assert not np.array_equal(public.apply(np.arange(256)), keyed.apply(np.arange(256)))
+    bootstrap = permute.bootstrap_permutation(b"k" * 32, 256)
+    assert sorted(bootstrap.apply(np.arange(256)).tolist()) == list(range(256))
+    assert not np.array_equal(bootstrap.apply(np.arange(256)), public.apply(np.arange(256)))
 
 
 def test_permutation_handles_large_domain() -> None:
@@ -237,7 +240,7 @@ def test_capacity_for_reserves_the_tag() -> None:
 def test_engine_rejects_tiny_spaces() -> None:
     tiny = ArraySamples(np.zeros(C.HEADER_BITS - 1, dtype=np.int16))
     with pytest.raises(WrongPasswordOrNoData):
-        read_header(tiny)
+        header_positions(tiny, "password-123456")
     with pytest.raises(WrongPasswordOrNoData):
         extract_payload(tiny, "password-123456")
 
@@ -305,6 +308,6 @@ def test_lsb_matching_clamps_degenerate_ranges() -> None:
 def test_payload_positions_without_bits() -> None:
     from phantom.stego.engine import _payload_positions
 
-    public = permute.public_permutation(1_000)
+    bootstrap = permute.bootstrap_permutation(b"k" * 32, 1_000)
     keyed = permute.keyed_permutation(b"k" * 32, 600)
-    assert _payload_positions(public, keyed, 0, 0).size == 0
+    assert _payload_positions(bootstrap, keyed, 0, 0).size == 0

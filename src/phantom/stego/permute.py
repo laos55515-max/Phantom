@@ -11,6 +11,13 @@ Properties used by the engine:
   no 72-million-entry position table;
 * the round function is AES, so positions are unpredictable without the key and
   uniformly spread over the whole carrier (D3).
+
+Two entry points matter to the engine: :func:`bootstrap_permutation`, keyed by
+the password, places **every** bit of a v3 carrier (header first, payload after
+it), and :func:`keyed_permutation`, keyed by the per-message position key,
+scatters the payload ranks inside the non-header part.  :func:`public_permutation`
+is the constant-seeded permutation of the v2 layout and exists only so files
+written before v3 can still be read.
 """
 
 from __future__ import annotations
@@ -114,11 +121,29 @@ class FeistelPermutation:
         return np.ascontiguousarray(words, dtype=np.int64)
 
 
-def public_permutation(usable_bits: int) -> FeistelPermutation:
-    """Password-independent permutation used for the fixed header region."""
-    key = hashlib.sha256(C.PUBLIC_POSITION_SEED).digest()
-    return FeistelPermutation(key, usable_bits)
+def bootstrap_permutation(position_key: bytes, usable_bits: int) -> FeistelPermutation:
+    """Permutation that decides where *every* bit of a v3 carrier lives.
+
+    Header bits are its first ``HEADER_BITS`` ranks, payload bits are the ranks
+    after them, so the two regions cannot overlap and nothing about the layout
+    can be computed without the password-derived ``position_key``.
+    """
+    if len(position_key) < 16:
+        raise ValueError("need at least 16 key bytes")
+    return FeistelPermutation(position_key, usable_bits)
 
 
 def keyed_permutation(position_key: bytes, domain: int) -> FeistelPermutation:
+    """Permutation of the payload ranks inside the non-header part."""
     return FeistelPermutation(position_key, domain)
+
+
+def public_permutation(usable_bits: int) -> FeistelPermutation:
+    """v2 layout only: constant-seeded, password-independent positions.
+
+    Files written by PHANTOM 2.0.0 placed their header at
+    ``public_permutation(N)[:HEADER_BITS]``; keeping the factory lets those
+    files stay readable.  Nothing written by this build uses it.
+    """
+    key = hashlib.sha256(C.PUBLIC_POSITION_SEED).digest()
+    return FeistelPermutation(key, usable_bits)
