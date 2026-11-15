@@ -475,7 +475,12 @@ def test_stage_label_starts_with_the_idle_text(app) -> None:
 
 
 def test_no_visible_widget_shows_its_class_name(app) -> None:
-    """Catches ``CTkLabel(...)`` without ``text=`` anywhere in the tree."""
+    """Catches ``CTkLabel(...)`` without ``text=`` anywhere in the tree.
+
+    Every CTk text widget defaults to its own class name ("CTkLabel",
+    "CTkCheckBox", …), so a widget whose text equals its class name was built
+    without ``text=`` and is showing a placeholder to the user.
+    """
     leftovers: list[str] = []
 
     def walk(widget) -> None:
@@ -483,7 +488,7 @@ def test_no_visible_widget_shows_its_class_name(app) -> None:
             value = widget.cget("text")
         except Exception:  # noqa: BLE001 - not every Tk widget has "text"
             value = None
-        if isinstance(value, str) and value in {"CTkLabel", "CTkButton", "CTkFrame"}:
+        if isinstance(value, str) and value == type(widget).__name__:
             leftovers.append(f"{type(widget).__name__}: {value}")
         for child in widget.winfo_children():
             walk(child)
