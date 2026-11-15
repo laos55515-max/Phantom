@@ -35,7 +35,7 @@ from phantom.ui.bindings import I18nBinder
 from phantom.ui.debounce import Debouncer
 from phantom.ui.dnd import DndProvider, DropTarget
 from phantom.ui.result_window import ResultWindow
-from phantom.ui.scroll import MouseWheelRouter
+from phantom.ui.scroll import MouseWheelRouter, _bind_to_children
 from phantom.ui.settings import AppSettings, SettingsStore
 from phantom.ui.system_theme import SystemThemeWatcher
 from phantom.ui.viewmodel import (
@@ -143,6 +143,10 @@ class PhantomApp:
             return
         self._wheel.register(scroll, canvas)
         self._scroll_frames.append(scroll)
+        # Bind the frame and its canvas right after creation; ``install`` walks
+        # the tree again once the cards inside the tab exist, because binding a
+        # widget that does not exist yet is not possible.
+        _bind_to_children(scroll, canvas)
 
     def _paragraph_shortcuts(self, widget: Any) -> None:
         """Cmd/Ctrl + C/V/X/A and a right-click menu for one text widget."""
