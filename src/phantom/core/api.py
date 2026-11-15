@@ -11,6 +11,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from enum import Enum, unique
+from typing import Final
 
 from phantom.audio import (
     AudioInfo,
@@ -92,6 +93,38 @@ class ExtractOutcome:
     payload: ExtractedPayload
     carrier_kind: CarrierKind
     duration_seconds: float
+
+    @property
+    def verified(self) -> bool:
+        """True only when the recovered bytes matched the sealed SHA-256 (D12).
+
+        ``unpack_payload`` raises on a mismatch, so this is True for every
+        outcome that exists at all: the property is the single place the UI reads
+        before it is allowed to say "extracted".
+        """
+        return self.payload.integrity_ok
+
+
+#: Extension the stego layer forces on an output file, per carrier kind.
+_FORCED_OUTPUT_EXTENSIONS: Final[dict[CarrierKind, tuple[str, ...]]] = {
+    CarrierKind.IMAGE: (".png",),
+    CarrierKind.AUDIO: (".wav", ".flac"),
+}
+
+
+def output_path_variants(output_path: str, kind: CarrierKind) -> tuple[str, ...]:
+    """Every real path an output request can land on once the format is enforced.
+
+    ``a.jpg`` is written as ``a.png`` and ``a.ogg`` as ``a.wav`` (or ``a.flac``),
+    so checking the requested name alone can miss the file that is really
+    written.  Both lossless audio extensions are included because the carrier
+    decides which one wins: refusing one name too many is far cheaper than
+    overwriting the source a user asked to hide and wipe.
+    """
+    stem = os.path.splitext(output_path)[0]
+    names = [output_path]
+    names.extend(f"{stem}{suffix}" for suffix in _FORCED_OUTPUT_EXTENSIONS[kind])
+    return tuple(dict.fromkeys(names))
 
 
 def detect_carrier_kind(path: str) -> CarrierKind:
@@ -195,13 +228,16 @@ def embed_payload(
         raise InvalidInput("provide exactly one of payload or secret_path")
     if not os.path.isfile(carrier_path):
         raise PhantomIOError("carrier not found", detail=carrier_path)
-    fsutil.ensure_distinct(carrier_path, output_path)
-    if wipe_source and secret_path is not None:
-        # Refuse an output that would replace the very file we are about to
-        # wipe, before a single byte of the carrier is rewritten.
-        fsutil.ensure_distinct(secret_path, output_path)
-    started = time.perf_counter()
     kind = detect_carrier_kind(carrier_path)
+    variants = output_path_variants(output_path, kind)
+    fsutil.ensure_distinct(carrier_path, output_path)
+    if secret_path is not None:
+        # Refuse an output that would replace the very file we are about to hide
+        # (and maybe wipe) *before* a single byte is written: once the write has
+        # happened the source is already gone, whatever we raise afterwards.  The
+        # check covers every path the forced extension can produce.
+        fsutil.ensure_output_not_source(secret_path, variants)
+    started = time.perf_counter()
 
     if payload is not None:
         payload_kind = payload.kind
@@ -260,7 +296,11 @@ def embed_payload(
         notices = audio_result.notices
         packed = audio_result.packed
 
+    if secret_path is not None:
+        # Belt and braces: the path that was really written must not be the source.
+        fsutil.ensure_output_not_source(secret_path, (final_path,))
     check_cancel(cancel)
+    verified = False
     if verify:
         try:
             _verify_output(
@@ -282,13 +322,20 @@ def embed_payload(
                     detail=str(exc),
                 ) from exc
             raise
+        verified = True
+
+    if wipe_source and not verified:
+        raise InvalidInput(
+            "refusing to wipe a source whose output was not verified",
+            detail="enable verification before secure deletion",
+        )
 
     wiped = False
     wipe_error: str | None = None
     if wipe_source:
         if secret_path is None:
             raise InvalidInput("only a source file can be wiped")
-        fsutil.ensure_distinct(secret_path, final_path)
+        fsutil.ensure_output_not_source(secret_path, (final_path,))
         check_cancel(cancel)
         from phantom.core.files import secure_wipe  # noqa: PLC0415
 
@@ -310,7 +357,7 @@ def embed_payload(
             usable_bits=report.usable_bits,
             payload_bytes=max(0, (report.usable_bits - C.HEADER_BITS) // 8 - C.TAG_SIZE),
         ),
-        verified=verify,
+        verified=verified,
         wiped_source=wiped,
         wipe_error=wipe_error,
         notices=tuple(notices),
@@ -359,5 +406,6 @@ __all__ = [
     "ensure_password_strength",
     "estimate_fill_percent",
     "extract_from_path",
+    "output_path_variants",
     "probe_carrier",
 ]

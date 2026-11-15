@@ -29,7 +29,9 @@ from phantom.core.errors import (
     IntegrityError,
     InvalidInput,
     PhantomIOError,
+    UnsafePathError,
 )
+from phantom.core.files import FALLBACK_FILE_NAME, sanitise_filename
 from phantom.core.progress import ProgressFn, Stage, check_cancel, noop_progress
 
 _HEADER: Final = struct.Struct(">BH")
@@ -326,6 +328,24 @@ def _estimate_chunks(
     return SizeEstimate(payload_bytes=estimate, exceeded_capacity=False)
 
 
+def _safe_payload_name(kind: PayloadKind, stored: str) -> str:
+    """Turn a container-supplied name into one harmless segment.
+
+    The stored name is attacker-controlled: it may be ``../../.bashrc``, an
+    absolute path, ``".."`` or empty.  Nothing outside this function ever sees
+    the raw value, so a hostile container cannot steer a save out of its folder
+    even if a caller forgets to sanitise again.
+    """
+    if kind is not PayloadKind.FILE:
+        return ""
+    try:
+        return sanitise_filename(stored)
+    except UnsafePathError:
+        # An empty name, "." or ".." is not worth failing the whole extraction
+        # for: the data is intact, only the file name was unusable.
+        return FALLBACK_FILE_NAME
+
+
 def unpack_payload(
     blob: bytes,
     *,
@@ -341,7 +361,9 @@ def unpack_payload(
     offset = _HEADER.size
     if len(blob) < offset + name_len + C.SHA256_SIZE + _LEN.size:
         raise IntegrityError("payload truncated (metadata)")
-    name = blob[offset : offset + name_len].decode("utf-8", errors="replace")
+    name = _safe_payload_name(
+        kind, blob[offset : offset + name_len].decode("utf-8", errors="replace")
+    )
     offset += name_len
     stored_hash = blob[offset : offset + C.SHA256_SIZE]
     offset += C.SHA256_SIZE

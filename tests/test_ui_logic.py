@@ -17,6 +17,8 @@ from phantom.core.errors import CapacityError, InternalError, InvalidInput, Inva
 from phantom.core.payload import ExtractedPayload, PayloadKind, SizeEstimate
 from phantom.core.progress import Stage
 from phantom.stego.engine import Capacity
+from phantom.ui import clipboard as ui_clipboard
+from phantom.ui import layout, scroll
 from phantom.ui.animator import Animator
 from phantom.ui.debounce import Debouncer
 from phantom.ui.dnd import filter_by_extension, parse_drop_paths, paths_from_uri
@@ -230,7 +232,15 @@ def test_core_and_audio_layers_never_import_tk() -> None:
 
 def test_ui_modules_import_tk_only_where_documented() -> None:
     """Only the widget-facing modules may import Tk, and only at module level."""
-    allowed = {"app.py", "widgets.py", "bindings.py", "dnd.py", "system_theme.py", "__init__.py"}
+    allowed = {
+        "app.py",
+        "widgets.py",
+        "bindings.py",
+        "dnd.py",
+        "system_theme.py",
+        "result_window.py",  # the expanded result window is pure Tk
+        "__init__.py",
+    }
     for path in (SRC / "ui").glob("*.py"):
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         imports = set()
@@ -1052,3 +1062,462 @@ def test_audio_file_payload_through_the_api(tmp_path, wav_factory, password) -> 
     assert outcome.kind is CarrierKind.AUDIO
     result = api.extract_from_path(outcome.output_path, password)
     assert result.payload.data == secret.read_bytes()
+
+
+# ---------------------------------------------------------------------------
+# clipboard: paste/copy/cut/select-all without a display
+# ---------------------------------------------------------------------------
+class FakeEntry:
+    """Single-line widget protocol: text, caret, selection and clipboard."""
+
+    def __init__(self, text: str = "", clipboard: str | None = None) -> None:
+        self.text = text
+        self.clipboard = clipboard
+        self.selection: tuple[int, int] | None = None
+        self.caret = len(text)
+        self.readonly = False
+
+    def get(self) -> str:
+        return self.text
+
+    def insert(self, index: str, value: str) -> None:
+        assert index == "insert"
+        if self.readonly:
+            raise RuntimeError("widget is disabled")
+        self.text = self.text[: self.caret] + value + self.text[self.caret :]
+        self.caret += len(value)
+
+    def delete(self, first: object, last: object) -> None:
+        if self.readonly:
+            raise RuntimeError("widget is disabled")
+        start = int(first)
+        end = int(last)
+        self.text = self.text[:start] + self.text[end:]
+        self.caret = start
+        self.selection = None
+
+    def index(self, index: str) -> int:
+        if self.selection is None:
+            raise RuntimeError("no selection")
+        return self.selection[0] if index == "sel.first" else self.selection[1]
+
+    def selection_range(self, _first: int, _last: str) -> None:
+        self.selection = (0, len(self.text))
+
+    def icursor(self, _index: str) -> None:
+        self.caret = len(self.text)
+
+    def clipboard_get(self) -> str:
+        if self.clipboard is None:
+            raise RuntimeError("clipboard has no text")
+        return self.clipboard
+
+    def clipboard_clear(self) -> None:
+        self.clipboard = ""
+
+    def clipboard_append(self, value: str) -> None:
+        self.clipboard = (self.clipboard or "") + value
+
+
+class FakeText(FakeEntry):
+    """Multi-line widget protocol: selection tags plus its own scroll view."""
+
+    def __init__(self, text: str = "", clipboard: str | None = None) -> None:
+        super().__init__(text, clipboard)
+        self.tag: tuple[int, int] | None = None
+        self.view = (0.0, 1.0)
+        self.scrolls: list[tuple[int, str]] = []
+
+    def tag_add(self, _tag: str, _first: str, _last: str) -> None:
+        self.tag = (0, len(self.text))
+
+    def mark_set(self, _name: str, _index: str) -> None:
+        self.caret = 0
+
+    def get(self, first: str | None = None, last: str | None = None) -> str:
+        if first is None:
+            return self.text
+        if first == "sel.first":
+            if self.tag is None:
+                raise RuntimeError("no selection")
+            return self.text[self.tag[0] : self.tag[1]]
+        if last is None:
+            return self.text
+        return self.text
+
+    def delete(self, first: object, last: object) -> None:
+        if first == "sel.first" and self.tag is None:
+            raise RuntimeError("no selection")
+        if isinstance(first, str) and first.startswith("sel"):
+            if self.tag is None:
+                raise RuntimeError("no selection")
+            start, end = self.tag
+        else:
+            start, end = int(first), int(last)
+        self.text = self.text[:start] + self.text[end:]
+        self.tag = None
+
+    def yview(self) -> tuple[float, float]:
+        return self.view
+
+    def yview_scroll(self, steps: int, what: str) -> None:
+        self.scrolls.append((steps, what))
+
+
+def test_paste_inserts_clipboard_text_into_an_entry() -> None:
+    entry = FakeEntry(clipboard="correct-horse-battery")
+    assert ui_clipboard.paste(entry) == "correct-horse-battery"
+    assert entry.text == "correct-horse-battery"
+
+
+def test_paste_strips_the_trailing_newline_a_manager_adds() -> None:
+    entry = FakeEntry(clipboard="s3cret-passphrase\n")
+    ui_clipboard.paste(entry)
+    assert entry.text == "s3cret-passphrase"
+
+
+def test_paste_replaces_the_selection() -> None:
+    entry = FakeEntry("old-value", clipboard="new-value")
+    entry.selection = (0, len("old-value"))
+    ui_clipboard.paste(entry)
+    assert entry.text == "new-value"
+
+
+def test_paste_with_an_empty_clipboard_reports_nothing_happened() -> None:
+    entry = FakeEntry("keep")
+    assert ui_clipboard.paste(entry) is None
+    assert entry.text == "keep"
+
+
+def test_paste_into_a_disabled_widget_changes_nothing() -> None:
+    entry = FakeEntry("locked", clipboard="new")
+    entry.readonly = True
+    assert ui_clipboard.paste(entry) is None
+    assert entry.text == "locked"
+
+
+def test_copy_copies_the_selection() -> None:
+    entry = FakeEntry("abcdef", clipboard="")
+    entry.selection = (1, 4)
+    assert ui_clipboard.copy(entry) == "bcd"
+    assert entry.clipboard == "bcd"
+
+
+def test_copy_without_a_selection_is_a_no_op() -> None:
+    entry = FakeEntry("abcdef", clipboard="")
+    assert ui_clipboard.copy(entry) is None
+    assert entry.clipboard == ""
+
+
+def test_cut_removes_the_selection_after_copying_it() -> None:
+    entry = FakeEntry("abcdef", clipboard="")
+    entry.selection = (0, 2)
+    assert ui_clipboard.cut(entry) == "ab"
+    assert entry.text == "cdef"
+    assert entry.clipboard == "ab"
+
+
+def test_select_all_then_copy_takes_the_whole_entry() -> None:
+    entry = FakeEntry("whole-key", clipboard="")
+    assert ui_clipboard.select_all(entry) is True
+    assert ui_clipboard.copy(entry) == "whole-key"
+
+
+def test_text_widget_selection_uses_tags() -> None:
+    text = FakeText("line one\nline two", clipboard="")
+    ui_clipboard.select_all(text)
+    assert ui_clipboard.selected_text(text) == "line one\nline two"
+    assert ui_clipboard.copy(text) == "line one\nline two"
+    assert text.clipboard == "line one\nline two"
+
+
+def test_multiline_paste_keeps_inner_newlines_but_drops_the_last_one() -> None:
+    text = FakeText("", clipboard="first\nsecond\n")
+    ui_clipboard.paste(text)
+    assert text.text == "first\nsecond"
+
+
+def test_all_text_reads_both_widget_flavours() -> None:
+    assert ui_clipboard.all_text(FakeEntry("entry")) == "entry"
+    assert ui_clipboard.all_text(FakeText("text")) == "text"
+
+
+def test_write_clipboard_rejects_empty_values() -> None:
+    entry = FakeEntry(clipboard="")
+    assert ui_clipboard.write_clipboard(entry, "") is False
+    assert ui_clipboard.write_clipboard(entry, "value") is True
+    assert entry.clipboard == "value"
+
+
+def test_clipboard_failures_are_swallowed() -> None:
+    class Broken(FakeEntry):
+        def clipboard_get(self) -> str:
+            raise RuntimeError("no owner")
+
+        def clipboard_clear(self) -> None:
+            raise RuntimeError("no clipboard")
+
+    broken = Broken("text")
+    assert ui_clipboard.read_clipboard(broken) is None
+    assert ui_clipboard.write_clipboard(broken, "x") is False
+    assert ui_clipboard.all_text(object()) == ""
+
+
+def test_actions_dataclass_wraps_one_widget() -> None:
+    entry = FakeEntry("secret-key", clipboard="")
+    actions = ui_clipboard.ClipboardActions(widget=entry)
+    assert actions.select_all() is True
+    assert actions.copy() is True
+    assert actions.text() == "secret-key"
+    assert ui_clipboard.ClipboardActions(widget=FakeEntry("x")).paste() is False
+
+
+# ---------------------------------------------------------------------------
+# wheel / trackpad scrolling
+# ---------------------------------------------------------------------------
+class FakeEvent:
+    def __init__(self, widget: object, *, delta: int = 0, num: int | None = None) -> None:
+        self.widget = widget
+        self.delta = delta
+        self.num = num
+        self.x_root = 10
+        self.y_root = 20
+
+
+class FakeWidget:
+    def __init__(self, master: object | None = None, children: list | None = None) -> None:
+        self.master = master
+        self._children = list(children or [])
+        self.bindings: dict[str, object] = {}
+        self.unbound: list[tuple[str, str]] = []
+        self.prebound: set[str] = set()
+
+    def bind(self, sequence: str, handler: object | None = None, add: str = ""):
+        if handler is None:
+            return "existing" if sequence in self.prebound else ""
+        self.bindings[sequence] = handler
+        return f"id-{sequence}"
+
+    def unbind(self, sequence: str, _funcid: str) -> None:
+        self.unbound.append((sequence, _funcid))
+        self.bindings.pop(sequence, None)
+
+    def winfo_children(self) -> list:
+        return list(self._children)
+
+    def add(self, child: FakeWidget) -> FakeWidget:
+        child.master = self
+        self._children.append(child)
+        return child
+
+
+class FakeCanvas(FakeWidget):
+    def __init__(self) -> None:
+        super().__init__()
+        self.scrolls: list[tuple[int, str]] = []
+
+    def yview_scroll(self, steps: int, what: str) -> None:
+        self.scrolls.append((steps, what))
+
+
+def test_every_widget_is_created_with_an_explicit_text() -> None:
+    """A ``CTkLabel``/``CTkButton`` built without ``text`` paints its class name.
+
+    ``CTkLabel(master, font=...)`` shows the literal string ``CTkLabel`` until
+    something overwrites it, which is what the footer did between start-up and
+    the first progress event.  Helper builders (``primary_button`` …) pass the
+    text through ``**options``, so only calls with explicit keywords are checked.
+    """
+    checked = 0
+    for path in sorted((SRC / "ui").glob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+                continue
+            if node.func.attr not in ("CTkLabel", "CTkButton"):
+                continue
+            if any(keyword.arg is None for keyword in node.keywords):
+                continue  # a **options helper builder, checked by its callers
+            checked += 1
+            assert any(keyword.arg == "text" for keyword in node.keywords), (
+                f"{path.name}:{node.lineno}: {node.func.attr} without text="
+            )
+    assert checked >= 12, "the scan stopped finding widgets — did the layout move?"
+
+
+def test_wheel_steps_follow_each_platform() -> None:
+    empty = FakeWidget()
+    # macOS: delta is ±1 per notch and must never be divided by 120; the router
+    # asks yview_scroll for -delta * 2 units, so a notch actually moves.
+    assert scroll.wheel_steps(FakeEvent(empty, delta=1), platform="darwin") == -2
+    assert scroll.wheel_steps(FakeEvent(empty, delta=-1), platform="darwin") == 2
+    assert scroll.wheel_steps(FakeEvent(empty, delta=5), platform="darwin") == -10
+    assert scroll.wheel_steps(FakeEvent(empty, delta=-3), platform="darwin") == 6
+    assert scroll.wheel_steps(FakeEvent(empty, delta=120), platform="win32") == -1
+    assert scroll.wheel_steps(FakeEvent(empty, delta=-120), platform="win32") == 1
+    assert scroll.wheel_steps(FakeEvent(empty, delta=240), platform="win32") == -2
+    assert scroll.wheel_steps(FakeEvent(empty, delta=60), platform="win32") == -1
+    assert scroll.wheel_steps(FakeEvent(empty, num=4), platform="linux") == -1
+    assert scroll.wheel_steps(FakeEvent(empty, num=5), platform="linux") == 1
+    assert scroll.wheel_steps(FakeEvent(empty), platform="linux") == 0
+
+
+def test_router_binds_every_descendant_and_scrolls_the_area() -> None:
+    canvas = FakeCanvas()
+    frame = FakeWidget()
+    label = frame.add(FakeWidget())
+    router = scroll.MouseWheelRouter(FakeWidget(), platform="linux")
+    router.register(frame, canvas)
+    bound = router.install()
+    assert bound >= 6  # canvas, frame and the label, three sequences each
+    result = router.dispatch(FakeEvent(label, num=5))
+    assert result == "break"
+    assert canvas.scrolls == [(1, "units")]
+
+
+def test_router_skips_a_canvas_customtkinter_already_handles() -> None:
+    canvas = FakeCanvas()
+    canvas.prebound = {"<MouseWheel>"}
+    frame = FakeWidget()
+    router = scroll.MouseWheelRouter(FakeWidget(), platform="darwin")
+    router.register(frame, canvas)
+    router.install()
+    assert "<MouseWheel>" not in canvas.bindings
+
+
+def test_router_lets_a_text_widget_scroll_itself() -> None:
+    canvas = FakeCanvas()
+    frame = FakeWidget()
+    text = frame.add(FakeText("body"))
+    text.view = (0.0, 0.4)
+    router = scroll.MouseWheelRouter(FakeWidget(), platform="linux")
+    router.register(frame, canvas)
+    router.install()
+    assert router.dispatch(FakeEvent(text, num=5)) == "break"
+    assert text.scrolls == [(1, "units")]
+    assert canvas.scrolls == []
+
+
+def test_router_forwards_the_wheel_when_the_text_is_at_its_edge() -> None:
+    canvas = FakeCanvas()
+    frame = FakeWidget()
+    text = frame.add(FakeText("body"))
+    text.view = (0.0, 1.0)
+    router = scroll.MouseWheelRouter(FakeWidget(), platform="linux")
+    router.register(frame, canvas)
+    router.install()
+    assert router.dispatch(FakeEvent(text, num=5)) == "break"
+    assert canvas.scrolls == [(1, "units")]
+
+
+def test_router_ignores_events_outside_its_areas() -> None:
+    canvas = FakeCanvas()
+    frame = FakeWidget()
+    outsider = FakeWidget()
+    router = scroll.MouseWheelRouter(FakeWidget(), platform="linux")
+    router.register(frame, canvas)
+    router.install()
+    assert router.dispatch(FakeEvent(outsider, num=5)) is None
+    assert canvas.scrolls == []
+
+
+def test_router_ignores_events_without_a_delta() -> None:
+    canvas = FakeCanvas()
+    frame = FakeWidget()
+    router = scroll.MouseWheelRouter(FakeWidget(), platform="linux")
+    router.register(frame, canvas)
+    router.install()
+    assert router.dispatch(FakeEvent(frame)) is None
+
+
+def test_router_uninstall_removes_every_binding() -> None:
+    canvas = FakeCanvas()
+    frame = FakeWidget()
+    router = scroll.MouseWheelRouter(FakeWidget(), platform="linux")
+    router.register(frame, canvas)
+    assert router.install() > 0
+    router.uninstall()
+    assert router.bound_count == 0
+    assert canvas.unbound and frame.unbound
+
+
+def test_router_refresh_binds_widgets_added_later() -> None:
+    canvas = FakeCanvas()
+    frame = FakeWidget()
+    router = scroll.MouseWheelRouter(FakeWidget(), platform="linux")
+    router.register(frame, canvas)
+    before = router.install()
+    late = frame.add(FakeWidget())
+    after = router.refresh()
+    assert after > before
+    assert router.dispatch(FakeEvent(late, num=4)) == "break"
+
+
+def test_install_mousewheel_helper_wires_one_area() -> None:
+    canvas = FakeCanvas()
+    frame = FakeWidget()
+    router = scroll.install_mousewheel(FakeWidget(), frame, canvas, platform="darwin")
+    assert router.bound_count > 0
+    assert router.dispatch(FakeEvent(frame, delta=-1)) == "break"
+    # macOS: yview_scroll(int(-delta) * 2, "units") — never delta // 120.
+    assert canvas.scrolls == [(2, "units")]
+
+
+def test_result_window_geometry_uses_most_of_the_screen() -> None:
+    width, height, x, y = layout.window_geometry(1920, 1080)
+    assert (width, height) == (1536, 864)
+    assert (x, y) == (192, 72)
+    small = layout.window_geometry(800, 600)
+    assert (small[0], small[1]) == layout.MIN_WINDOW
+
+
+class FakeCTkEntry:
+    """Minimal CTkEntry: the placeholder is real text behind a flag."""
+
+    def __init__(self, inner: FakeEntry, placeholder: str = "minimum 12 characters") -> None:
+        self._entry = inner
+        self.placeholder = placeholder
+        self.placeholder_active = True
+        self._entry.text = placeholder
+
+    def get(self) -> str:
+        return "" if self.placeholder_active else self._entry.get()
+
+    def insert(self, index: str, value: str) -> None:
+        self.placeholder_active = False
+        self._entry.text = ""
+        self._entry.caret = 0
+        self._entry.insert(index, value)
+
+    def delete(self, first: object, last: object) -> None:
+        self._entry.delete(first, last)
+
+    def selection_range(self, first: int, last: str) -> None:
+        self._entry.selection_range(first, last)
+
+    def icursor(self, index: str) -> None:
+        self._entry.icursor(index)
+
+
+def test_text_buffer_writes_through_the_ctk_wrapper() -> None:
+    inner = FakeEntry("", clipboard="pasted-key")
+    wrapper = FakeCTkEntry(inner)
+    buffer = ui_clipboard.TextBuffer(inner=inner, public=wrapper)
+    assert ui_clipboard.paste(buffer) == "pasted-key"
+    # The placeholder was dropped, so the field really reads back the text.
+    assert buffer.text() == "pasted-key"
+    assert wrapper.get() == "pasted-key"
+
+
+def test_writing_the_inner_widget_leaves_the_placeholder_in_charge() -> None:
+    inner = FakeEntry("", clipboard="pasted-key")
+    wrapper = FakeCTkEntry(inner)
+    assert ui_clipboard.paste(inner) == "pasted-key"  # the trap the wrapper avoids
+    assert wrapper.placeholder_active is True
+    assert wrapper.get() == ""
+
+
+def test_as_buffer_accepts_a_bare_widget() -> None:
+    entry = FakeEntry("value")
+    assert ui_clipboard.as_buffer(entry).editor is entry
+    assert ui_clipboard.as_buffer(ui_clipboard.TextBuffer(inner=entry)).editor is entry

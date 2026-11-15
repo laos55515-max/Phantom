@@ -14,24 +14,101 @@ snapshots or journaling: the UI says exactly that (D7).
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import logging
 import os
 import secrets
 import stat
+import subprocess
+import sys
 import threading
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from typing import Final
 
 from phantom.core import constants as C
-from phantom.core.errors import OutputIsCarrierError, PhantomIOError, UnsafePathError
+from phantom.core.errors import (
+    IntegrityError,
+    OutputIsCarrierError,
+    PhantomIOError,
+    SourceOverwriteError,
+    UnsafePathError,
+)
 from phantom.core.progress import ProgressFn, Stage, check_cancel, noop_progress
 
 LOGGER: Final = logging.getLogger("phantom.files")
 
+#: Mode for files restored from a container: the owner reads and writes, nobody
+#: else gets anything.  The payload is the user's secret, not a shared download.
+EXTRACTED_FILE_MODE: Final = 0o600
+
+#: Characters Windows refuses inside a file name; replaced, never silently dropped.
+_UNSAFE_NAME_CHARS: Final = frozenset('<>:"|?*')
+
+#: DOS device names that are still special on every modern Windows.
+_RESERVED_NAMES: Final = frozenset(
+    {"con", "prn", "aux", "nul"}
+    | {f"com{index}" for index in range(1, 10)}
+    | {f"lpt{index}" for index in range(1, 10)}
+)
+
+#: Stand-in when a container stores an unusable name (or none at all).
+FALLBACK_FILE_NAME: Final = "extracted.bin"
+
 
 def absolute(path: str) -> str:
     return os.path.realpath(os.path.abspath(os.path.expanduser(path)))
+
+
+def reveal_command(
+    path: str | os.PathLike[str], *, platform: str | None = None
+) -> list[str] | None:
+    """Command that shows ``path`` in the platform file manager, or ``None``.
+
+    macOS          ``open -R <file>`` (``open <dir>`` for a directory)
+    Windows        ``explorer /select,<file>``
+    Linux/other    ``xdg-open <containing directory>``
+
+    The path must exist: revealing a file the user has not saved yet would open
+    an empty window, so the caller gets ``None`` and can say so in the UI.
+    """
+    target = os.path.abspath(os.fspath(path))
+    if not os.path.exists(target):
+        return None
+    name = (platform or sys.platform).lower()
+    is_directory = os.path.isdir(target)
+    if name.startswith("darwin"):
+        return ["open", target] if is_directory else ["open", "-R", target]
+    if name.startswith("win"):
+        return ["explorer", target] if is_directory else ["explorer", f"/select,{target}"]
+    directory = target if is_directory else (os.path.dirname(target) or ".")
+    return ["xdg-open", directory]
+
+
+def reveal_in_file_manager(path: str | os.PathLike[str]) -> bool:
+    """Open the platform file manager at ``path``; ``False`` when unavailable.
+
+    Best effort by design: a headless session, a missing ``xdg-open`` or a
+    locked-down desktop simply returns ``False`` and the UI reports it.  No
+    shell is involved and nothing is awaited, so a slow file manager cannot
+    freeze the Tk main loop.
+    """
+    command = reveal_command(path)
+    if command is None:
+        LOGGER.info("nothing to reveal: %s", path)
+        return False
+    try:
+        subprocess.Popen(  # fixed argv, no shell, the path comes from the UI
+            command,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            close_fds=True,
+        )
+    except OSError as exc:
+        LOGGER.warning("cannot open the file manager: %s", exc)
+        return False
+    return True
 
 
 def same_file(first: str, second: str) -> bool:
@@ -53,6 +130,68 @@ def ensure_distinct(carrier: str, output: str) -> None:
             "output file would overwrite the carrier",
             detail=f"{absolute(carrier)}",
         )
+
+
+def ensure_output_not_source(source: str, candidates: Iterable[str]) -> None:
+    """Refuse every output name that would replace the hidden source file.
+
+    Extension forcing means one request can land on several real paths
+    (``a.jpg`` becomes ``a.png``), so the caller passes them all: an output that
+    overwrites the source would destroy the only copy before it is wiped.
+    """
+    for candidate in candidates:
+        if same_file(source, candidate):
+            raise SourceOverwriteError(
+                "output file would overwrite the source file",
+                detail=f"{absolute(source)}",
+            )
+
+
+def sanitise_filename(name: str) -> str:
+    """Reduce a container-supplied name to one harmless path segment.
+
+    A container is attacker-controlled input: ``name`` can be ``../../etc/passwd``,
+    ``C:\\Windows\\system32\\x.dll``, an absolute POSIX path, an empty string or a
+    Windows device name.  Only the last segment survives; separators are never
+    interpreted, control characters and Windows-reserved characters are replaced,
+    and a name that reduces to ``""``, ``"."`` or ``".."`` is rejected outright.
+    """
+    segment = (name or "").replace("\\", "/").split("/")[-1]
+    cleaned = "".join(
+        "_" if char in _UNSAFE_NAME_CHARS or not char.isprintable() else char
+        for char in segment
+    )
+    # Windows silently drops trailing dots and spaces, which would let ".." and
+    # "x. ." become something else again after the join.
+    cleaned = cleaned.strip().rstrip(". ")
+    if cleaned in {"", ".", ".."}:
+        raise UnsafePathError(
+            "refusing an empty or relative file name", detail=repr(name)
+        )
+    if cleaned.split(".")[0].lower() in _RESERVED_NAMES:
+        cleaned = f"_{cleaned}"
+    return cleaned
+
+
+def safe_output_path(directory: str, name: str) -> str:
+    """Join ``directory`` with a sanitised name and prove the result stays there.
+
+    The sanitised name cannot contain a separator, but the check is repeated on
+    the resolved path: a pre-existing symlink at the destination must not turn a
+    save into a write somewhere else entirely.
+    """
+    root = absolute(directory)
+    target = os.path.join(root, sanitise_filename(name))
+    resolved = absolute(target)
+    try:
+        inside = os.path.commonpath([root, resolved]) == root
+    except ValueError:  # different drives on Windows
+        inside = False
+    if not inside or resolved == root:
+        raise UnsafePathError(
+            "extracted file would leave the output directory", detail=resolved
+        )
+    return target
 
 
 def ensure_output_dir(path: str) -> None:
@@ -119,6 +258,68 @@ def write_bytes_atomic(target: str, data: bytes) -> None:
         handle.write(data)
         handle.flush()
         os.fsync(handle.fileno())
+
+
+def _is_posix() -> bool:
+    """Filesystem permissions are a POSIX concept; Windows only has read-only."""
+    return os.name == "posix"
+
+
+def _harden_permissions(path: str, mode: int) -> None:
+    """Force ``mode`` on POSIX, where ``chmod`` can actually express it."""
+    if not _is_posix():
+        return
+    try:
+        os.chmod(path, mode)
+    except OSError as exc:
+        raise PhantomIOError(
+            "cannot restrict the permissions of the written file", detail=str(exc)
+        ) from exc
+
+
+def write_bytes_verified(
+    target: str,
+    data: bytes,
+    *,
+    expected_sha256: str | None = None,
+    mode: int = EXTRACTED_FILE_MODE,
+) -> None:
+    """Write ``data`` to ``target`` atomically, then read it back and check it.
+
+    The bytes go to a sibling temp file which is verified *before* ``os.replace``
+    makes it visible, so a short write, a full disk or a hostile filesystem leaves
+    whatever already lived at ``target`` exactly as it was.
+    """
+    with atomic_path(target, new_mode=mode) as tmp:
+        with open(tmp, "wb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        # Permissions first, then the read-back check: the secret must never be
+        # published world-readable, and a failing check must never publish at all.
+        _harden_permissions(tmp, mode)
+        with open(tmp, "rb") as handle:
+            written = handle.read()
+        if written != data or (
+            expected_sha256 is not None
+            and hashlib.sha256(written).hexdigest() != expected_sha256.lower()
+        ):
+            raise IntegrityError(
+                "written file does not match the recovered data", detail=target
+            )
+
+
+def write_extracted_file(
+    directory: str,
+    name: str,
+    data: bytes,
+    *,
+    expected_sha256: str | None = None,
+) -> str:
+    """Restore a payload as ``directory/name``, owner-only, verified; return the path."""
+    target = safe_output_path(directory, name)
+    write_bytes_verified(target, data, expected_sha256=expected_sha256)
+    return target
 
 
 def _lstat_regular(path: str) -> os.stat_result:
