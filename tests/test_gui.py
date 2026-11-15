@@ -309,6 +309,7 @@ def test_every_widget_in_every_tab_answers_the_wheel(app) -> None:
     from phantom.ui.scroll import is_scrollbar, is_text_area
 
     checked = 0
+    missing: list[str] = []
     for frame in app._scroll_frames:
         stack: list[object] = [frame]
         while stack:
@@ -327,7 +328,12 @@ def test_every_widget_in_every_tab_answers_the_wheel(app) -> None:
             # made of and answers nothing; those children are walked above.
             if type(widget).__module__.startswith("customtkinter"):
                 continue
-            raise AssertionError(f"{type(widget).__name__} has no <MouseWheel> binding")
+            missing.append(
+                f"{widget} cls={type(widget).__name__} mod={type(widget).__module__} "
+                f"master={widget.master} master_cls={type(widget.master).__name__} "
+                f"children={len(widget.winfo_children())}"
+            )
+    assert not missing, "unbound: " + " | ".join(missing[:6])
     assert checked >= 10, f"only {checked} widgets answered the wheel"
 
 
