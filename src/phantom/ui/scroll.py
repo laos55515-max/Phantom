@@ -167,6 +167,16 @@ def _handler(canvas: Any, platform: str | None) -> Any:
     return handle
 
 
+def _undo_bind(widget: Any, sequence: str) -> None:
+    unbind = getattr(widget, "unbind", None)
+    if not callable(unbind):
+        return
+    try:
+        unbind(sequence)  # the only form CustomTkinter wrappers accept
+    except Exception as exc:  # noqa: BLE001 - composite widgets refuse it too
+        LOGGER.debug("unbind %s on %r failed: %s", sequence, widget, exc)
+
+
 def _bind_one(
     widget: Any,
     handler: Any,
@@ -177,21 +187,27 @@ def _bind_one(
     if is_text_area(widget) or is_scrollbar(widget):
         return
     binder = getattr(widget, "bind", None)
-    if not callable(binder):
-        return
-    for sequence in WHEEL_SEQUENCES:
-        if sequence in _marked(widget):
-            continue
-        try:
-            funcid = binder(sequence, handler, "+")
-        except Exception as exc:  # noqa: BLE001 - composite widgets refuse bind()
-            LOGGER.debug("bind %s on %r failed: %s", sequence, widget, exc)
-            continue
-        if not funcid:
-            continue
-        _mark(widget, sequence)
-        bound.append(WheelBinding(widget=widget, sequence=sequence, funcid=str(funcid)))
-    # Bound here so the walk below never needs to know about the canvas.
+    if callable(binder):
+        for sequence in WHEEL_SEQUENCES:
+            if sequence in _marked(widget):
+                continue
+            try:
+                funcid = binder(sequence, handler, "+")
+            except Exception as exc:  # noqa: BLE001 - CTkBaseClass raises for some
+                LOGGER.debug("bind %s on %r failed: %s", sequence, widget, exc)
+                continue
+            if funcid:
+                _mark(widget, sequence)
+                bound.append(
+                    WheelBinding(widget=widget, sequence=sequence, funcid=str(funcid))
+                )
+                continue
+            # A CustomTkinter wrapper forwarded the binding to the Tk widgets it
+            # is made of and returned nothing.  Those widgets are visited as
+            # children and bound on their own, so keeping the forward would run
+            # the handler twice per notch.
+            _undo_bind(widget, sequence)
+    # Bound here so the recursion below never needs to know about the canvas.
     if canvas is not None and widget is not canvas:
         _bind_one(canvas, handler, None, platform, bound)
 
@@ -280,7 +296,10 @@ class MouseWheelRouter:
         """Remove every binding this router created (safe to call twice)."""
         for binding in self.bindings:
             try:
-                binding.widget.unbind(binding.sequence, binding.funcid)
+                if binding.funcid:
+                    binding.widget.unbind(binding.sequence, binding.funcid)
+                else:
+                    binding.widget.unbind(binding.sequence)
             except Exception as exc:  # noqa: BLE001 - the widget may be gone
                 LOGGER.debug("unbind %s failed: %s", binding.sequence, exc)
             _marked(binding.widget).discard(binding.sequence)
