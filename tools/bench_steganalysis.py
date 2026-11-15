@@ -1,9 +1,11 @@
-"""Baseline steganalysis of the v3 layout: how much payload shows up in statistics.
+"""Baseline steganalysis of the v3 and v4 layouts: how much payload shows up.
 
 Run with ``.venv/bin/python tools/bench_steganalysis.py``.  Eight deterministic
-512x512 carriers are generated, embedded through the real engine (v3 keyed
-layout, LSB matching), written out as PNG, read back, and handed to two classic
-blind detectors:
+512x512 carriers are generated, embedded through the real engine twice — once
+with the v3 keyed layout (LSB matching, positions ignore the image) and once with
+the v4 adaptive layout (S-UNIWARD-style cost map, changes go where the image is
+busy) — written out as PNG, read back, extracted again to prove the file is still
+readable, and handed to two classic blind detectors:
 
 * **chi-square** (Westfeld & Pfitzmann, 1999) — tests whether the histogram
   pairs ``(2i, 2i+1)`` have equalised, which is what LSB randomisation does.
@@ -17,6 +19,14 @@ Both detectors are run on the untouched carriers too: a detector that already
 screams on a cover says nothing about the payload, and RS does exactly that on
 noise-like textures.  A carrier therefore only counts as *detected* when its
 stego is flagged while its cover was not.
+
+The comparison table is the point of the run: the same payload, the same
+carriers, two ways of choosing which samples to touch.  Distortion (PSNR) and the
+number of changes are the same by construction — what differs is *where* they
+land, and whether the detectors notice.  ``перцентиль`` / ``в гладких 50%``
+show that directly: an adaptive embedder should pick changes from the cheapest
+end of the cost map (percentile near 0) and put almost nothing into the smooth
+half, while an image-blind one lands at 50 % / 50 % by definition.
 
 SRM / rich-model features are deliberately out of scope: this is the cheap
 baseline that says at which payload a PHANTOM file stops looking innocent.
@@ -44,12 +54,18 @@ from PIL import Image
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from phantom.core import constants as C
-from phantom.stego import engine
+from phantom.core.payload import Payload, pack_payload
+from phantom.stego import adaptive, engine
 from phantom.stego.samples import ImageSamples
 
 SIZE: Final = 512
 PASSWORD: Final = "benchmark password, not a secret"
 LOAD_LEVELS: Final[tuple[float, ...]] = (0.05, 0.1, 0.2, 0.4)
+LAYOUTS: Final[tuple[str, ...]] = ("v3", "v4")
+LAYOUT_VERSIONS: Final[dict[str, int]] = {
+    "v3": C.CONTAINER_VERSION,
+    "v4": C.ADAPTIVE_CONTAINER_VERSION,
+}
 
 # Detector thresholds.  They are heuristics picked so that an ordinary cover
 # stays out of the "suspect" bucket; they are not calibrated for a false
@@ -333,6 +349,12 @@ class Measurement:
     changed_samples_pct: float
     chi2: float
     rs: float
+    layout: str = "v3"
+    version: int = C.CONTAINER_VERSION
+    cheap_share: float = math.nan
+    cost_percentile: float = math.nan
+    smooth_share: float = math.nan
+    verified: bool = False
 
     @property
     def is_cover(self) -> bool:
@@ -353,9 +375,49 @@ class Measurement:
         return chi2_hit or rs_hit
 
 
-def measure(name: str, cover: np.ndarray, image: np.ndarray, bpp: float) -> Measurement:
+def adaptivity(cover: np.ndarray, stego: np.ndarray) -> tuple[float, float, float]:
+    """Where the changes landed relative to the cost map of the untouched cover.
+
+    Three numbers, all of them 20 / 50 / 50 for a change set chosen without looking
+    at the image — which is exactly what v3 does:
+
+    * share of changed samples in the cheapest fifth of the map;
+    * median cost *percentile* of the changed samples (0 = always the cheapest);
+    * share in the expensive half (sky, skin, flat fills).
+
+    The percentile is the one to read when the payload is large enough to fill the
+    cheap region completely: the share saturates at 100 %, the percentile does not.
+    """
+    costs = adaptive.layout_costs(cover).reshape(-1)
+    changed = np.flatnonzero((cover != stego).reshape(-1))
+    if changed.size == 0:
+        return math.nan, math.nan, math.nan
+    order = np.argsort(costs, kind="stable")
+    ranks = np.empty(costs.size, dtype=np.float64)
+    ranks[order] = np.arange(costs.size) * (100.0 / max(1, costs.size - 1))
+    picked = costs[changed]
+    cheap = float(np.quantile(costs, 0.2))
+    smooth = float(np.quantile(costs, 0.5))
+    return (
+        100.0 * float(np.mean(picked <= cheap)),
+        float(np.median(ranks[changed])),
+        100.0 * float(np.mean(picked >= smooth)),
+    )
+
+
+def measure(
+    name: str,
+    cover: np.ndarray,
+    image: np.ndarray,
+    bpp: float,
+    *,
+    layout: str = "v3",
+    version: int = C.CONTAINER_VERSION,
+    verified: bool = False,
+) -> Measurement:
     pixels_pct, samples_pct = changed_percent(cover, image)
     chi2, rs = _detect(image)
+    cheap_share, cost_percentile, smooth_share = adaptivity(cover, image)
     return Measurement(
         carrier=name,
         bpp=bpp,
@@ -364,6 +426,12 @@ def measure(name: str, cover: np.ndarray, image: np.ndarray, bpp: float) -> Meas
         changed_samples_pct=samples_pct,
         chi2=chi2,
         rs=rs,
+        layout=layout,
+        version=version,
+        cheap_share=cheap_share,
+        cost_percentile=cost_percentile,
+        smooth_share=smooth_share,
+        verified=verified,
     )
 
 
@@ -419,29 +487,51 @@ def print_calibration(block: dict[str, Any]) -> None:
 # ---------------------------------------------------------------------------
 # embedding
 # ---------------------------------------------------------------------------
-def blob_for(bpp: float, pixels: int) -> bytes:
-    """Incompressible blob whose ciphertext lands on the requested bpp.
+def packed_blob_for(bpp: float, pixels: int) -> tuple[bytes, bytes]:
+    """Packed payload whose ciphertext lands on the requested bpp, plus its plaintext.
 
-    ``bpp`` is bits per pixel, so a 512x512 RGB carrier holds three samples per
-    pixel and 0.4 bpp spends 0.4 * 512 * 512 bits in total.
+    The blob has to come from ``pack_payload`` — extraction checks its metadata and
+    digest, so a hand-built blob would report corruption even when the payload
+    itself survived.  Compression of random bytes is close to 1:1, so the data
+    length is nudged twice to hit the target size within a handful of bytes.
     """
     target_bits = round(bpp * pixels)
-    blob_len = (target_bits - C.HEADER_BITS) // 8 - C.TAG_SIZE
-    if blob_len < 1:
+    target_bytes = (target_bits - C.HEADER_BITS) // 8 - C.TAG_SIZE
+    if target_bytes < 64:
         raise SystemExit(f"{bpp} bpp does not fit into {pixels} pixels")
     rng = np.random.default_rng(round(bpp * 10_000))
-    return b"\x01" + rng.integers(0, 256, blob_len - 1, dtype=np.uint8).tobytes()
+    budget = target_bytes - 2  # a byte or two of slack for the capacity check
+    length = max(1, budget - 48)
+    data = b""
+    blob = b""
+    for _attempt in range(4):
+        data = rng.integers(0, 256, length, dtype=np.uint8).tobytes()
+        blob = pack_payload(Payload.file("bench.bin", data)).blob
+        shortfall = budget - len(blob)
+        if shortfall == 0:
+            break
+        length = max(1, length + shortfall)
+    return blob, data
 
 
-def embed_png(source: np.ndarray, bpp: float, target: Path) -> np.ndarray:
-    """Embed through the real engine, write a PNG, read it back."""
+def embed_png(
+    source: np.ndarray, bpp: float, target: Path, *, layout: str = "v3"
+) -> tuple[np.ndarray, int, bool]:
+    """Embed through the real engine, write a PNG, read it back, extract it again."""
     pixels = source.copy()
     space = ImageSamples(pixels)
-    blob = blob_for(bpp, int(source.shape[0] * source.shape[1]))
-    engine.embed_payload(space, blob, PASSWORD)
+    blob, data = packed_blob_for(bpp, int(source.shape[0] * source.shape[1]))
+    report = engine.embed_payload(space, blob, PASSWORD, container_version=LAYOUT_VERSIONS[layout])
     Image.fromarray(pixels, mode="RGB").save(target, format="PNG", optimize=False)
     with Image.open(target) as written:
-        return np.array(written.convert("RGB"), dtype=np.uint8)
+        stego = np.array(written.convert("RGB"), dtype=np.uint8)
+    verified = False
+    try:
+        extracted = engine.extract_payload(ImageSamples(stego.copy()), PASSWORD)
+        verified = extracted.integrity_ok and extracted.data == data
+    except Exception:  # noqa: BLE001 - a broken file is a result, not a crash
+        verified = False
+    return stego, report.container_version, verified
 
 
 # ---------------------------------------------------------------------------
@@ -547,6 +637,63 @@ def print_summary(summary: list[dict[str, Any]], covers: dict[str, Measurement])
         )
 
 
+def print_comparison(rows: list[Measurement], covers: dict[str, Measurement]) -> None:
+    """v3 against v4 at the same payload: distortion, placement, detector verdicts."""
+    usable = {name for name, cover in covers.items() if not cover.flagged}
+    loads = sorted({row.bpp for row in rows if not row.is_cover})
+    width = 116
+    print("\n" + "=" * width)
+    print("v3 (LSB matching) против v4 (адаптивная раскладка) — те же носители, та же нагрузка")
+    print("=" * width)
+    header = (
+        f"  {'bpp':>5} | {'раскладка':<10} | {'PSNR dB':>8} | {'изменено px %':>13} | "
+        f"{'перцентиль':>10} | {'в гладких 50%':>13} | {'χ² p̂':>6} | {'RS p̂':>6} | "
+        f"{'обнаружено':>10} | файл"
+    )
+    print(header)
+    print("  " + "-" * (len(header) - 2))
+    for bpp in loads:
+        for layout in LAYOUTS:
+            group = [
+                row
+                for row in rows
+                if abs(row.bpp - bpp) < 1e-9 and row.layout == layout and row.carrier in usable
+            ]
+            if not group:
+                continue
+            hits = [row for row in group if verdict(row, covers[row.carrier]) == "detected"]
+            suspects = [row for row in group if verdict(row, covers[row.carrier]) == "suspect"]
+            detected = f"{len(hits)}/{len(group)}"
+            if suspects:
+                detected += f" +{len(suspects)}?"
+            fallbacks = sum(1 for row in group if row.version != LAYOUT_VERSIONS[layout])
+            verified = sum(1 for row in group if row.verified)
+            state = f"{verified}/{len(group)} ok"
+            if layout == "v4" and fallbacks:
+                state += f", {fallbacks} откат"
+            print(
+                f"  {bpp:>5.2f} | {layout + ' ' + _layout_note(layout):<10} | "
+                f"{np.median([row.psnr_db for row in group]):>8.2f} | "
+                f"{np.median([row.changed_pixels_pct for row in group]):>13.2f} | "
+                f"{np.median([row.cost_percentile for row in group]):>10.1f} | "
+                f"{np.median([row.smooth_share for row in group]):>13.1f} | "
+                f"{_cell(float(np.median([row.chi2 for row in group])), 6)} | "
+                f"{_cell(float(np.nanmedian([row.rs for row in group])), 6)} | "
+                f"{detected:>10} | {state}"
+            )
+    print("  " + "-" * (len(header) - 2))
+    print(
+        "«перцентиль» — медианный перцентиль стоимости изменённых сэмплов (0 = самые дешёвые);\n"
+        "«в гладких 50%» — доля изменений в самой дорогой половине карты (небо, кожа, заливки)."
+        "\nСлепой выбор по построению даёт 50 % и 50 %: так выглядит v3."
+        "\n«файл» — сколько стенограмм удалось извлечь обратно после записи в PNG."
+    )
+
+
+def _layout_note(layout: str) -> str:
+    return "matching" if layout == "v3" else "adaptive"
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--json", type=Path, help="also write the numbers here")
@@ -558,7 +705,14 @@ def main(argv: list[str] | None = None) -> int:
         default=list(LOAD_LEVELS),
         help="payload sizes in bits per pixel",
     )
+    parser.add_argument(
+        "--layout",
+        choices=(*LAYOUTS, "both"),
+        default="both",
+        help="which layout to run (default: both, for the comparison table)",
+    )
     args = parser.parse_args(argv)
+    layouts: tuple[str, ...] = LAYOUTS if args.layout == "both" else (args.layout,)
     loads: tuple[float, ...] = tuple(args.bpp)
 
     workdir = args.keep or Path(tempfile.mkdtemp(prefix="phantom-steganalysis-"))
@@ -568,7 +722,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"carriers are written to {workdir} (temporary, use --keep to keep them)")
 
     print(
-        f"PHANTOM {C.CONTAINER_VERSION} · keyed layout · LSB matching · "
+        f"PHANTOM v{C.CONTAINER_VERSION} (keyed LSB matching) "
+        f"vs v{C.ADAPTIVE_CONTAINER_VERSION} (adaptive) · "
         f"{len(CARRIERS)} carriers of {SIZE}x{SIZE} RGB · bpp = bits per pixel"
     )
     print_calibration(calibration())
@@ -587,20 +742,38 @@ def main(argv: list[str] | None = None) -> int:
                 f"  cover {name:<18} chi2={_cell(covers[name].chi2, 6, 3)}"
                 f" RS={_cell(covers[name].rs, 6, 3)}"
             )
-            for bpp in loads:
-                stego_path = workdir / f"{index:02d}-{slug}-{bpp:.2f}.png"
-                stego = embed_png(carrier, bpp, stego_path)
-                rows.append(measure(name, carrier, stego, bpp))
-                print(f"  embedded {name:<18} {bpp:.2f} bpp -> {stego_path.name}")
+            for layout in layouts:
+                for bpp in loads:
+                    stego_path = workdir / f"{index:02d}-{slug}-{layout}-{bpp:.2f}.png"
+                    stego, version, verified = embed_png(carrier, bpp, stego_path, layout=layout)
+                    rows.append(
+                        measure(
+                            name,
+                            carrier,
+                            stego,
+                            bpp,
+                            layout=layout,
+                            version=version,
+                            verified=verified,
+                        )
+                    )
+                    print(
+                        f"  embedded {name:<18} {layout} {bpp:.2f} bpp -> {stego_path.name}"
+                        f"{'' if verified else '  (extract failed)'}"
+                    )
     finally:
         if not keep:
             shutil.rmtree(workdir, ignore_errors=True)
     elapsed = time.perf_counter() - started
 
-    print_per_carrier(rows, covers)
-    summary = summarise(rows, covers)
-    print_summary(summary, covers)
-    print(f"\n{len(rows)} embeds in {elapsed:.1f} s")
+    for layout in layouts:
+        layout_rows = [row for row in rows if row.layout == layout]
+        print_per_carrier(layout_rows, covers)
+        print_summary(summarise(layout_rows, covers), covers)
+    if len(layouts) > 1:
+        print_comparison(rows, covers)
+    broken = [row for row in rows if not row.verified]
+    print(f"\n{len(rows)} embeds in {elapsed:.1f} s, {len(broken)} unreadable")
 
     if args.json:
         args.json.parent.mkdir(parents=True, exist_ok=True)
@@ -625,11 +798,20 @@ def main(argv: list[str] | None = None) -> int:
                     "changed_samples_pct": row.changed_samples_pct,
                     "chi2": row.chi2,
                     "rs": row.rs,
+                    "layout": row.layout,
+                    "version": row.version,
+                    "cheap_share": row.cheap_share,
+                    "cost_percentile": row.cost_percentile,
+                    "smooth_share": row.smooth_share,
+                    "verified": row.verified,
                     "verdict": verdict(row, covers[row.carrier]),
                 }
                 for row in rows
             ],
-            "summary": summary,
+            "summary": {
+                layout: summarise([row for row in rows if row.layout == layout], covers)
+                for layout in layouts
+            },
         }
         args.json.write_text(
             json.dumps(payload, indent=2, ensure_ascii=False, default=str) + "\n",

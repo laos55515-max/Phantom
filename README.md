@@ -35,6 +35,15 @@ layout, whose header sat at constant-seeded positions, are still read. The
 *presence* of steganography is a separate question, and statistical analysis can
 answer it.
 
+An experimental adaptive layout (`container_version=4`, reachable from the engine
+and the benchmark, not yet wired into the interface) attacks the visibility of the
+changes themselves: a Daubechies wavelet cost map measures where the image is busy
+and the payload is placed there first — into foliage, edges and noise, away from
+sky, skin and flat fills. The distortion is the same as v3 by construction; what
+changes is where it lands (median cost percentile 4–8 % against v3's 50 %, see the
+CHANGELOG for the side-by-side table). It is opt-in and falls back to v3 whenever
+the image cannot carry it.
+
 Read [`SECURITY.md`](SECURITY.md) for the threat model, and the in-app
 "Threat model" block for the same text in your language.
 

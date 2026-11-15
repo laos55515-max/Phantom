@@ -25,6 +25,12 @@ APP_RELEASE_LABEL: Final = f"{APP_NAME} {APP_VERSION}"
 #: Current on-carrier format.  v3 keeps the v2 AEAD layout and moves *every*
 #: bit of the carrier, header included, to positions derived from the password.
 CONTAINER_VERSION: Final = 3
+#: Experimental adaptive layout: the header still sits at key-derived positions,
+#: but the payload goes to the samples whose ±1 change is least visible, chosen by
+#: a Daubechies-8 cost map (:mod:`phantom.stego.adaptive`).  Opt-in with
+#: ``engine.embed_payload(container_version=C.ADAPTIVE_CONTAINER_VERSION)``; never
+#: the default, because selection without syndrome coding is not the final word.
+ADAPTIVE_CONTAINER_VERSION: Final = 4
 #: Layout written by PHANTOM 2.0.0: public header positions, keyed payload only.
 #: Still readable; written only when an older build must open the file.
 V2_CONTAINER_VERSION: Final = 2

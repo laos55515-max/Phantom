@@ -116,6 +116,17 @@ class ImageSamples:
             assert self._prefix is not None
             self.size = 3 * int(self._prefix[-1])
 
+    @property
+    def is_opaque(self) -> bool:
+        """True when every pixel is active, so slot order is plain raster order."""
+        return bool(self._all_active)
+
+    @property
+    def pixels(self) -> np.ndarray:
+        """The writable ``(h, w, channels)`` array this space sits on."""
+        grid: np.ndarray = self._flat.reshape(self._height, self._width, self._channels)
+        return grid
+
     # -- mapping -----------------------------------------------------------
     def _channel_positions(self, slots: np.ndarray) -> np.ndarray:
         pixel_ordinals = slots // 3

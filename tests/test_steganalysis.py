@@ -157,7 +157,8 @@ def test_blob_for_hits_the_requested_load(bench: ModuleType) -> None:
     from phantom.core import constants as C
 
     pixels = 512 * 512
-    blob = bench.blob_for(0.4, pixels)
+    blob, data = bench.packed_blob_for(0.4, pixels)
+    assert len(data) > 12_000, "the payload itself must be big, not just its metadata"
     ciphertext = len(blob) + C.TAG_SIZE
     written_bits = C.HEADER_BITS + 8 * ciphertext
     assert written_bits / pixels == pytest.approx(0.4, abs=1e-3)
@@ -165,7 +166,7 @@ def test_blob_for_hits_the_requested_load(bench: ModuleType) -> None:
 
 def test_blob_for_rejects_a_load_that_does_not_fit(bench: ModuleType) -> None:
     with pytest.raises(SystemExit):
-        bench.blob_for(0.5, 64)
+        bench.packed_blob_for(0.5, 64)
 
 
 def test_embed_png_writes_matching_and_reads_back_the_same_pixels(
@@ -175,8 +176,10 @@ def test_embed_png_writes_matching_and_reads_back_the_same_pixels(
     cover = _rgb(bench)
     target = tmp_path / "stego.png"
 
-    stego = bench.embed_png(cover, 0.3, target)
+    stego, version, verified = bench.embed_png(cover, 0.3, target)
 
+    assert version == 3, "the default layout is still the keyed v3 one"
+    assert verified, "the bench must prove the file it wrote can be read back"
     assert target.stat().st_size > 0
     delta = stego.astype(np.int16) - cover.astype(np.int16)
     assert set(np.unique(delta).tolist()) <= {-1, 0, 1}, "LSB matching never jumps further"
@@ -194,7 +197,7 @@ def test_embed_png_output_is_detectable_only_when_replacement_is_used(
 ) -> None:
     """Same pixels, two writing styles: the detectors separate them cleanly."""
     cover = _rgb(bench)
-    stego = bench.embed_png(cover, 0.3, tmp_path / "stego.png")
+    stego, _version, _verified = bench.embed_png(cover, 0.3, tmp_path / "stego.png")
     matched_chi2, matched_rs = bench._detect(stego)
     assert matched_chi2 < 0.1
     assert math.isnan(matched_rs) or matched_rs < 0.1
@@ -232,6 +235,50 @@ def test_changed_percent_counts_pixels_and_samples_separately(bench: ModuleType)
     pixels, samples = bench.changed_percent(cover, stego)
     assert pixels == pytest.approx(25.0), "one pixel of four"
     assert samples == pytest.approx(100.0 * 2 / 12), "two samples of twelve"
+
+
+def _two_regions(size: int = 256) -> np.ndarray:
+    """Sky on the left, foliage on the right: a cost map needs both to be useful."""
+    rng = np.random.default_rng(29)
+    _yy, xx = np.mgrid[0:size, 0:size]
+    plane = np.where(
+        xx < size // 2, 120 + 20 * (xx / size), 110 + rng.normal(0, 30.0, (size, size))
+    )
+    return np.clip(np.stack([plane, plane * 0.9 + 20, plane * 0.8 + 30], -1), 0, 255).astype(
+        np.uint8
+    )
+
+
+def test_embed_png_can_write_the_adaptive_layout(bench: ModuleType, tmp_path: Path) -> None:
+    """The bench drives v4 through the engine too, and the file still extracts."""
+    cover = _two_regions()
+    stego, version, verified = bench.embed_png(cover, 0.2, tmp_path / "v4.png", layout="v4")
+
+    assert version == 4
+    assert verified
+    _cheap, percentile, smooth = bench.adaptivity(cover, stego)
+    assert percentile < 25.0, f"v4 should sit low on the cost scale, got {percentile:.1f}"
+    assert smooth < 20.0, f"v4 should avoid the smooth half, got {smooth:.1f} %"
+
+
+def test_adaptivity_shows_an_image_blind_layout_at_its_defaults(bench: ModuleType) -> None:
+    """The metric's own control: v3 changes are spread evenly, so ~20 % and ~50 %."""
+    cover = _two_regions()
+    stego = cover.copy()
+    rng = np.random.default_rng(4)
+    picked = rng.choice(cover.size, size=cover.size // 10, replace=False)
+    stego.reshape(-1)[picked] ^= 1
+
+    cheap, percentile, smooth = bench.adaptivity(cover, stego)
+    assert cheap == pytest.approx(20.0, abs=6.0)
+    assert percentile == pytest.approx(50.0, abs=6.0)
+    assert smooth == pytest.approx(50.0, abs=6.0)
+
+
+def test_adaptivity_of_an_untouched_image_is_undefined(bench: ModuleType) -> None:
+    cover = _rgb(bench)
+    cheap, percentile, smooth = bench.adaptivity(cover, cover.copy())
+    assert math.isnan(cheap) and math.isnan(percentile) and math.isnan(smooth)
 
 
 def _measure(bench: ModuleType, chi2: float, rs: float, bpp: float = 0.2) -> object:
@@ -285,9 +332,14 @@ def test_main_writes_a_json_report(bench: ModuleType, tmp_path: Path, monkeypatc
     payload = json.loads(report.read_text(encoding="utf-8"))
     assert payload["carriers"] == 2
     assert len(payload["covers"]) == 2
-    assert len(payload["summary"]) == 1
-    assert payload["summary"][0]["bpp"] == pytest.approx(0.3)
-    assert payload["summary"][0]["carriers"] <= 2
+    assert set(payload["summary"]) == {"v3", "v4"}, "both layouts are summarised"
+    for layout in ("v3", "v4"):
+        block = payload["summary"][layout]
+        assert len(block) == 1
+        assert block[0]["bpp"] == pytest.approx(0.3)
+        assert block[0]["carriers"] <= 2
+    assert {row["layout"] for row in payload["rows"]} == {"v3", "v4"}
+    assert all("cost_percentile" in row for row in payload["rows"])
     assert payload["rows"] and all(row["verdict"] for row in payload["rows"])
     assert (tmp_path / "pngs").is_dir(), "--keep must leave the carriers on disk"
     for name in payload["covers"]:
