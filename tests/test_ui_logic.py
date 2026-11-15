@@ -16,8 +16,10 @@ from phantom.core.api import CarrierKind, CarrierProbe, EmbedOutcome, ExtractOut
 from phantom.core.errors import CapacityError, InternalError, InvalidInput, InvalidPassword
 from phantom.core.payload import ExtractedPayload, PayloadKind, SizeEstimate
 from phantom.core.progress import Stage
+from phantom.i18n import I18n
 from phantom.stego.engine import Capacity
 from phantom.ui import clipboard as ui_clipboard
+from phantom.ui import format as ui_format
 from phantom.ui import layout, scroll
 from phantom.ui.animator import Animator
 from phantom.ui.debounce import Debouncer
@@ -1623,3 +1625,53 @@ def test_as_buffer_accepts_a_bare_widget() -> None:
     entry = FakeEntry("value")
     assert ui_clipboard.as_buffer(entry).editor is entry
     assert ui_clipboard.as_buffer(ui_clipboard.TextBuffer(inner=entry)).editor is entry
+
+
+# ---------------------------------------------------------------------------
+# container layout labels
+# ---------------------------------------------------------------------------
+LOCALES_DIR = Path(__file__).resolve().parent.parent / "src" / "phantom" / "locales"
+
+
+def test_layout_label_names_the_version_of_every_supported_layout() -> None:
+    for code in ("en", "ru", "uk"):
+        i18n = I18n(code, locales_dir=LOCALES_DIR)
+        current = ui_format.layout_text(i18n, C.CONTAINER_VERSION)
+        legacy = ui_format.layout_text(i18n, C.V2_CONTAINER_VERSION)
+        assert f"v{C.CONTAINER_VERSION}" in current
+        assert f"v{C.V2_CONTAINER_VERSION}" in legacy
+        assert current != legacy
+        assert ui_format.written_layout_text(i18n) == current
+
+
+def test_layout_labels_exist_in_every_locale() -> None:
+    i18n = I18n("en", locales_dir=LOCALES_DIR)
+    keys = set(ui_format.LAYOUT_KEYS.values()) | {ui_format.UNKNOWN_LAYOUT_KEY}
+    keys.add("audit_layout")
+    keys.add("lbl_embed_format")
+    for code in ("en", "ru", "uk"):
+        locale = I18n(code, locales_dir=LOCALES_DIR)
+        for key in keys:
+            assert locale.has(key), f"{code} misses {key}"
+    assert i18n.has("lbl_embed_format")
+
+
+def test_unknown_layout_is_named_without_inventing_a_version() -> None:
+    i18n = I18n("en", locales_dir=LOCALES_DIR)
+    text = ui_format.layout_text(i18n, 99)
+    assert text == i18n.t("layout_unknown")
+    assert "99" not in text
+
+
+def test_layout_keys_cover_exactly_the_supported_versions() -> None:
+    assert set(ui_format.LAYOUT_KEYS) == {
+        C.CONTAINER_VERSION,
+        C.V2_CONTAINER_VERSION,
+    }
+
+
+def test_the_embed_hint_mentions_the_layout_it_will_write() -> None:
+    i18n = I18n("en", locales_dir=LOCALES_DIR)
+    text = i18n.t("lbl_embed_format", layout=ui_format.written_layout_text(i18n))
+    assert f"v{C.CONTAINER_VERSION}" in text
+    assert "{" not in text, "a placeholder was left unfilled"

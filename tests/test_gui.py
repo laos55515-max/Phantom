@@ -170,6 +170,71 @@ def test_embed_flow_through_the_ui(app, rgb_carrier: Path, password: str) -> Non
     assert api.extract_from_path(str(output), password).payload.data == b"gui smoke payload"
 
 
+def _extracted(version: int):
+    from phantom.core.payload import ExtractedPayload, PayloadKind
+
+    return ExtractedPayload(
+        kind=PayloadKind.TEXT,
+        name="",
+        data=b"text",
+        sha256_expected="a" * 64,
+        sha256_actual="a" * 64,
+        integrity_ok=True,
+        original_size=4,
+        compressed_size=4,
+        container_version=version,
+    )
+
+
+def test_embed_tab_says_which_layout_it_writes(app) -> None:
+    from phantom.ui.format import written_layout_text
+
+    assert app.format_label.cget("text") == app.i18n.t(
+        "lbl_embed_format", layout=written_layout_text(app.i18n)
+    )
+    assert f"v{C.CONTAINER_VERSION}" in app.format_label.cget("text")
+
+
+def test_format_row_names_the_layout_of_the_opened_file(app) -> None:
+    from phantom.ui.format import layout_text
+
+    app._show_tab("extract")
+    app._refresh_all()
+    assert app.audit_rows["audit_layout"].cget("text") == "—", "no file yet"
+
+    app.extract_vm.result = _extracted(C.CONTAINER_VERSION)
+    app._refresh_all()
+    assert app.audit_rows["audit_layout"].cget("text") == layout_text(
+        app.i18n, C.CONTAINER_VERSION
+    )
+    assert f"v{C.CONTAINER_VERSION}" in app.audit_rows["audit_layout"].cget("text")
+
+    app.extract_vm.result = _extracted(C.V2_CONTAINER_VERSION)
+    app._refresh_all()
+    assert app.audit_rows["audit_layout"].cget("text") == layout_text(
+        app.i18n, C.V2_CONTAINER_VERSION
+    )
+    assert f"v{C.V2_CONTAINER_VERSION}" in app.audit_rows["audit_layout"].cget("text")
+
+
+def test_format_row_follows_a_language_switch(app) -> None:
+    from phantom.ui.format import layout_text
+
+    app._show_tab("extract")
+    app.extract_vm.result = _extracted(C.CONTAINER_VERSION)
+    app._refresh_all()
+    before = app.audit_rows["audit_layout"].cget("text")
+
+    target = "uk" if app.i18n.language != "uk" else "en"
+    app._on_language_click(app._label_by_lang[target])
+    app._refresh_all()
+    after = app.audit_rows["audit_layout"].cget("text")
+
+    assert after == layout_text(app.i18n, C.CONTAINER_VERSION)
+    assert after != before
+    assert f"v{C.CONTAINER_VERSION}" in after
+
+
 def test_password_generator_writes_entry(app) -> None:
     app._generate_password()
     assert len(app.embed_vm.password) == C.GENERATED_PASSWORD_LENGTH
