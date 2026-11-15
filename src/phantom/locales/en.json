@@ -138,7 +138,7 @@
   "settings_language": "INTERFACE LANGUAGE",
   "settings_reduce_motion": "Reduce animations",
   "settings_reset": "RESET SETTINGS",
-  "settings_threat_model": "Protects: the content of hidden data (AES-256-GCM). The positions of the sealed header are known to anyone who has the file, but without the password they cannot be decrypted, and a wrong password is indistinguishable from a carrier with no payload.\nDoes NOT protect: the presence of steganography itself — LSB embedding is detectable by statistical steganalysis; file metadata; re-compression of image or audio.\nIn messengers send the file AS A DOCUMENT: the “photo” mode re-encodes images and destroys the payload.",
+  "settings_threat_model": "Protects: the content of hidden data (AES-256-GCM). Where every bit of the carrier sits — the sealed header included — is derived from your password, so without it there is no region to read: a wrong password is indistinguishable from a carrier with no payload.\nDoes NOT protect: the presence of steganography itself — LSB embedding is detectable by statistical steganalysis; file metadata; re-compression of image or audio.\nIn messengers send the file AS A DOCUMENT: the “photo” mode re-encodes images and destroys the payload.",
   "settings_title": "SETTINGS",
   "settings_wipe_warning": "Overwriting a file cannot guarantee erasure on SSDs, copy-on-write filesystems (APFS/Btrfs) or journals. Treat it as risk reduction, not a guarantee.",
   "stage.compressing": "Compressing",

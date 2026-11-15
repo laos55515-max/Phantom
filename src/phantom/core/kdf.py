@@ -26,6 +26,7 @@ __all__ = [
     "MessageKeys",
     "derive_master_key",
     "derive_message_keys",
+    "derive_position_key",
     "hkdf",
     "normalize_password",
     "password_variants",
@@ -109,6 +110,42 @@ def derive_master_key(
         _zero(secret)
     check_cancel(cancel)
     return bytearray(raw)
+
+
+def derive_position_key(
+    password: str,
+    *,
+    cancel: threading.Event | None = None,
+    progress: ProgressFn = noop_progress,
+) -> bytearray:
+    """Bootstrap key that decides where every bit of a v3 carrier lives.
+
+    The salt is the fixed public constant ``POSITION_KDF_SALT``: the random
+    per-message salt lives *inside* the sealed header, and the header cannot be
+    located before this key exists.  The trade-off is deliberate and documented
+    in ``SECURITY.md``: the position set depends on the password and the carrier
+    size, never on the payload, so two files hidden with the same password in
+    carriers of the same size use the same positions.
+
+    ``PBKDF2-HMAC-SHA256`` is used regardless of the KDF profile chosen for the
+    message itself, because that profile is negotiated by the header the key is
+    needed to find.  The output is HKDF-separated from the message keys so the
+    two derivations can never collide.
+    """
+    validate_password(password)
+    profile = C.KDF_PROFILES[C.POSITION_KDF_PROFILE_ID]
+    master = derive_master_key(
+        password, C.POSITION_KDF_SALT, profile, cancel=cancel, progress=progress
+    )
+    try:
+        return hkdf(
+            master,
+            C.INFO_POSITION_BOOTSTRAP,
+            length=C.AES_KEY_SIZE,
+            salt=C.POSITION_KDF_SALT,
+        )
+    finally:
+        _zero(master)
 
 
 def hkdf(

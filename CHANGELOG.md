@@ -8,6 +8,26 @@ All notable changes to PHANTOM are recorded here. The format follows
 
 ### Security
 
+- Container format v3: the positions of **every** bit in the carrier, the sealed
+  header included, are derived from the password, so nothing sits at a place a
+  reader without the password can compute. Previously the header was placed by
+  a constant-seeded permutation, which told an attacker exactly which 400 bits
+  to read before knowing anything. The position key is PBKDF2-HMAC-SHA256
+  (600000 iterations) over the password with a fixed domain salt — the
+  per-message salt lives inside the header, which cannot be found before the key
+  exists — and is HKDF-separated from the message keys, so the choice of KDF
+  profile for the payload does not move a single bit. Trade-off documented in
+  `SECURITY.md`: for one password and one carrier size the layout is the same in
+  every file.
+- Version 2 carriers still open: extraction tries the v3 layout, then the v2
+  one, and the version is authenticated inside the header, so one layout can
+  never pass as the other. `stego.engine.embed_payload(container_version=…)`
+  writes the v2 layout for files an older build has to open; the app itself
+  always writes v3.
+- New tests pin the property that mattered: two passwords place the header in
+  different slots, the header never overlaps the payload, a v3 carrier does not
+  authenticate through the v2 positions, and a golden v2 fixture written before
+  this change keeps extracting (text, file name and SHA-256 unchanged).
 - Refuse an output path that resolves to the file being hidden, including the
   path the forced output extension produces and paths reached through symlinks;
   the check now runs before anything is written, with or without secure deletion.

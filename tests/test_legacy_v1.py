@@ -12,6 +12,7 @@ import pytest
 from PIL import Image
 
 from phantom.core import api
+from phantom.core import constants as C
 from phantom.core.errors import WrongPasswordOrNoData
 from phantom.core.payload import PayloadKind
 from phantom.stego.legacy import decode_legacy_blob, extract_legacy_from_pixels
@@ -110,7 +111,7 @@ def test_legacy_detection_does_not_break_v2(legacy_dir: Path, tmp_path: Path, pa
         password=password,
     )
     outcome = api.extract_from_path(str(output), password)
-    assert outcome.payload.container_version == 2
+    assert outcome.payload.container_version == C.CONTAINER_VERSION
     assert outcome.payload.data == b"modern payload"
 
 

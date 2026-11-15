@@ -1,15 +1,15 @@
-"""Versioned v2 container: AES-256-GCM with KDF profile negotiation and AAD.
+"""Versioned container: AES-256-GCM with KDF profile negotiation and AAD.
 
 On-carrier layout (bits, not bytes — no magic, no version in clear text):
 
-* fixed-size public header region (``HEADER_BITS``), placed at positions from a
-  constant-seeded permutation::
+* fixed-size header region (``HEADER_BITS``), placed at positions derived from
+  the password in v3 and from a constant-seeded permutation in v2::
 
       salt(16) || nonce(12) || AESGCM(length_key, nonce, version|profile|len)
 
   The ciphertext authenticates the KDF profile, so the extractor simply tries
   every known profile — the carrier never advertises which one was used.
-* payload region, placed at positions from a key-derived permutation::
+* payload region, placed at key-derived positions in both versions::
 
       AESGCM(payload_key, payload_nonce, payload_bytes, aad = label|header|ver|profile)
 
@@ -46,6 +46,10 @@ from phantom.core.progress import ProgressFn, Stage, check_cancel, noop_progress
 
 _LEN_STRUCT: Final = struct.Struct(">BBI")
 
+#: Versions this module can write and read.  v1 is a different format entirely
+#: and lives in ``stego.legacy``.
+SUPPORTED_VERSIONS: Final = frozenset({C.V2_CONTAINER_VERSION, C.CONTAINER_VERSION})
+
 
 @dataclass(slots=True)
 class SealedEnvelope:
@@ -55,6 +59,7 @@ class SealedEnvelope:
     ciphertext: bytes
     keys: MessageKeys = field(repr=False)
     profile: KdfProfile
+    version: int = C.CONTAINER_VERSION
 
     def wipe(self) -> None:
         self.keys.wipe()
@@ -95,11 +100,20 @@ def seal(
     password: str,
     *,
     profile: KdfProfile | None = None,
+    version: int = C.CONTAINER_VERSION,
     cancel: threading.Event | None = None,
     progress: ProgressFn = noop_progress,
 ) -> SealedEnvelope:
-    """Encrypt ``payload`` into a fresh v2 container."""
+    """Encrypt ``payload`` into a fresh container.
+
+    ``version`` selects the authenticated format stamp; the positions of the
+    bits are the caller's business (``stego.engine``).  A version other than the
+    current one exists so a file can be written for a build that only knows the
+    older layout.
+    """
     profile = profile or C.default_kdf_profile()
+    if version not in SUPPORTED_VERSIONS:
+        raise InvalidInput("unsupported container version")
     if profile.profile_id not in C.KDF_PROFILES:
         raise InvalidInput("unknown KDF profile")
     if not isinstance(payload, (bytes, bytearray)):
@@ -119,13 +133,13 @@ def seal(
         # Store the *ciphertext* length: it includes the GCM tag and is exactly
         # the number of bytes the carrier must hold.
         length_plain = _LEN_STRUCT.pack(
-            C.CONTAINER_VERSION, profile.profile_id, len(payload) + C.TAG_SIZE
+            version, profile.profile_id, len(payload) + C.TAG_SIZE
         )
         len_ct = AESGCM(bytes(keys.length_key)).encrypt(
             nonce, length_plain, C.LEN_AAD
         )
         header = salt + nonce + len_ct
-        aad = payload_aad(header, C.CONTAINER_VERSION, profile.profile_id)
+        aad = payload_aad(header, version, profile.profile_id)
         check_cancel(cancel)
         progress(Stage.ENCRYPTING, 0, 1)
         ciphertext = AESGCM(bytes(keys.payload_key)).encrypt(
@@ -135,7 +149,13 @@ def seal(
     except BaseException:
         keys.wipe()
         raise
-    return SealedEnvelope(header=header, ciphertext=ciphertext, keys=keys, profile=profile)
+    return SealedEnvelope(
+        header=header,
+        ciphertext=ciphertext,
+        keys=keys,
+        profile=profile,
+        version=version,
+    )
 
 
 def open_header(
@@ -143,12 +163,20 @@ def open_header(
     password: str,
     *,
     max_payload_len: int,
+    expected_version: int = C.CONTAINER_VERSION,
     cancel: threading.Event | None = None,
     progress: ProgressFn = noop_progress,
 ) -> OpenedHeader:
-    """Find the KDF profile that authenticates ``header`` and return its keys."""
+    """Find the KDF profile that authenticates ``header`` and return its keys.
+
+    ``expected_version`` is the format stamp the caller expects: the version is
+    authenticated inside the header, so a header belonging to another layout
+    fails the tag check like any wrong password instead of being trusted.
+    """
     if len(header) != C.HEADER_BYTES:
         raise WrongPasswordOrNoData("header length mismatch")
+    if expected_version not in SUPPORTED_VERSIONS:
+        raise InvalidInput("unsupported container version")
     if max_payload_len < 0:
         raise InvalidInput("max_payload_len must be >= 0")
     salt = header[: C.HEADER_SALT_SIZE]
@@ -175,7 +203,7 @@ def open_header(
             except struct.error:
                 keys.wipe()
                 continue
-            if version != C.CONTAINER_VERSION or embedded_profile != profile_id:
+            if version != expected_version or embedded_profile != profile_id:
                 keys.wipe()
                 continue
             if payload_len > max_payload_len:

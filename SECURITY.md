@@ -38,14 +38,36 @@ may be re-encoded before it reaches the recipient.
 - **Content.** Without the password, recovering the plaintext requires breaking
   AES-256-GCM or guessing the password. Password guesses cost one Argon2id
   evaluation each (96 MiB, t=3), which is deliberately expensive.
-- **Content, not the possibility of existence.** The 50-byte header has a fixed,
-  documented position: anyone holding the carrier knows which bits to read. The
-  header is encrypted and authenticated, so without the password those bits
-  cannot be decrypted or turned into plaintext, a wrong password and a carrier
-  with no payload fail the tag check identically, and there is no magic string in
-  clear text to search for. That is a guarantee about *reading*, not about
-  *finding*: whether a payload may be present is answered by steganalysis, not
-  by the password (see below).
+- **Content, and now the layout.** Since format v3 every bit of the carrier —
+  the 50-byte header included — sits at a position derived from the password:
+
+  ```
+  B = Feistel(position_key(password), N)      # one keyed bijection over the carrier
+  header bit i   -> B(i)                      i  < 400
+  payload bit j  -> B(400 + π(j))             π keyed by the per-message key
+  ```
+
+  `position_key` is PBKDF2-HMAC-SHA256 (600000 iterations) over the password
+  with the fixed domain salt `POSITION_KDF_SALT`, HKDF-separated from the
+  message keys. A reader without the password therefore has no region to read:
+  the header is not at a documented offset any more, and a wrong password
+  produces different positions whose bits fail the tag check exactly like a
+  carrier with no payload. There is still no magic string or version mark in
+  clear text.
+- **Documented trade-off of the fixed salt.** The per-message salt lives inside
+  the header, so the header cannot be located before the position key exists —
+  hence a fixed, public salt for that derivation and no per-message salt. The
+  consequence: for one password and one carrier size, the position set is the
+  same in every file. It reveals nothing about the payload, but two carriers of
+  the same size hidden with the same password share their layout. Changing the
+  password, or the carrier size, changes every position.
+- **Compatibility.** Carriers written in the v2 layout (header at
+  `public_permutation(N)[:400]`, payload keyed) are still read: extraction tries
+  the v3 layout first and, if no profile authenticates, the v2 layout. The
+  version is authenticated inside the header, so a v2 header never passes as v3
+  or the other way round. Writing v2 is possible through the engine's
+  `container_version` argument for carriers an older build has to open; the app
+  itself always writes the current version.
 - **Tampering.** Any modification of the header, the ciphertext, or the
   authenticated data (header bytes, container version, KDF profile id) makes
   decryption fail with an integrity error. The app never returns partially
@@ -104,7 +126,15 @@ exactly that; the code does not claim otherwise.
 - Losing the password loses the payload. There is no recovery path, no backdoor
   and no escrow.
 
-## Legacy version 1
+## Legacy versions
+
+### Version 2 (PHANTOM 2.0.0)
+
+Readable, never written by the app: the identical AEAD container with the header
+at constant-seeded positions, which is the weakness v3 removes. Extraction costs
+one extra KDF pass on such files, because the v3 layout is tried first.
+
+### Version 1
 
 Files written by PHANTOM 1.x are still readable: PBKDF2-HMAC-SHA256 with 200000
 iterations, sequential LSB, no magic. This path is read-only, isolated in

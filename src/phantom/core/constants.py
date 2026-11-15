@@ -22,7 +22,12 @@ APP_RELEASE_LABEL: Final = f"{APP_NAME} {APP_VERSION}"
 # ---------------------------------------------------------------------------
 # Container / crypto primitives
 # ---------------------------------------------------------------------------
-CONTAINER_VERSION: Final = 2
+#: Current on-carrier format.  v3 keeps the v2 AEAD layout and moves *every*
+#: bit of the carrier, header included, to positions derived from the password.
+CONTAINER_VERSION: Final = 3
+#: Layout written by PHANTOM 2.0.0: public header positions, keyed payload only.
+#: Still readable; written only when an older build must open the file.
+V2_CONTAINER_VERSION: Final = 2
 LEGACY_CONTAINER_VERSION: Final = 1
 
 AES_KEY_BITS: Final = 256
@@ -48,9 +53,16 @@ INFO_LEN_KEY: Final = AAD_LABEL + b"|length-key"
 INFO_PAYLOAD_KEY: Final = AAD_LABEL + b"|payload-key"
 INFO_PAYLOAD_NONCE: Final = AAD_LABEL + b"|payload-nonce"
 INFO_POSITION_KEY: Final = AAD_LABEL + b"|position-key"
-#: Public (password independent) permutation used for the fixed header region.
-#: A constant seed is fine: the header is random bytes, not a signature.
+#: v2 only: the password-independent permutation that placed the header.  Kept
+#: so files written by 2.0.0 still open; the v3 layout never reaches for it.
 PUBLIC_POSITION_SEED: Final = b"PHANTOM/v2|public-header-permutation-v1"
+
+#: v3: fixed, public domain-separation salt for the bootstrap key that decides
+#: where every bit of the carrier lives.  It has to be fixed: the per-message
+#: salt lives inside the header, which cannot be found before the key exists.
+POSITION_KDF_SALT: Final = b"PHANTOM/v3|position-bootstrap-salt-v1"
+#: HKDF label that splits the bootstrap master key off the message keys.
+INFO_POSITION_BOOTSTRAP: Final = b"PHANTOM/v3|position-bootstrap-key"
 
 LEN_AAD: Final = AAD_LABEL + b"|len-aad"
 PAYLOAD_AAD_PREFIX: Final = AAD_LABEL + b"|payload-aad"
@@ -119,6 +131,9 @@ KDF_PROFILES: Final[dict[int, KdfProfile]] = {
     ),
 }
 DEFAULT_KDF_PROFILE_ID: Final = KDF_PROFILE_ARGON2ID
+#: The bootstrap key that places the header must not depend on the profile the
+#: message itself uses (that is negotiated inside the header), so a fixed one.
+POSITION_KDF_PROFILE_ID: Final = KDF_PROFILE_PBKDF2_SHA256
 
 # ---------------------------------------------------------------------------
 # Password policy

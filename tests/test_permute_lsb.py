@@ -13,7 +13,12 @@ from phantom.stego.lsb import (
     lsb_match_values,
     random_sign_bits,
 )
-from phantom.stego.permute import FeistelPermutation, keyed_permutation, public_permutation
+from phantom.stego.permute import (
+    FeistelPermutation,
+    bootstrap_permutation,
+    keyed_permutation,
+    public_permutation,
+)
 from phantom.stego.samples import ArraySamples
 
 KEY = b"\x42" * 32
@@ -61,6 +66,26 @@ def test_permutation_rejects_out_of_domain() -> None:
 def test_permutation_rejects_huge_domain() -> None:
     with pytest.raises(ValueError):
         FeistelPermutation(KEY, 1 << 33)
+
+
+def test_bootstrap_permutation_is_key_dependent_and_deterministic() -> None:
+    first = bootstrap_permutation(KEY, 20_000).apply(np.arange(400))
+    again = bootstrap_permutation(KEY, 20_000).apply(np.arange(400))
+    other = bootstrap_permutation(b"\x43" * 32, 20_000).apply(np.arange(400))
+    np.testing.assert_array_equal(first, again)
+    assert not np.array_equal(first, other)
+    assert len(set(first.tolist())) == 400
+
+
+def test_bootstrap_permutation_rejects_a_short_key() -> None:
+    with pytest.raises(ValueError):
+        bootstrap_permutation(b"short", 1_000)
+
+
+def test_bootstrap_and_public_permutations_disagree() -> None:
+    public = public_permutation(5_000).apply(np.arange(400))
+    bootstrap = bootstrap_permutation(KEY, 5_000).apply(np.arange(400))
+    assert not np.array_equal(public, bootstrap)
 
 
 def test_public_permutation_is_password_independent() -> None:

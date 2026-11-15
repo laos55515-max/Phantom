@@ -1,0 +1,11 @@
+{
+  "password": "correct horse battery staple",
+  "version": 2,
+  "secret_utf8": "v2 fixture: written with the public-header layout, must stay readable.\n",
+  "text": {
+    "stego": "stego_text.png",
+    "stego_sha256": "3b690e1f82dc4a09164898147a2ad06ad4734ca2cd7ca0a4b9a7d0093fbcf664",
+    "carrier_sha256": "1b747f8e466b990d7c7d1d599c159dab329ea716d8bad46c6fdee312a7d8cb91",
+    "payload_bytes": 130
+  }
+}
