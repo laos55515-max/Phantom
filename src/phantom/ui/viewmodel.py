@@ -16,8 +16,9 @@ from typing import Literal, Protocol
 
 from phantom.core import api as core_api
 from phantom.core import constants as C
+from phantom.core import files as fsutil
 from phantom.core.api import CarrierKind, CarrierProbe, EmbedOutcome, ExtractOutcome
-from phantom.core.errors import CapacityError, InvalidInput, InvalidPassword
+from phantom.core.errors import CapacityError, InvalidInput, InvalidPassword, UnsafePathError
 from phantom.core.payload import (
     ExtractedPayload,
     Payload,
@@ -454,8 +455,15 @@ class ExtractViewModel:
         if self.result is None:
             return ""
         directory = self.settings.last_dir or os.path.dirname(self.stego_path) or os.getcwd()
-        name = self.result.name or "extracted.bin"
-        return os.path.join(directory, name)
+        return os.path.join(directory, self._safe_name(self.result.name))
+
+    @staticmethod
+    def _safe_name(name: str) -> str:
+        """One harmless path segment, whatever a container claimed."""
+        try:
+            return fsutil.sanitise_filename(name) if name else fsutil.FALLBACK_FILE_NAME
+        except UnsafePathError:
+            return fsutil.FALLBACK_FILE_NAME
 
     def clear(self) -> None:
         self.stego_path = ""

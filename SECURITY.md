@@ -10,7 +10,11 @@ the two drift apart.
 - Cipher: **AES-256-GCM** (`cryptography` crate bindings only)
 - Key derivation: **Argon2id · m=96 MiB · t=3 · p=1**, 16-byte random salt per
   operation, 12-byte random nonce per encryption
-- Alternate profile: PBKDF2-HMAC-SHA256, 600000 iterations (`KDF_PROFILE_PBKDF2`)
+- Alternate profile: PBKDF2-HMAC-SHA256, 600000 iterations (`KDF_PROFILE_PBKDF2`),
+  selected explicitly when embedding (`profile=`) and recognised from the
+  authenticated header when extracting. There is **no automatic fallback**: if
+  Argon2id is unavailable, the operation fails instead of silently downgrading,
+  and a file embedded with PBKDF2 is never re-encrypted behind the user's back.
 - Password normalisation: NFKC, minimum 12 characters
 - Integrity: GCM tag (16 bytes) plus a SHA-256 digest of the plaintext stored in
   the payload header, both checked before anything is written to disk
@@ -34,16 +38,33 @@ may be re-encoded before it reaches the recipient.
 - **Content.** Without the password, recovering the plaintext requires breaking
   AES-256-GCM or guessing the password. Password guesses cost one Argon2id
   evaluation each (96 MiB, t=3), which is deliberately expensive.
-- **Existence, up to the password.** The 50-byte sealed header is encrypted and
-  authenticated; a wrong password or a carrier without data fails the tag check
-  and is indistinguishable from random bits. There is no magic string in clear
-  text to search for.
+- **Content, not the possibility of existence.** The 50-byte header has a fixed,
+  documented position: anyone holding the carrier knows which bits to read. The
+  header is encrypted and authenticated, so without the password those bits
+  cannot be decrypted or turned into plaintext, a wrong password and a carrier
+  with no payload fail the tag check identically, and there is no magic string in
+  clear text to search for. That is a guarantee about *reading*, not about
+  *finding*: whether a payload may be present is answered by steganalysis, not
+  by the password (see below).
 - **Tampering.** Any modification of the header, the ciphertext, or the
   authenticated data (header bytes, container version, KDF profile id) makes
   decryption fail with an integrity error. The app never returns partially
   decrypted data.
-- **Path traversal.** Extracted file names are sanitised; the output extension
-  is forced; writing over the carrier itself is refused.
+- **Path traversal.** Every file name read from a container is reduced to a
+  single path segment (`basename`, with `\` treated as a separator, control and
+  Windows-reserved characters replaced, and `""`, `.` and `..` rejected), the
+  joined path is re-checked against the resolved output directory, and a
+  pre-existing symlink at the destination is refused instead of followed.
+- **Accidental self-destruction.** The output extension is forced, so a check on
+  the requested name would miss the file that is really written; therefore both
+  the carrier and the hidden source file are compared against every path the
+  forced extension can produce, through `realpath` and inode identity, before a
+  byte is written.
+- **Data loss on failure.** Extraction writes to a sibling temp file, reads it
+  back, compares the SHA-256 sealed in the container and only then replaces the
+  destination, so a failed or attacked write leaves an existing file untouched.
+  Restored files are created `0600` on POSIX (Windows only has the read-only bit;
+  there `os.chmod` is intentionally not used to promise more than it can do).
 
 ## What is not protected
 

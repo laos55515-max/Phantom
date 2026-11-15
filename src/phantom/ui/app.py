@@ -916,6 +916,7 @@ class PhantomApp:
             self.wipe_checkbox.select() if vm.wipe_source else self.wipe_checkbox.deselect()
         if self.verify_checkbox.get() != vm.verify:
             self.verify_checkbox.select() if vm.verify else self.verify_checkbox.deselect()
+        self.wipe_checkbox.configure(state="normal" if vm.verify else "disabled")
 
     def _refresh_extract_state(self) -> None:
         vm = self.extract_vm
@@ -1176,6 +1177,10 @@ class PhantomApp:
 
     def _on_verify_toggle(self) -> None:
         self.embed_vm.set_verify(bool(self.verify_checkbox.get()))
+        if not self.embed_vm.verify and self.embed_vm.wipe_source:
+            # Secure deletion is only ever offered on a verified output.
+            self.embed_vm.set_wipe_source(False)
+        self._refresh_embed_state()
 
     # -- file pickers ---------------------------------------------------
     def _file_types(self) -> list[tuple[str, str]]:
@@ -1408,10 +1413,16 @@ class PhantomApp:
         LOGGER.debug("operation %s finished", operation)
 
     def _on_embed_done(self, outcome: EmbedOutcome) -> None:
-        self._set_status_key(
-            "status_done", severity="ok", path=outcome.output_path
-        )
-        self.stage_label.configure(text=self.i18n.t("audit_verified"))
+        # "Saved" is a claim about correctness, so it is only made when the
+        # self-check really ran and really passed.
+        if outcome.verified:
+            self._set_status_key("status_done", severity="ok", path=outcome.output_path)
+            self.stage_label.configure(text=self.i18n.t("audit_verified"))
+        else:
+            self._set_status_key(
+                "status_unverified", severity="warn", path=outcome.output_path
+            )
+            self.stage_label.configure(text=self.i18n.t("audit_unverified"))
         self.animator.to("progress", 1.0, duration=0.2, on_update=self.progress_bar.set)
         self._ensure_animation_loop()
         self.settings.last_dir = os.path.dirname(outcome.output_path) or self.settings.last_dir
@@ -1430,9 +1441,12 @@ class PhantomApp:
         self.extract_vm.apply_result(outcome)
         self._refresh_extract_state()
         payload = outcome.payload
-        self._set_status_key(
-            "status_extracted_bytes", severity="ok", size=payload.original_size
-        )
+        if outcome.verified:
+            self._set_status_key(
+                "status_extracted_bytes", severity="ok", size=payload.original_size
+            )
+        else:
+            self._set_status_key("status_error", severity="warn")
         self.animator.to("progress", 1.0, duration=0.2, on_update=self.progress_bar.set)
         self._ensure_animation_loop()
 
@@ -1618,7 +1632,14 @@ class PhantomApp:
             self._save_result_file_as()
             return
         try:
-            fsutil.write_bytes_atomic(target, payload.data)
+            # Owner-only (0600), verified before it replaces anything, and the
+            # name is re-sanitised here even though the container was checked.
+            target = fsutil.write_extracted_file(
+                os.path.dirname(target) or ".",
+                os.path.basename(target),
+                payload.data,
+                expected_sha256=payload.sha256_actual,
+            )
         except PhantomError as exc:
             self._show_error(exc)
             return
@@ -1639,7 +1660,9 @@ class PhantomApp:
         if not target:
             return
         try:
-            fsutil.write_bytes_atomic(target, payload.data)
+            fsutil.write_bytes_verified(
+                target, payload.data, expected_sha256=payload.sha256_actual
+            )
         except PhantomError as exc:
             self._show_error(exc)
             return

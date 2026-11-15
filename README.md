@@ -7,7 +7,9 @@ than the code actually does.
 
 - Encryption: **AES-256-GCM**, fresh salt and nonce for every operation
 - Key derivation: **Argon2id · m=96 MiB · t=3 · p=1** (PBKDF2-HMAC-SHA256
-  with 600000 iterations is available as a profile; both are OWASP-level)
+  with 600000 iterations is a separate profile, chosen explicitly at embedding
+  time; it is never picked automatically when Argon2id is missing — that would
+  be a silent downgrade)
 - Container: versioned, authenticated, no magic string in clear text
 - UI: CustomTkinter, three languages (Українська / Русский / English),
   Dark / Light / System themes, drag & drop
@@ -24,10 +26,12 @@ mode, audio transcoding, resizing, cropping, or a screenshot. In messengers
 always send the file **as a document**.
 
 LSB steganography is detectable by statistical steganalysis. The app never
-claims that a payload cannot be found, because that would be false. What the
-encryption does guarantee is that without the password the payload cannot be
-read or confirmed to exist: the header is indistinguishable from carrier noise
-until it authenticates.
+claims that a payload cannot be found, because that would be false. The header
+positions are not secret either: anyone with the file and this document knows
+which bits to read. What the encryption guarantees is different — those bits
+cannot be decrypted without the password, and a wrong password is
+indistinguishable from a carrier with no payload. The *presence* of
+steganography is a separate question, and statistical analysis can answer it.
 
 Read [`SECURITY.md`](SECURITY.md) for the threat model, and the in-app
 "Threat model" block for the same text in your language.

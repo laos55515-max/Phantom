@@ -11,7 +11,8 @@ from PIL import Image
 
 from phantom.core import api
 from phantom.core import constants as C
-from phantom.core.errors import PhantomError
+from phantom.core import files as fs
+from phantom.core.errors import PhantomError, UnsafePathError
 from phantom.core.payload import Payload, estimate_size
 
 FIXED_PASSWORD = "Property-passphrase-2026"
@@ -29,11 +30,22 @@ PASSWORDS = st.text(
 )
 TEXTS = st.text(alphabet=st.characters(min_codepoint=1, max_codepoint=0x10FFFF), max_size=200)
 SIZES = st.integers(min_value=64, max_value=320)
+def _is_safe_segment(name: str) -> bool:
+    """A stored name that is not one harmless segment is normalised on extraction."""
+    try:
+        return fs.sanitise_filename(name) == name
+    except UnsafePathError:
+        return False
+
+
+#: Only names that are already a single harmless path segment must round-trip
+#: byte for byte; hostile or unusable names are covered by
+#: ``tests/test_security_hardening.py``.
 NAMES = st.text(
     alphabet=st.sampled_from("abcXYZ019._- "),
     min_size=1,
     max_size=24,
-)
+).filter(_is_safe_segment)
 
 
 def _noise(width: int, height: int) -> Image.Image:

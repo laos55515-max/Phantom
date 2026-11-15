@@ -4,6 +4,27 @@ All notable changes to PHANTOM are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Security
+
+- Refuse an output path that resolves to the file being hidden, including the
+  path the forced output extension produces and paths reached through symlinks;
+  the check now runs before anything is written, with or without secure deletion.
+- Sanitise every file name read from a container: one path segment, no
+  separators, no control or Windows-reserved characters, `""`, `.` and `..`
+  rejected, the joined path re-checked against the resolved output directory.
+- `EmbedOutcome.verified` now reports a self-check that actually ran, a source
+  file is never wiped without it, and the UI says "not verified" instead of
+  "saved" when verification is off.
+- Restored files are written to a temp file, read back, compared with the sealed
+  SHA-256 and only then replaced, so a failed or attacked write keeps an existing
+  file intact; they are created `0600` on POSIX.
+- Corrected the threat-model text: the header positions are known, decryption
+  without the password is impossible, but the presence of steganography is
+  detectable by statistical analysis. PBKDF2 is documented as an explicitly
+  selected profile, never an automatic downgrade.
+
 ## [2.0.0] — release candidate
 
 Released under the MIT license (see `LICENSE`).

@@ -24,6 +24,7 @@ class ErrorCode(Enum):
     INVALID_INPUT = "invalid_input"
     IO = "io"
     OUTPUT_IS_CARRIER = "output_is_carrier"
+    SOURCE_OVERWRITE = "source_overwrite"
     UNSAFE_PATH = "unsafe_path"
     WIPE_FAILED = "wipe_failed"
     AUDIO_LOSSY = "audio_lossy"
@@ -104,6 +105,12 @@ class OutputIsCarrierError(PhantomError):
 
 class UnsafePathError(PhantomError):
     code = ErrorCode.UNSAFE_PATH
+
+
+class SourceOverwriteError(PhantomError):
+    """The output path would replace the very file the user hid in it."""
+
+    code = ErrorCode.SOURCE_OVERWRITE
 
 
 class WipeError(PhantomError):
