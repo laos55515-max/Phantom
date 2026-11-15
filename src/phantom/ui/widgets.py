@@ -18,7 +18,7 @@ from typing import Any, Final
 import customtkinter as ctk
 
 from phantom.ui import theme as T
-from phantom.ui.clipboard import ClipboardActions
+from phantom.ui.clipboard import ClipboardActions, TextBuffer, paste
 
 LOGGER: Final = logging.getLogger("phantom.widgets")
 
@@ -188,18 +188,31 @@ def inner_text_widget(widget: Any) -> Any:
     return CTkAdapter.inner_textbox(widget) or CTkAdapter.inner_entry(widget) or widget
 
 
+def text_buffer(widget: Any) -> TextBuffer:
+    """Pair the inner Tk widget with its CustomTkinter wrapper.
+
+    Writes go through the wrapper so ``CTkEntry`` can drop its placeholder text
+    first; selections and key events stay on the inner widget.
+    """
+    inner = inner_text_widget(widget)
+    return TextBuffer(inner=inner, public=None if inner is widget else widget)
+
+
 @dataclass(slots=True)
 class TextShortcuts:
     """Cmd/Ctrl + C/V/X/A and a right-click menu for one text widget."""
 
     widget: Any
     labels_provider: Callable[[], Mapping[str, str]] | None = None
+    buffer: TextBuffer | None = None
     actions: ClipboardActions = field(init=False)
     sequences: list[str] = field(default_factory=list)
     _menu: Any = field(default=None, init=False)
 
     def __post_init__(self) -> None:
-        self.actions = ClipboardActions(widget=self.widget)
+        if self.buffer is None:
+            self.buffer = TextBuffer(inner=self.widget)
+        self.actions = ClipboardActions(widget=self.buffer)
 
     @property
     def bound_count(self) -> int:
@@ -303,6 +316,11 @@ class TextShortcuts:
         return self.bound_count
 
 
+def paste_into(widget: Any) -> str | None:
+    """Paste the clipboard into a CTk entry/textbox, placeholder included."""
+    return paste(text_buffer(widget))
+
+
 def install_text_shortcuts(
     root: Any,
     widget: Any,
@@ -316,7 +334,11 @@ def install_text_shortcuts(
     proxies cannot swallow them.
     """
     inner = inner_text_widget(widget)
-    shortcuts = TextShortcuts(widget=inner, labels_provider=labels_provider)
+    shortcuts = TextShortcuts(
+        widget=inner,
+        labels_provider=labels_provider,
+        buffer=TextBuffer(inner=inner, public=None if inner is widget else widget),
+    )
     shortcuts.install()
     LOGGER.debug(
         "text shortcuts on %s: %d keyboard bindings, root=%r",

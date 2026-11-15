@@ -326,10 +326,15 @@ def test_wheel_over_a_card_scrolls_the_area(app) -> None:
 
 def test_wheel_bindings_reach_the_cards_inside_the_tab(app) -> None:
     # CustomTkinter binds the wheel only on the canvas and the frame itself;
-    # children (the cards) are what the pointer is usually over on macOS.
-    for widget in (app.payload_card_title, app.carrier_label, app.output_entry):
-        assert app._wheel is not None
-        assert widget.bind("<Button-4>") or widget.bind("<MouseWheel>")
+    # the cards inside (where the pointer usually is) get no binding at all.
+    from phantom.ui.scroll import WHEEL_SEQUENCES, _descendants
+
+    frame = app._scroll_frames[0]
+    bound = 0
+    for widget in _descendants(frame):
+        if any(widget.bind(sequence) for sequence in WHEEL_SEQUENCES):
+            bound += 1
+    assert bound >= 10
 
 
 # ---------------------------------------------------------------------------
@@ -360,8 +365,12 @@ def test_expand_opens_a_large_read_only_window(app) -> None:
     assert window is not None
     assert window.text_box.get("1.0", "end-1c") == "readable result body"
     assert window.text_box.cget("state") == "disabled"
-    width = int(window.geometry().split("x")[0])
-    assert width >= int(window.winfo_screenwidth() * 0.7)
+    from phantom.ui import layout
+
+    screen_w, screen_h = window.winfo_screenwidth(), window.winfo_screenheight()
+    expected_w, expected_h, _x, _y = layout.window_geometry(screen_w, screen_h)
+    assert window.requested_geometry.startswith(f"{expected_w}x{expected_h}+")
+    assert expected_w >= int(screen_w * 0.7)
     assert window.copy_text() is True
     assert app.root.clipboard_get() == "readable result body"
     window.close()
@@ -440,4 +449,16 @@ def test_copy_path_and_reveal_use_the_extracted_file(app, tmp_path, monkeypatch)
         lambda path: revealed.append(path) or True,
     )
     app._reveal_result()
-    assert revealed == [target]
+    assert revealed == [str(target)]
+
+
+def test_paste_into_clears_the_ctk_placeholder(app) -> None:
+    """The placeholder is real text; writing past it must drop it first."""
+    from phantom.ui.widgets import paste_into
+
+    app.root.clipboard_clear()
+    app.root.clipboard_append("typed-by-paste")
+    app.embed_pwd.delete(0, "end")
+    assert paste_into(app.embed_pwd) == "typed-by-paste"
+    assert app.embed_pwd.get() == "typed-by-paste"
+    assert app.embed_pwd._entry.cget("show") == "•"

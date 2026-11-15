@@ -21,6 +21,56 @@ from typing import Any, Final
 LOGGER: Final = logging.getLogger("phantom.clipboard")
 
 
+@dataclass(slots=True, frozen=True)
+class TextBuffer:
+    """One logical text field seen through two widgets.
+
+    ``inner`` is the Tk widget that owns the selection and receives events;
+    ``public`` is the CustomTkinter wrapper.  Writes must go through the wrapper:
+    ``CTkEntry`` keeps its placeholder as *real text* inside the inner entry and
+    hides it behind a flag, so writing to the inner widget directly leaves the
+    field reading back as empty.
+    """
+
+    inner: Any
+    public: Any | None = None
+
+    @property
+    def editor(self) -> Any:
+        """The widget whose ``insert``/``delete``/``get`` we should call."""
+        return self.public if self.public is not None else self.inner
+
+    def text(self) -> str:
+        return all_text(self)
+
+    def insert(self, value: str) -> bool:
+        return insert_text(self, value)
+
+    def delete_selection(self) -> bool:
+        return delete_selection(self)
+
+    def selected(self) -> str | None:
+        return selected_text(self)
+
+    def select_all(self) -> bool:
+        return select_all(self)
+
+
+def as_buffer(widget: Any) -> TextBuffer:
+    """Accept either a :class:`TextBuffer` or a bare widget."""
+    if isinstance(widget, TextBuffer):
+        return widget
+    return TextBuffer(inner=widget)
+
+
+def _editor(widget: Any) -> Any:
+    return as_buffer(widget).editor
+
+
+def _inner(widget: Any) -> Any:
+    return as_buffer(widget).inner
+
+
 def is_multiline(widget: Any) -> bool:
     """True for a Text-like widget (selection tags, own vertical scrolling)."""
     return callable(getattr(widget, "tag_add", None)) and callable(
@@ -78,18 +128,19 @@ def _entry_selection(widget: Any) -> tuple[int, int] | None:
 
 def selected_text(widget: Any) -> str | None:
     """The selected text, or ``None`` when the selection is empty."""
-    if is_multiline(widget):
+    inner = _inner(widget)
+    if is_multiline(inner):
         try:
-            value = widget.get("sel.first", "sel.last")
+            value = inner.get("sel.first", "sel.last")
         except Exception as exc:  # noqa: BLE001 - TclError when nothing is selected
             LOGGER.debug("text selection unavailable: %s", exc)
             return None
         return value if isinstance(value, str) and value else None
-    bounds = _entry_selection(widget)
+    bounds = _entry_selection(inner)
     if bounds is None:
         return None
     try:
-        value = widget.get()
+        value = _editor(widget).get()
     except Exception as exc:  # noqa: BLE001 - the widget may be destroyed
         LOGGER.debug("entry read failed: %s", exc)
         return None
@@ -102,18 +153,19 @@ def selected_text(widget: Any) -> str | None:
 
 def delete_selection(widget: Any) -> bool:
     """Delete the current selection; ``False`` when there is none."""
-    if is_multiline(widget):
+    inner = _inner(widget)
+    if is_multiline(inner):
         try:
-            widget.delete("sel.first", "sel.last")
+            inner.delete("sel.first", "sel.last")
         except Exception as exc:  # noqa: BLE001 - TclError without a selection
             LOGGER.debug("text selection delete skipped: %s", exc)
             return False
         return True
-    bounds = _entry_selection(widget)
+    bounds = _entry_selection(inner)
     if bounds is None:
         return False
     try:
-        widget.delete(*bounds)
+        _editor(widget).delete(*bounds)
     except Exception as exc:  # noqa: BLE001 - the widget may be read-only
         LOGGER.debug("entry selection delete skipped: %s", exc)
         return False
@@ -122,17 +174,18 @@ def delete_selection(widget: Any) -> bool:
 
 def select_all(widget: Any) -> bool:
     """Select the whole content so a following copy/cut has something to work on."""
-    if is_multiline(widget):
+    inner = _inner(widget)
+    if is_multiline(inner):
         try:
-            widget.tag_add("sel", "1.0", "end-1c")
-            widget.mark_set("insert", "1.0")
+            inner.tag_add("sel", "1.0", "end-1c")
+            inner.mark_set("insert", "1.0")
         except Exception as exc:  # noqa: BLE001 - Tk dependent
             LOGGER.warning("select-all failed: %s", exc)
             return False
         return True
     try:
-        widget.selection_range(0, "end")
-        widget.icursor("end")
+        _editor(widget).selection_range(0, "end")
+        _editor(widget).icursor("end")
     except Exception as exc:  # noqa: BLE001 - Tk dependent
         LOGGER.warning("select-all failed: %s", exc)
         return False
@@ -141,7 +194,7 @@ def select_all(widget: Any) -> bool:
 
 def insert_text(widget: Any, text: str) -> bool:
     """Insert ``text`` at the caret; ``False`` for a read-only widget."""
-    insert = getattr(widget, "insert", None)
+    insert = getattr(_editor(widget), "insert", None)
     if not callable(insert) or not text:
         return False
     try:
@@ -154,7 +207,7 @@ def insert_text(widget: Any, text: str) -> bool:
 
 def normalise_paste(widget: Any, text: str) -> str:
     """Trim the form-feed/newline noise a clipboard round-trip adds."""
-    if is_multiline(widget):
+    if is_multiline(_inner(widget)):
         if text.endswith("\n"):
             return text[:-1]
         return text
@@ -164,7 +217,7 @@ def normalise_paste(widget: Any, text: str) -> str:
 
 def paste(widget: Any) -> str | None:
     """Paste the clipboard at the caret, replacing a selection."""
-    clipboard = read_clipboard(widget)
+    clipboard = read_clipboard(_inner(widget))
     if not clipboard:
         return None
     text = normalise_paste(widget, clipboard)
@@ -181,7 +234,7 @@ def copy(widget: Any) -> str | None:
     text = selected_text(widget)
     if text is None:
         return None
-    return text if write_clipboard(widget, text) else None
+    return text if write_clipboard(_inner(widget), text) else None
 
 
 def cut(widget: Any) -> str | None:
@@ -189,7 +242,7 @@ def cut(widget: Any) -> str | None:
     text = selected_text(widget)
     if text is None:
         return None
-    if not write_clipboard(widget, text):
+    if not write_clipboard(_inner(widget), text):
         return None
     delete_selection(widget)
     return text
@@ -197,8 +250,11 @@ def cut(widget: Any) -> str | None:
 
 def all_text(widget: Any) -> str:
     """Whole content of the widget (empty string when unreadable)."""
+    inner = _inner(widget)
     try:
-        value = widget.get("1.0", "end-1c") if is_multiline(widget) else widget.get()
+        value = (
+            inner.get("1.0", "end-1c") if is_multiline(inner) else _editor(widget).get()
+        )
     except Exception as exc:  # noqa: BLE001 - the widget may be destroyed
         LOGGER.debug("widget read failed: %s", exc)
         return ""

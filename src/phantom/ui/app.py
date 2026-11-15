@@ -52,6 +52,7 @@ from phantom.ui.widgets import (
     hint_label,
     install_text_shortcuts,
     mono_font,
+    paste_into,
     primary_button,
     sans_font,
     secondary_button,
@@ -1515,8 +1516,7 @@ class PhantomApp:
     def _paste_password(self) -> None:
         """Paste button: a fallback for systems where Cmd+V never arrives."""
         entry = self._password_entry()
-        inner = CTkAdapter.inner_entry(entry) or entry
-        pasted = clip.paste(inner)
+        pasted = paste_into(entry)
         if pasted is None:
             self._set_status_key("status_clipboard_empty", severity="warn")
             return

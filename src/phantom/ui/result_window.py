@@ -61,7 +61,8 @@ class ResultWindow(ctk.CTkToplevel):  # type: ignore[misc]
         width, height, x, y = window_geometry(
             self.winfo_screenwidth(), self.winfo_screenheight()
         )
-        self.geometry(f"{width}x{height}+{x}+{y}")
+        self.requested_geometry: str = f"{width}x{height}+{x}+{y}"
+        self.geometry(self.requested_geometry)
         self.minsize(*MIN_WINDOW)
         self.transient(master)
         self.protocol("WM_DELETE_WINDOW", self.close)

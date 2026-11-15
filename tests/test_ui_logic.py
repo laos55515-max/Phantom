@@ -1440,3 +1440,55 @@ def test_result_window_geometry_uses_most_of_the_screen() -> None:
     assert (x, y) == (192, 72)
     small = layout.window_geometry(800, 600)
     assert (small[0], small[1]) == layout.MIN_WINDOW
+
+
+class FakeCTkEntry:
+    """Minimal CTkEntry: the placeholder is real text behind a flag."""
+
+    def __init__(self, inner: FakeEntry, placeholder: str = "minimum 12 characters") -> None:
+        self._entry = inner
+        self.placeholder = placeholder
+        self.placeholder_active = True
+        self._entry.text = placeholder
+
+    def get(self) -> str:
+        return "" if self.placeholder_active else self._entry.get()
+
+    def insert(self, index: str, value: str) -> None:
+        self.placeholder_active = False
+        self._entry.text = ""
+        self._entry.caret = 0
+        self._entry.insert(index, value)
+
+    def delete(self, first: object, last: object) -> None:
+        self._entry.delete(first, last)
+
+    def selection_range(self, first: int, last: str) -> None:
+        self._entry.selection_range(first, last)
+
+    def icursor(self, index: str) -> None:
+        self._entry.icursor(index)
+
+
+def test_text_buffer_writes_through_the_ctk_wrapper() -> None:
+    inner = FakeEntry("", clipboard="pasted-key")
+    wrapper = FakeCTkEntry(inner)
+    buffer = ui_clipboard.TextBuffer(inner=inner, public=wrapper)
+    assert ui_clipboard.paste(buffer) == "pasted-key"
+    # The placeholder was dropped, so the field really reads back the text.
+    assert buffer.text() == "pasted-key"
+    assert wrapper.get() == "pasted-key"
+
+
+def test_writing_the_inner_widget_leaves_the_placeholder_in_charge() -> None:
+    inner = FakeEntry("", clipboard="pasted-key")
+    wrapper = FakeCTkEntry(inner)
+    assert ui_clipboard.paste(inner) == "pasted-key"  # the trap the wrapper avoids
+    assert wrapper.placeholder_active is True
+    assert wrapper.get() == ""
+
+
+def test_as_buffer_accepts_a_bare_widget() -> None:
+    entry = FakeEntry("value")
+    assert ui_clipboard.as_buffer(entry).editor is entry
+    assert ui_clipboard.as_buffer(ui_clipboard.TextBuffer(inner=entry)).editor is entry
