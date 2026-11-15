@@ -467,3 +467,39 @@ def test_paste_into_clears_the_ctk_placeholder(app) -> None:
     assert paste_into(app.embed_pwd) == "typed-by-paste"
     assert app.embed_pwd.get() == "typed-by-paste"
     assert app.embed_pwd._entry.cget("show") == "•"
+
+
+def test_stage_label_starts_with_the_idle_text(app) -> None:
+    """The footer must never show the placeholder the CTk default paints."""
+    assert app.stage_label.cget("text") == app.i18n.t("lbl_progress_idle")
+
+
+def test_no_visible_widget_shows_its_class_name(app) -> None:
+    """Catches ``CTkLabel(...)`` without ``text=`` anywhere in the tree."""
+    leftovers: list[str] = []
+
+    def walk(widget) -> None:
+        try:
+            value = widget.cget("text")
+        except Exception:  # noqa: BLE001 - not every Tk widget has "text"
+            value = None
+        if isinstance(value, str) and value in {"CTkLabel", "CTkButton", "CTkFrame"}:
+            leftovers.append(f"{type(widget).__name__}: {value}")
+        for child in widget.winfo_children():
+            walk(child)
+
+    walk(app.root)
+    assert leftovers == []
+
+
+def test_password_fields_and_paragraphs_have_clipboard_shortcuts(app) -> None:
+    """Cmd/Ctrl + C/V/X/A are bound on the inner widgets the user types into."""
+    wanted = {"<Command-v>", "<Command-V>", "<Command-c>", "<Command-a>"}
+    bound: set[str] = set()
+    for shortcuts in app._text_shortcuts:
+        bound.update(shortcuts.sequences)
+    assert wanted <= bound, f"missing shortcuts: {sorted(wanted - bound)}"
+
+    # 16 sequences per text widget: Cmd/Ctrl x lower/upper case for c, v, x, a.
+    assert all(item.bound_count >= 16 for item in app._text_shortcuts)
+    assert len(app._text_shortcuts) >= 5

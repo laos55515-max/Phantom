@@ -55,10 +55,13 @@ def wheel_steps(event: Any, *, platform: str | None = None) -> int:
     if delta == 0:
         return 0
     if (platform or sys.platform).lower().startswith("darwin"):
-        # Aqua Tk sends ±1 per notch (and small pixel steps for a trackpad);
-        # it is already inverted relative to what yview_scroll expects.
-        magnitude = min(3, max(1, abs(delta)))
-        return -magnitude if delta > 0 else magnitude
+        # Aqua Tk sends ±1 per wheel notch (and small pixel steps for a
+        # trackpad), already inverted relative to ``yview_scroll``: scrolling
+        # down arrives as delta = -1.  Dividing by 120 — the Windows
+        # convention — would round every notch to zero and the area would not
+        # move at all, which is exactly the "only the scrollbar works" report.
+        # Two units per step keeps one notch visibly useful.
+        return int(-delta) * 2
     steps = round(delta / 120)
     return -steps if steps else (-1 if delta > 0 else 1)
 

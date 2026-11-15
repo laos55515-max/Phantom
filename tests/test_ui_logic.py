@@ -1320,11 +1320,39 @@ class FakeCanvas(FakeWidget):
         self.scrolls.append((steps, what))
 
 
+def test_every_widget_is_created_with_an_explicit_text() -> None:
+    """A ``CTkLabel``/``CTkButton`` built without ``text`` paints its class name.
+
+    ``CTkLabel(master, font=...)`` shows the literal string ``CTkLabel`` until
+    something overwrites it, which is what the footer did between start-up and
+    the first progress event.  Helper builders (``primary_button`` …) pass the
+    text through ``**options``, so only calls with explicit keywords are checked.
+    """
+    checked = 0
+    for path in sorted((SRC / "ui").glob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+                continue
+            if node.func.attr not in ("CTkLabel", "CTkButton"):
+                continue
+            if any(keyword.arg is None for keyword in node.keywords):
+                continue  # a **options helper builder, checked by its callers
+            checked += 1
+            assert any(keyword.arg == "text" for keyword in node.keywords), (
+                f"{path.name}:{node.lineno}: {node.func.attr} without text="
+            )
+    assert checked >= 12, "the scan stopped finding widgets — did the layout move?"
+
+
 def test_wheel_steps_follow_each_platform() -> None:
     empty = FakeWidget()
-    assert scroll.wheel_steps(FakeEvent(empty, delta=1), platform="darwin") == -1
-    assert scroll.wheel_steps(FakeEvent(empty, delta=-1), platform="darwin") == 1
-    assert scroll.wheel_steps(FakeEvent(empty, delta=5), platform="darwin") == -3
+    # macOS: delta is ±1 per notch and must never be divided by 120; the router
+    # asks yview_scroll for -delta * 2 units, so a notch actually moves.
+    assert scroll.wheel_steps(FakeEvent(empty, delta=1), platform="darwin") == -2
+    assert scroll.wheel_steps(FakeEvent(empty, delta=-1), platform="darwin") == 2
+    assert scroll.wheel_steps(FakeEvent(empty, delta=5), platform="darwin") == -10
+    assert scroll.wheel_steps(FakeEvent(empty, delta=-3), platform="darwin") == 6
     assert scroll.wheel_steps(FakeEvent(empty, delta=120), platform="win32") == -1
     assert scroll.wheel_steps(FakeEvent(empty, delta=-120), platform="win32") == 1
     assert scroll.wheel_steps(FakeEvent(empty, delta=240), platform="win32") == -2
@@ -1431,7 +1459,8 @@ def test_install_mousewheel_helper_wires_one_area() -> None:
     router = scroll.install_mousewheel(FakeWidget(), frame, canvas, platform="darwin")
     assert router.bound_count > 0
     assert router.dispatch(FakeEvent(frame, delta=-1)) == "break"
-    assert canvas.scrolls == [(1, "units")]
+    # macOS: yview_scroll(int(-delta) * 2, "units") — never delta // 120.
+    assert canvas.scrolls == [(2, "units")]
 
 
 def test_result_window_geometry_uses_most_of_the_screen() -> None:

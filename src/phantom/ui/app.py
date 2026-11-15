@@ -212,8 +212,11 @@ class PhantomApp:
             anchor="w",
         )
         title.grid(row=0, column=0, sticky="w")
+        # ``text=""``: a CTkLabel without text paints "CTkLabel" until something
+        # sets it, and an empty label is a much better first frame than that.
         subtitle = ctk.CTkLabel(
             header,
+            text="",
             font=sans_font(self.root, 10),
             text_color=T.CLR_MUTED,
             anchor="w",
@@ -297,6 +300,7 @@ class PhantomApp:
 
         self.char_label = ctk.CTkLabel(
             payload_card,
+            text="",
             font=mono_font(self.root, 10),
             text_color=T.CLR_MUTED,
             anchor="w",
@@ -310,6 +314,7 @@ class PhantomApp:
         self.secret_button.pack(side="left")
         self.secret_label = ctk.CTkLabel(
             self.file_frame,
+            text="",
             font=sans_font(self.root, 11),
             text_color=T.CLR_TEXT_DIM,
             anchor="w",
@@ -592,6 +597,7 @@ class PhantomApp:
             holder.pack(fill="x", padx=18, pady=1)
             caption = ctk.CTkLabel(
                 holder,
+                text="",
                 width=110,
                 anchor="w",
                 font=sans_font(self.root, 10, weight="bold"),
@@ -724,18 +730,23 @@ class PhantomApp:
         )
         self.progress_bar.set(0)
         self.progress_bar.grid(row=0, column=0, sticky="ew")
+        # Without ``text=""`` the footer shows the literal word "CTkLabel" from
+        # start-up until the first progress event — the bug this line fixes.
         self.stage_label = ctk.CTkLabel(
             footer,
+            text="",
             font=mono_font(self.root, 10),
             text_color=T.CLR_MUTED,
             anchor="w",
         )
+        self.binder.bind(self.stage_label, "lbl_progress_idle")
         self.stage_label.grid(row=1, column=0, sticky="w", pady=(4, 0))
         self.cancel_button = secondary_button(footer, self.root, "", self._cancel_operation)
         self.cancel_button.grid(row=0, column=1, rowspan=2, padx=(12, 0))
         self.binder.bind(self.cancel_button, "btn_cancel")
         self.status_label = ctk.CTkLabel(
             footer,
+            text="",
             font=sans_font(self.root, 11, weight="bold"),
             text_color=T.CLR_TEXT_DIM,
             anchor="w",
