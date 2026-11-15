@@ -1,4 +1,4 @@
-"""Carrier-agnostic v3 stego engine.
+"""Carrier-agnostic stego engine: v3 by default, v4 and v5 on request.
 
 Layout on the carrier (all values are bits, 1 bit per sample slot):
 
@@ -16,9 +16,24 @@ Layout on the carrier (all values are bits, 1 bit per sample slot):
   header and the payload can never collide, and no two bits share a slot.
 
 Files written in the v2 layout — header at constant-seeded positions, payload
-keyed — are still read: :func:`extract_payload` tries the v3 layout first and
+keyed — are still read: :func:`extract_payload` tries the keyed layouts first and
 falls back to v2.  Writing v2 is possible through ``container_version`` for
 carriers that an older build has to open.
+
+Two experimental layouts share that header and change only where the payload
+goes, both driven by the wavelet cost map of :mod:`phantom.stego.adaptive`:
+
+* ``C.ADAPTIVE_CONTAINER_VERSION`` (v4) selects the cheapest samples greedily and
+  writes one bit into each.  Its extractor has to recompute the cost map from the
+  stego image, which is why :func:`phantom.stego.adaptive.write_masked` never
+  leaves a sample's 16-value group — that is what makes the layout reproducible.
+* ``C.STC_CONTAINER_VERSION`` (v5) gives the whole body and its costs to a
+  syndrome-trellis code (:mod:`phantom.stego.stc`), which solves for the cheapest
+  set of changes that carries the payload.  It needs no reproducibility trick at
+  all: the trellis is built from the carrier size, the payload length and the
+  password, so the extractor reproduces it exactly.  It is the layout the
+  benchmark likes: same payload, about half the changes of v4 and three to four
+  decibels more PSNR.
 """
 
 from __future__ import annotations
@@ -42,7 +57,7 @@ from phantom.core.payload import (
 )
 from phantom.core.progress import ProgressFn, Stage, check_cancel, noop_progress
 from phantom.core.security import secure_zeroize
-from phantom.stego import adaptive
+from phantom.stego import adaptive, stc
 from phantom.stego.lsb import BitReader, BitWriter, bits_to_bytes, bytes_to_bits
 from phantom.stego.permute import (
     FeistelPermutation,
@@ -207,16 +222,30 @@ def _layout_keys(
         secure_zeroize(key)
 
 
-def _adaptive_costs(space: SampleSpace) -> np.ndarray | None:
-    """Per-slot cost of a ±1 change, or ``None`` when the carrier is not an image."""
+def _cost_map(space: SampleSpace, *, masked: bool) -> np.ndarray | None:
+    """Per-slot cost of a ±1 change, or ``None`` when the carrier is not an image.
+
+    ``masked`` asks for costs computed from the 16-value group the writer cannot
+    leave (:mod:`phantom.stego.adaptive`), which is what makes the v4 layout
+    reproducible without the cover.  v5 needs no such thing — its extractor never
+    looks at costs — so it reads the finer, unmasked map.
+    """
     pixels = getattr(space, "pixels", None)
     if pixels is None or not getattr(space, "is_opaque", False):
         return None
     if pixels.ndim != 3 or pixels.shape[2] not in (3, 4):
         return None
-    costs = adaptive.layout_costs(pixels)
+    costs = adaptive.layout_costs(pixels) if masked else adaptive.rgb_cost_map(pixels)
     flat: np.ndarray = np.ascontiguousarray(costs.reshape(-1))
     return flat
+
+
+def _adaptive_costs(space: SampleSpace) -> np.ndarray | None:
+    return _cost_map(space, masked=True)
+
+
+def _stc_costs(space: SampleSpace) -> np.ndarray | None:
+    return _cost_map(space, masked=False)
 
 
 def adaptive_payload_slots(
@@ -277,6 +306,90 @@ def _write_masked(
     return counter
 
 
+def stc_layout(
+    space: SampleSpace,
+    rank_key: bytes,
+    bits: int,
+) -> tuple[stc.Trellis, np.ndarray] | None:
+    """Trellis and keyed parity matrix for a payload of ``bits``, or ``None``.
+
+    Neither depends on the image: the sender and the receiver derive the same
+    structure from the carrier size, the payload length and the password, so the
+    v5 layout cannot drift the way a cost-driven one can.
+    """
+    usable = _require_room_for_header(space)
+    trellis = stc.plan(usable - C.HEADER_BITS, bits)
+    if trellis is None:
+        return None
+    matrix = stc.parity_matrix(trellis.height, trellis.width, rank_key)
+    return trellis, stc.columns_of(matrix)
+
+
+def _stc_body(bootstrap: FeistelPermutation, trellis: stc.Trellis) -> np.ndarray:
+    """The keyed slot order the trellis reads and writes, one block after another.
+
+    ``bootstrap`` is a permutation of the usable slots, so its domain is exactly
+    the room left after the header — the same number the plan was made for.
+    """
+    body = bootstrap.apply(np.arange(C.HEADER_BITS, int(bootstrap.domain)))
+    return body[: trellis.samples]
+
+
+def _embed_stc_payload(
+    space: SampleSpace,
+    bootstrap: FeistelPermutation,
+    envelope: container.SealedEnvelope,
+    *,
+    trellis: stc.Trellis,
+    columns: np.ndarray,
+    costs: np.ndarray,
+    cancel: threading.Event | None,
+    progress: ProgressFn,
+) -> None:
+    """Write header, then flip the samples the trellis chose, and nothing else."""
+    check_cancel(cancel)
+    reader = BitReader(space)
+    body = _stc_body(bootstrap, trellis)
+    cover_bits = reader.read(body)
+    message = bytes_to_bits(envelope.ciphertext)
+    changes = stc.encode(cover_bits, costs[body], message, trellis=trellis, columns=columns)
+    changed = np.flatnonzero(changes)
+    BitWriter(space).write(
+        bootstrap.apply(np.arange(C.HEADER_BITS)), bytes_to_bits(envelope.header)
+    )
+    progress(Stage.EMBEDDING, 0, len(envelope.ciphertext))
+    step = CHUNK_BITS
+    for start in range(0, changed.size, step):
+        check_cancel(cancel)
+        stop = min(start + step, changed.size)
+        picked = changed[start:stop]
+        BitWriter(space).write(body[picked], 1 - cover_bits[picked])
+        progress(
+            Stage.EMBEDDING,
+            min(len(envelope.ciphertext), (start + picked.size) // 8),
+            len(envelope.ciphertext),
+        )
+
+
+def _read_stc_payload(
+    space: SampleSpace,
+    bootstrap: FeistelPermutation,
+    payload_len: int,
+    *,
+    trellis: stc.Trellis,
+    columns: np.ndarray,
+    cancel: threading.Event | None,
+    progress: ProgressFn,
+) -> bytes:
+    """Read the syndrome of the stego body and unpack the message out of it."""
+    check_cancel(cancel)
+    progress(Stage.EXTRACTING, 0, payload_len)
+    bits = BitReader(space).read(_stc_body(bootstrap, trellis))
+    message = stc.decode(bits, trellis=trellis, columns=columns)
+    progress(Stage.EXTRACTING, payload_len, payload_len)
+    return bits_to_bytes(message[: payload_len * 8])
+
+
 def _read_slots(
     space: SampleSpace,
     slots: np.ndarray,
@@ -330,13 +443,15 @@ def _open_layout(
     cancel: threading.Event | None,
     progress: ProgressFn,
 ) -> OpenedCarrier:
-    """Try the keyed layouts (v4 and v3 share header placement), then v2.
+    """Try the keyed layouts (v3, v4 and v5 share header placement), then v2.
 
     The version lives inside the authenticated header, so one KDF run answers
-    "v3 or v4?" — the two differ in where the payload goes, not in how the header
-    is placed or sealed.
+    "v3, v4 or v5?" — the three differ in where the payload goes, not in how the
+    header is placed or sealed.
     """
-    keyed_versions = frozenset({C.CONTAINER_VERSION, C.ADAPTIVE_CONTAINER_VERSION})
+    keyed_versions = frozenset(
+        {C.CONTAINER_VERSION, C.ADAPTIVE_CONTAINER_VERSION, C.STC_CONTAINER_VERSION}
+    )
     keys = _layout_keys(space, password, cancel=cancel)
     handed_over = False
     try:
@@ -452,13 +567,18 @@ def embed_payload(
     ``container_version`` selects the layout: the current one places every bit
     at password-derived positions, ``C.ADAPTIVE_CONTAINER_VERSION`` sends the
     payload to the samples a Daubechies-8 cost map calls cheapest (edges, noise,
-    foliage) instead of spreading it evenly, and ``C.V2_CONTAINER_VERSION``
-    reproduces the older public-header layout so a build that predates v3 can
-    still open the file.  The default is always the current version.
+    foliage) instead of spreading it evenly, ``C.STC_CONTAINER_VERSION`` embeds it
+    with a syndrome-trellis code over the whole body, and
+    ``C.V2_CONTAINER_VERSION`` reproduces the older public-header layout so a
+    build that predates v3 can still open the file.  The default is always the
+    current version.
 
-    The adaptive layout is verified before it is used: if the file it produces
-    does not reproduce the same slots, it would be unreadable, so the payload is
-    written with v3 positions and the header says so.
+    Both experimental layouts fall back to v3 when the carrier is not an opaque
+    image (audio, RGBA with transparent pixels) or when their structure does not
+    fit the payload; the header then says v3 and the file is ordinary v3.  The
+    v4 layout is additionally verified before it is used, because a layout that
+    does not reproduce itself would be unreadable; v5 cannot drift, its extractor
+    never looks at the image.
     """
     if not blob:
         raise CapacityError("empty payload")
@@ -470,13 +590,24 @@ def embed_payload(
     try:
         version = container_version
         # v2 is the one layout whose header sits at public positions: everything
-        # else, the adaptive branch included, is keyed.
+        # else, the adaptive and syndrome-trellis branches included, is keyed.
         bootstrap = (
             legacy_permutation(space) if version == C.V2_CONTAINER_VERSION else keys.bootstrap
         )
         slots: np.ndarray | None = None
         cover_values = np.zeros(0, dtype=np.uint8)
-        if version == C.ADAPTIVE_CONTAINER_VERSION:
+        trellis: stc.Trellis | None = None
+        columns = np.zeros(0, dtype=np.int64)
+        cost_map: np.ndarray = np.zeros(0, dtype=np.float64)
+        if version == C.STC_CONTAINER_VERSION:
+            layout = stc_layout(space, bytes(keys.rank_key), total_bits)
+            candidate = _stc_costs(space) if layout is not None else None
+            if layout is None or candidate is None:
+                version = C.CONTAINER_VERSION
+            else:
+                trellis, columns = layout
+                cost_map = candidate
+        elif version == C.ADAPTIVE_CONTAINER_VERSION:
             slots = adaptive_payload_slots(
                 space, bootstrap, bytes(keys.rank_key), total_bits
             )
@@ -494,6 +625,18 @@ def embed_payload(
         )
         try:
             settled = True
+            if trellis is not None:
+                check_cancel(cancel)
+                _embed_stc_payload(
+                    space,
+                    bootstrap,
+                    envelope,
+                    trellis=trellis,
+                    columns=columns,
+                    costs=cost_map,
+                    cancel=cancel,
+                    progress=progress,
+                )
             if slots is not None:
                 check_cancel(cancel)
                 _embed_masked_payload(
@@ -525,7 +668,7 @@ def embed_payload(
                     cancel=cancel,
                     progress=progress,
                 )
-            if slots is None or not settled:
+            if trellis is None and (slots is None or not settled):
                 check_cancel(cancel)
                 BitWriter(space).write(
                     bootstrap.apply(np.arange(C.HEADER_BITS)),
@@ -584,7 +727,21 @@ def extract_payload(
     try:
         usable = int(space.size)
         bootstrap = found.bootstrap
-        if opened.version == C.ADAPTIVE_CONTAINER_VERSION:
+        if opened.version == C.STC_CONTAINER_VERSION:
+            layout = stc_layout(space, bytes(found.rank_key), opened.payload_len * 8)
+            if layout is None:
+                raise WrongPasswordOrNoData("syndrome layout does not fit the carrier")
+            trellis, columns = layout
+            body = _read_stc_payload(
+                space,
+                bootstrap,
+                opened.payload_len,
+                trellis=trellis,
+                columns=columns,
+                cancel=cancel,
+                progress=progress,
+            )
+        elif opened.version == C.ADAPTIVE_CONTAINER_VERSION:
             slots = adaptive_payload_slots(
                 space, bootstrap, bytes(found.rank_key), opened.payload_len * 8
             )

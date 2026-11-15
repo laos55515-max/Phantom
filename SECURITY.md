@@ -94,7 +94,12 @@ may be re-encoded before it reaches the recipient.
   statistical steganalysis (chi-square, RS analysis, sample-pair analysis).
   Embedding a large payload changes the statistics of the lowest bit plane.
   Keeping the payload below ~70 % of capacity reduces, but does not remove, the
-  signal. This is a property of the method, not a bug to be patched.
+  signal. The experimental adaptive layouts (v4, v5) reduce the signal — v5 uses
+  about half the changes of the default layout and concentrates them where the
+  image is busy — but they do not make embedding undetectable, and a detector
+  written against this scheme specifically would still have something to work
+  with: the number of changes is public, only their placement is keyed. This is a
+  property of the method, not a bug to be patched.
 - **Metadata.** PNG chunks outside `IDAT` keep whatever the carrier had. File
   timestamps, size and EXIF-like metadata survive.
 - **Re-encoding.** JPEG export, messenger "photo" mode, resizing, cropping,

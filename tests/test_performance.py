@@ -11,7 +11,9 @@ from PIL import Image
 
 from phantom.core import api
 from phantom.core import constants as C
-from phantom.core.payload import Payload
+from phantom.core.payload import Payload, pack_payload
+from phantom.stego import engine
+from phantom.stego.samples import ImageSamples
 
 pytestmark = pytest.mark.slow
 
@@ -50,6 +52,33 @@ def test_100kib_in_24mp_carrier(big_carrier: Path, tmp_path: Path, password: str
 
     ratio = output.stat().st_size / big_carrier.stat().st_size
     assert 0.9 < ratio < 1.1, f"PNG size moved by {ratio:.3f}x"
+
+
+def test_stc_layout_stays_within_budget(password: str) -> None:
+    """The trellis is the slowest layout by far: keep it away from the cliff.
+
+    A 1024x1024 frame at 0.4 bpp means roughly three million trellis steps across
+    157 000 blocks with 256 states each; the bound is generous, the point is that
+    it is linear in the carrier rather than quadratic.
+    """
+    rng = np.random.default_rng(11)
+    pixels = rng.integers(0, 256, (1024, 1024, 3), dtype=np.uint8)
+    space = ImageSamples(pixels)
+    blob = pack_payload(
+        Payload.file("bench.bin", rng.integers(0, 256, 52_400, dtype=np.uint8).tobytes())
+    ).blob
+
+    started = time.perf_counter()
+    report = engine.embed_payload(space, blob, password, container_version=C.STC_CONTAINER_VERSION)
+    embed_seconds = time.perf_counter() - started
+    assert report.container_version == C.STC_CONTAINER_VERSION
+    assert embed_seconds < EMBED_LIMIT, f"stc embed took {embed_seconds:.1f}s"
+
+    started = time.perf_counter()
+    extracted = engine.extract_payload(space, password)
+    extract_seconds = time.perf_counter() - started
+    assert extracted.integrity_ok
+    assert extract_seconds < EXTRACT_LIMIT / 2, f"stc extract took {extract_seconds:.1f}s"
 
 
 def test_probe_is_fast_on_24mp(big_carrier: Path) -> None:

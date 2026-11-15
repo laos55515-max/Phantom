@@ -256,7 +256,8 @@ def test_embed_png_can_write_the_adaptive_layout(bench: ModuleType, tmp_path: Pa
 
     assert version == 4
     assert verified
-    _cheap, percentile, smooth = bench.adaptivity(cover, stego)
+    costs = bench.adaptive.rgb_cost_map(cover).reshape(-1)
+    _cheap, percentile, smooth = bench.adaptivity(costs, cover, stego)
     assert percentile < 25.0, f"v4 should sit low on the cost scale, got {percentile:.1f}"
     assert smooth < 20.0, f"v4 should avoid the smooth half, got {smooth:.1f} %"
 
@@ -269,7 +270,8 @@ def test_adaptivity_shows_an_image_blind_layout_at_its_defaults(bench: ModuleTyp
     picked = rng.choice(cover.size, size=cover.size // 10, replace=False)
     stego.reshape(-1)[picked] ^= 1
 
-    cheap, percentile, smooth = bench.adaptivity(cover, stego)
+    costs = bench.adaptive.rgb_cost_map(cover).reshape(-1)
+    cheap, percentile, smooth = bench.adaptivity(costs, cover, stego)
     assert cheap == pytest.approx(20.0, abs=6.0)
     assert percentile == pytest.approx(50.0, abs=6.0)
     assert smooth == pytest.approx(50.0, abs=6.0)
@@ -277,7 +279,8 @@ def test_adaptivity_shows_an_image_blind_layout_at_its_defaults(bench: ModuleTyp
 
 def test_adaptivity_of_an_untouched_image_is_undefined(bench: ModuleType) -> None:
     cover = _rgb(bench)
-    cheap, percentile, smooth = bench.adaptivity(cover, cover.copy())
+    costs = bench.adaptive.rgb_cost_map(cover).reshape(-1)
+    cheap, percentile, smooth = bench.adaptivity(costs, cover, cover.copy())
     assert math.isnan(cheap) and math.isnan(percentile) and math.isnan(smooth)
 
 
@@ -332,13 +335,13 @@ def test_main_writes_a_json_report(bench: ModuleType, tmp_path: Path, monkeypatc
     payload = json.loads(report.read_text(encoding="utf-8"))
     assert payload["carriers"] == 2
     assert len(payload["covers"]) == 2
-    assert set(payload["summary"]) == {"v3", "v4"}, "both layouts are summarised"
-    for layout in ("v3", "v4"):
+    assert set(payload["summary"]) == {"v3", "v4", "v5"}, "every layout is summarised"
+    for layout in ("v3", "v4", "v5"):
         block = payload["summary"][layout]
         assert len(block) == 1
         assert block[0]["bpp"] == pytest.approx(0.3)
         assert block[0]["carriers"] <= 2
-    assert {row["layout"] for row in payload["rows"]} == {"v3", "v4"}
+    assert {row["layout"] for row in payload["rows"]} == {"v3", "v4", "v5"}
     assert all("cost_percentile" in row for row in payload["rows"])
     assert payload["rows"] and all(row["verdict"] for row in payload["rows"])
     assert (tmp_path / "pngs").is_dir(), "--keep must leave the carriers on disk"
