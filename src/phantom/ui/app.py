@@ -34,6 +34,7 @@ from phantom.ui.animator import Animator
 from phantom.ui.bindings import I18nBinder
 from phantom.ui.debounce import Debouncer
 from phantom.ui.dnd import DndProvider, DropTarget
+from phantom.ui.format import layout_text, written_layout_text
 from phantom.ui.result_window import ResultWindow
 from phantom.ui.scroll import MouseWheelRouter, _bind_to_children
 from phantom.ui.settings import AppSettings, SettingsStore
@@ -408,7 +409,9 @@ class PhantomApp:
         self.usage_label = hint_label(carrier_card, self.root, "", wrap=620)
         self.usage_label.pack(fill="x", padx=18, pady=(0, 4))
         self.notice_label = hint_label(carrier_card, self.root, "", wrap=620)
-        self.notice_label.pack(fill="x", padx=18, pady=(0, 12))
+        self.notice_label.pack(fill="x", padx=18, pady=(0, 4))
+        self.format_label = hint_label(carrier_card, self.root, "", wrap=620)
+        self.format_label.pack(fill="x", padx=18, pady=(0, 12))
 
         # output card -------------------------------------------------------
         output_card = card(scroll)
@@ -597,7 +600,13 @@ class PhantomApp:
         self.audit_title.pack(fill="x", padx=18, pady=(14, 6))
         self.binder.bind(self.audit_title, "card_audit")
         self.audit_rows: dict[str, ctk.CTkLabel] = {}
-        for key in ("audit_cipher", "audit_kdf", "audit_integrity", "audit_size"):
+        for key in (
+            "audit_layout",
+            "audit_cipher",
+            "audit_kdf",
+            "audit_integrity",
+            "audit_size",
+        ):
             holder = ctk.CTkFrame(audit_card, fg_color="transparent")
             holder.pack(fill="x", padx=18, pady=1)
             caption = ctk.CTkLabel(
@@ -801,10 +810,19 @@ class PhantomApp:
         self._render_theme_labels()
         self._render_mode_labels()
         self._render_tab_labels()
+        self._render_format_labels()
         self.binder.apply()
         # A segmented button rebuilds its children whenever its values change,
         # so the wheel has to be handed to the fresh widgets.
         self._wheel.refresh()
+
+    def _render_format_labels(self) -> None:
+        """Say which layout this build writes, in the user's language."""
+        self.format_label.configure(
+            text=self.i18n.t(
+                "lbl_embed_format", layout=written_layout_text(self.i18n)
+            )
+        )
 
     def _render_language_labels(self) -> None:
         codes = list(self.i18n.languages)
@@ -958,9 +976,10 @@ class PhantomApp:
             self.copy_path_button.configure(state="disabled")
             self.reveal_button.configure(state="disabled")
             return
-        self.audit_rows["audit_cipher"].configure(
-            text=f"AES-256-GCM · v{payload.container_version}"
+        self.audit_rows["audit_layout"].configure(
+            text=layout_text(self.i18n, payload.container_version)
         )
+        self.audit_rows["audit_cipher"].configure(text="AES-256-GCM")
         self.audit_rows["audit_kdf"].configure(text=payload.kdf_label or "—")
         self.audit_rows["audit_integrity"].configure(
             text=("SHA-256 MATCH" if payload.integrity_ok else "SHA-256 MISMATCH")

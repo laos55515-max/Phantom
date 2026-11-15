@@ -80,7 +80,11 @@ from a checkout.
    back and compares the SHA-256 **before** the finished file replaces the
    target. If verification fails, nothing is published.
 6. To extract, open the carrier, enter the password, and save the revealed text
-   or file. Output file names are sanitised and the extension is forced.
+   or file. Output file names are sanitised and the extension is forced. The
+   audit card then names the layout the file was written with — v3 (positions
+   derived from the password) or v2 (older public header, still readable) —
+   together with the cipher, KDF profile, integrity check and sizes. The embed
+   tab states the layout this build writes before you press Save.
 
 ### Editing, scrolling and reading results
 

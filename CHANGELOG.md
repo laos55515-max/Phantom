@@ -6,6 +6,19 @@ All notable changes to PHANTOM are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- The interface names the container layout: the extract tab's audit card shows a
+  `FORMAT` row (`v3 · keyed positions` or `v2 · public header · older file`,
+  localised), and the embed tab says which layout this build writes. The version
+  is authenticated inside the header, so it is reported only after a payload was
+  opened; every number comes from `phantom.core.constants`, never a locale file.
+- `tools/bench_positions.py` measures what the v3 bootstrap key costs next to the
+  Argon2id run the container already pays for: one extra PBKDF2-HMAC-SHA256
+  (600000 iterations) derivation, ~0.11 s on the development machine and
+  independent of carrier size (0.1 % of a 12 MP embed, which is dominated by PNG
+  I/O).
+
 ### Security
 
 - Container format v3: the positions of **every** bit in the carrier, the sealed
