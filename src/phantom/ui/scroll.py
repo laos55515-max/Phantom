@@ -1,27 +1,26 @@
-"""Mouse-wheel and trackpad scrolling for the CustomTkinter layout.
+"""Mouse-wheel and trackpad scrolling for the whole window.
 
-CustomTkinter binds ``<MouseWheel>`` with ``bind_all`` and then walks the widget
-chain itself.  That path is fragile in exactly the cases macOS users hit: the
-event is dropped for widgets it does not recognise, ``delta`` is converted with
-an integer division that rounds a trackpad notch to zero, and subtrees such as
-``CTkTextbox`` are opted out entirely.  The result is the classic "only the
-scrollbar works" complaint.
+CustomTkinter binds ``<MouseWheel>`` globally through ``bind_all`` and then
+decides whether the event belongs to a scrollable frame by walking ``master``
+from ``event.widget``.  On macOS that widget is not the one under the pointer
+(Tk delivers the event to the window), the walk hits the root and gives up, and
+the page does not move: only the scrollbar works.  Binding the wheel on every
+widget instead does not help either — a plain Tk widget only receives the event
+when Tk addresses it, and composite CTk widgets refuse ``bind()`` outright.
 
-This module binds the wheel events *explicitly* on every widget of a scrollable
-area (and on the children added later), converts the platform delta correctly,
-hands the event to a text widget while that widget can still scroll by itself,
-and only then forwards it to the enclosing scrollable frame.
+So this module owns the wheel for the whole window: one ``bind_all`` on the
+root, a hit test for the widget under the pointer, a walk up the ``master``
+chain to the scrollable frame that contains it, and a platform-correct step
+count.  Text areas are left alone so their own content scrolls.
 
 No ``tkinter``/``customtkinter`` import at module level (D14): every function
-works on duck-typed objects, so the whole router is unit-testable without a
-display.
+works on duck-typed objects, so the router is unit-testable without a display.
 """
 
 from __future__ import annotations
 
 import logging
 import sys
-from collections.abc import Iterator
 from dataclasses import dataclass, field
 from typing import Any, Final
 
@@ -29,41 +28,60 @@ LOGGER: Final = logging.getLogger("phantom.scroll")
 
 WHEEL_SEQUENCES: Final = ("<MouseWheel>", "<Button-4>", "<Button-5>")
 
+#: macOS reports ±1 per notch, so one notch has to move a few lines to be felt.
+MACOS_UNITS_PER_STEP: Final = 3
+
+#: The Windows convention: one wheel notch is 120 delta units.
+WINDOWS_DELTA_UNIT: Final = 120
+
 
 def is_text_like(widget: Any) -> bool:
-    """True for a Text widget (selection tags and its own vertical view)."""
+    """True for a Tk Text widget (selection tags and its own vertical view)."""
     return callable(getattr(widget, "tag_add", None)) and callable(
         getattr(widget, "yview", None)
     )
 
 
-def wheel_steps(event: Any, *, platform: str | None = None) -> int:
-    """Convert a Tk wheel event into ``yview_scroll`` units.
+def is_text_area(widget: Any) -> bool:
+    """True for a text widget or for anything that wraps one (``CTkTextbox``)."""
+    node = widget
+    for _ in range(32):
+        if node is None:
+            return False
+        if is_text_like(node) or getattr(node, "_textbox", None) is not None:
+            return True
+        if type(node).__name__ in {"CTkTextbox", "Text", "ScrolledText"}:
+            return True
+        node = getattr(node, "master", None)
+    return False
 
-    Positive means "scroll down" (the view moves towards the end of the
-    content).  macOS reports a small, already inverted delta, Windows reports
-    multiples of 120 and X11 uses Button-4/5.
+
+def wheel_steps(event: Any, *, platform: str | None = None) -> int:
+    """Convert a wheel event into ``yview_scroll`` units.
+
+    Positive means "towards the end of the content".  macOS sends a small,
+    already inverted delta (±1 per notch), Windows sends multiples of 120 and
+    X11 uses Button-4/5.
     """
     number = getattr(event, "num", None)
     if number in (4, 5):
         return -1 if number == 4 else 1
-    delta = getattr(event, "delta", 0)
     try:
-        delta = int(delta)
+        delta = int(getattr(event, "delta", 0) or 0)
     except (TypeError, ValueError):
         return 0
     if delta == 0:
         return 0
     if (platform or sys.platform).lower().startswith("darwin"):
-        # Aqua Tk sends ±1 per wheel notch (and small pixel steps for a
-        # trackpad), already inverted relative to ``yview_scroll``: scrolling
-        # down arrives as delta = -1.  Dividing by 120 — the Windows
-        # convention — would round every notch to zero and the area would not
-        # move at all, which is exactly the "only the scrollbar works" report.
-        # Two units per step keeps one notch visibly useful.
-        return int(-delta) * 2
-    steps = round(delta / 120)
-    return -steps if steps else (-1 if delta > 0 else 1)
+        # delta is ±1 per notch and positive means "scroll up", while
+        # ``yview_scroll`` counts positive as "towards the end": flip the sign
+        # and multiply.  Dividing by 120 — the Windows convention — rounds every
+        # notch to zero units, which is the "only the scrollbar works" report.
+        return -delta * MACOS_UNITS_PER_STEP
+    steps = delta // WINDOWS_DELTA_UNIT
+    if steps == 0:
+        steps = 1 if delta > 0 else -1
+    return -steps
 
 
 @dataclass(slots=True)
@@ -75,20 +93,13 @@ class ScrollTarget:
 
 
 @dataclass(slots=True)
-class _Bound:
-    widget: Any
-    sequence: str
-    funcid: str
-
-
-@dataclass(slots=True)
 class MouseWheelRouter:
-    """Routes wheel events from any descendant widget to its scrollable frame."""
+    """Routes wheel events for the whole window to the area under the pointer."""
 
     root: Any
     platform: str | None = None
     targets: list[ScrollTarget] = field(default_factory=list)
-    _bound: list[_Bound] = field(default_factory=list)
+    installed: bool = False
 
     # -- registration --------------------------------------------------
     def register(self, frame: Any, canvas: Any) -> ScrollTarget:
@@ -99,8 +110,6 @@ class MouseWheelRouter:
                 return existing
         target = ScrollTarget(frame=frame, canvas=canvas)
         self.targets.append(target)
-        if self._bound:
-            self._bind_target(target)
         return target
 
     def unregister(self, frame: Any) -> None:
@@ -108,152 +117,126 @@ class MouseWheelRouter:
 
     @property
     def bound_count(self) -> int:
-        return len(self._bound)
+        return len(WHEEL_SEQUENCES) if self.installed else 0
 
     # -- binding -------------------------------------------------------
     def install(self) -> int:
-        """Bind every registered area; returns how many bindings were created."""
-        for target in self.targets:
-            self._bind_target(target)
-        return len(self._bound)
+        """Take over the wheel for the whole window; returns bindings created."""
+        if self.installed:
+            return self.bound_count
+        bind_all = getattr(self.root, "bind_all", None)
+        if not callable(bind_all):
+            LOGGER.debug("root cannot bind globally")
+            return 0
+        self._clear_builtin_handler()
+        bound = 0
+        for sequence in WHEEL_SEQUENCES:
+            try:
+                bind_all(sequence, self.dispatch, "+")
+            except Exception as exc:  # noqa: BLE001 - Tk dependent
+                LOGGER.debug("bind_all %s failed: %s", sequence, exc)
+                continue
+            bound += 1
+        self.installed = bound > 0
+        return bound
 
     def refresh(self) -> int:
-        """Bind widgets that appeared after :meth:`install` (dynamic content)."""
-        known = {(item.widget, item.sequence) for item in self._bound}
-        for target in self.targets:
-            for widget in _area_widgets(target):
-                for sequence in WHEEL_SEQUENCES:
-                    if (widget, sequence) in known:
-                        continue
-                    self._bind_one(widget, sequence)
-        return len(self._bound)
+        """Re-assert the global binding; areas are found by hit test, not bound."""
+        if not self.installed:
+            self.install()
+        return self.bound_count
 
     def uninstall(self) -> None:
-        """Remove every binding this router created (safe to call twice)."""
-        for item in self._bound:
-            try:
-                item.widget.unbind(item.sequence, item.funcid)
-            except Exception as exc:  # noqa: BLE001 - the widget may be gone already
-                LOGGER.debug("unbind %s failed: %s", item.sequence, exc)
-        self._bound.clear()
-
-    def _bind_target(self, target: ScrollTarget) -> None:
-        for widget in _area_widgets(target):
+        """Remove every global binding this router created (safe to call twice)."""
+        unbind_all = getattr(self.root, "unbind_all", None)
+        if callable(unbind_all):
             for sequence in WHEEL_SEQUENCES:
-                self._bind_one(widget, sequence)
+                try:
+                    unbind_all(sequence)
+                except Exception as exc:  # noqa: BLE001 - the window may be gone
+                    LOGGER.debug("unbind_all %s failed: %s", sequence, exc)
+        self.installed = False
 
-    def _bind_one(self, widget: Any, sequence: str) -> None:
-        binder = getattr(widget, "bind", None)
-        if not callable(binder):
+    def _clear_builtin_handler(self) -> None:
+        """Drop CustomTkinter's own global wheel handler.
+
+        Each ``CTkScrollableFrame`` installs one with ``bind_all``.  It resolves
+        the target from ``event.widget``, which is the window on macOS, so it
+        scrolls nothing there; and on the platforms where it does work it would
+        scroll a second time on top of us.
+        """
+        unbind_all = getattr(self.root, "unbind_all", None)
+        if not callable(unbind_all):
             return
         try:
-            existing = binder(sequence)  # query: '' when nothing is bound
-        except Exception as exc:  # noqa: BLE001 - Tk refuses some sequences
-            LOGGER.debug("bind query failed: %s", exc)
-            return
-        if existing:
-            # CustomTkinter already handles this widget (the canvas); binding
-            # again would scroll twice per notch.
-            return
-        try:
-            funcid = binder(sequence, self.dispatch, "+")
-        except Exception as exc:  # noqa: BLE001 - destroyed or unsupported widget
-            LOGGER.debug("bind %s failed: %s", sequence, exc)
-            return
-        if funcid:
-            self._bound.append(_Bound(widget=widget, sequence=sequence, funcid=str(funcid)))
+            unbind_all("<MouseWheel>")
+        except Exception as exc:  # noqa: BLE001 - nothing bound, or Tk refused
+            LOGGER.debug("unbind_all(<MouseWheel>) failed: %s", exc)
 
     # -- event handling ------------------------------------------------
+    def widget_at(self, event: Any) -> Any:
+        """The widget under the pointer, with ``event.widget`` as the fallback."""
+        containing = getattr(self.root, "winfo_containing", None)
+        if callable(containing):
+            try:
+                node = containing(
+                    int(getattr(event, "x_root", 0)), int(getattr(event, "y_root", 0))
+                )
+            except Exception as exc:  # noqa: BLE001 - pointer outside the window
+                LOGGER.debug("winfo_containing failed: %s", exc)
+                node = None
+            if node is not None:
+                return node
+        return getattr(event, "widget", None)
+
     def dispatch(self, event: Any) -> str | None:
         """Handle one wheel event; returns ``"break"`` when it was consumed."""
-        widget = getattr(event, "widget", None)
-        steps = wheel_steps(event, platform=self.platform)
-        if widget is None or steps == 0:
+        widget = self.widget_at(event)
+        if widget is None:
             return None
-        if is_text_like(widget) and self._scroll_text(widget, steps):
-            return "break"
-        target = self._target_for(widget) or self._target_at(event)
+        if is_text_area(widget):
+            # The text area scrolls its own content: stealing the event here
+            # would move the page instead of the paragraph under the pointer.
+            return None
+        target = self._target_for(widget)
         if target is None:
             return None
-        _scroll_canvas(target.canvas, steps)
+        steps = wheel_steps(event, platform=self.platform)
+        if steps == 0:
+            return None
+        if not self._scroll(target, steps):
+            return None
         return "break"
 
-    def _scroll_text(self, widget: Any, steps: int) -> bool:
-        """Scroll a Text widget itself while it still has room in that direction."""
-        try:
-            first, last = widget.yview()
-        except Exception as exc:  # noqa: BLE001 - destroyed widget
-            LOGGER.debug("text yview failed: %s", exc)
-            return False
-        can_scroll = first > 0.0 if steps < 0 else last < 1.0
-        if not can_scroll:
-            return False
-        try:
-            widget.yview_scroll(steps, "units")
-        except Exception as exc:  # noqa: BLE001 - destroyed widget
-            LOGGER.debug("text scroll failed: %s", exc)
-            return False
-        return True
-
     def _target_for(self, widget: Any) -> ScrollTarget | None:
+        """Climb ``master`` until a registered scrollable frame is reached."""
         node = widget
-        depth = 0
-        while node is not None and depth < 64:
+        for _ in range(64):
+            if node is None:
+                return None
             for target in self.targets:
                 if node is target.frame or node is target.canvas:
                     return target
             node = getattr(node, "master", None)
-            depth += 1
         return None
 
-    def _target_at(self, event: Any) -> ScrollTarget | None:
-        """Last resort: hit-test the pointer position (Tk only)."""
-        containing = getattr(self.root, "winfo_containing", None)
-        if not callable(containing):
-            return None
+    @staticmethod
+    def _scroll(target: ScrollTarget, steps: int) -> bool:
+        scroll = getattr(target.canvas, "yview_scroll", None)
+        if not callable(scroll):
+            return False
         try:
-            node = containing(getattr(event, "x_root", 0), getattr(event, "y_root", 0))
-        except Exception as exc:  # noqa: BLE001 - no widget under the pointer
-            LOGGER.debug("winfo_containing failed: %s", exc)
-            return None
-        return self._target_for(node) if node is not None else None
-
-
-def _scroll_canvas(canvas: Any, steps: int) -> None:
-    scroll = getattr(canvas, "yview_scroll", None)
-    if not callable(scroll):
-        return
-    try:
-        scroll(steps, "units")
-    except Exception as exc:  # noqa: BLE001 - destroyed canvas
-        LOGGER.debug("canvas scroll failed: %s", exc)
-
-
-def _area_widgets(target: ScrollTarget) -> Iterator[Any]:
-    """The canvas, the frame and every descendant of the frame."""
-    yield target.canvas
-    yield target.frame
-    yield from _descendants(target.frame)
-
-
-def _descendants(widget: Any) -> Iterator[Any]:
-    children = getattr(widget, "winfo_children", None)
-    if not callable(children):
-        return
-    try:
-        kids = list(children())
-    except Exception as exc:  # noqa: BLE001 - destroyed widget
-        LOGGER.debug("winfo_children failed: %s", exc)
-        return
-    for child in kids:
-        yield child
-        yield from _descendants(child)
+            scroll(steps, "units")
+        except Exception as exc:  # noqa: BLE001 - destroyed canvas
+            LOGGER.debug("canvas scroll failed: %s", exc)
+            return False
+        return True
 
 
 def install_mousewheel(
     root: Any, frame: Any, canvas: Any, *, platform: str | None = None
 ) -> MouseWheelRouter:
-    """Convenience wrapper: route one scrollable area, ready to install."""
+    """Convenience wrapper: route one scrollable area for the whole window."""
     router = MouseWheelRouter(root=root, platform=platform)
     router.register(frame, canvas)
     router.install()

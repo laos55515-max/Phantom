@@ -304,7 +304,8 @@ def test_every_tab_registered_its_scrollable_area(app) -> None:
         assert CTkAdapter.scroll_canvas(frame) is not None
 
 
-def test_wheel_over_a_card_scrolls_the_area(app) -> None:
+def test_wheel_over_a_card_scrolls_the_area(app, monkeypatch) -> None:
+    """The pointer is on a card title; the area around it has to scroll."""
     import types
 
     from phantom.ui.widgets import CTkAdapter
@@ -314,32 +315,27 @@ def test_wheel_over_a_card_scrolls_the_area(app) -> None:
     calls: list[tuple[int, str]] = []
     original = canvas.yview_scroll
     canvas.yview_scroll = lambda steps, what: (calls.append((steps, what)), original(steps, what))[1]
+    # Xvfb has no pointer of its own, so the hit test is pinned to a card title.
+    monkeypatch.setattr(
+        app.root, "winfo_containing", lambda _x, _y: app.payload_card_title, raising=False
+    )
     try:
         event = types.SimpleNamespace(
-            widget=app.payload_card_title, num=5, delta=0, x_root=5, y_root=5
+            widget=app.payload_card_title, num=None, delta=120, x_root=5, y_root=5
         )
         assert app._wheel.dispatch(event) == "break"
     finally:
         canvas.yview_scroll = original
-    assert calls == [(1, "units")]
+    assert calls == [(-1, "units")]
 
 
-def test_wheel_bindings_reach_the_cards_inside_the_tab(app) -> None:
-    # CustomTkinter binds the wheel only on the canvas and the frame itself;
-    # the cards inside (where the pointer usually is) get no binding at all.
-    from phantom.ui.scroll import WHEEL_SEQUENCES, _descendants
+def test_wheel_binding_is_global_so_every_card_answers(app) -> None:
+    """One ``bind_all`` per sequence on the window, not a binding per widget."""
+    from phantom.ui.scroll import WHEEL_SEQUENCES
 
-    frame = app._scroll_frames[0]
-    bound = 0
-    for widget in _descendants(frame):
-        try:
-            has_wheel = any(widget.bind(sequence) for sequence in WHEEL_SEQUENCES)
-        except NotImplementedError:
-            # Some composite CTk widgets refuse bind() queries; the router
-            # skips them the same way.
-            continue
-        bound += 1 if has_wheel else 0
-    assert bound >= 10
+    for sequence in WHEEL_SEQUENCES:
+        assert app.root.bind_all(sequence), f"{sequence} is not bound on the window"
+    assert app._wheel.bound_count == len(WHEEL_SEQUENCES)
 
 
 # ---------------------------------------------------------------------------

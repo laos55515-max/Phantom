@@ -1320,6 +1320,40 @@ class FakeCanvas(FakeWidget):
         self.scrolls.append((steps, what))
 
 
+class FakeRoot:
+    """A window that can hit-test the pointer and bind global sequences."""
+
+    def __init__(self, pointer: object | None = None, *, containing: bool = True) -> None:
+        self.pointer = pointer
+        self.bound: dict[str, object] = {}
+        self.unbound: list[str] = []
+        self._has_containing = containing
+
+    def winfo_containing(self, _x: int, _y: int) -> object | None:
+        if not self._has_containing:
+            raise RuntimeError("no display")
+        return self.pointer
+
+    def bind_all(self, sequence: str, handler: object | None = None, add: str = ""):
+        if handler is None:
+            return "script" if sequence in self.bound else ""
+        self.bound[sequence] = handler
+        return f"all-{sequence}"
+
+    def unbind_all(self, sequence: str) -> None:
+        self.unbound.append(sequence)
+        self.bound.pop(sequence, None)
+
+
+class CTkTextbox(FakeWidget):
+    """The wrapper as the app sees it: a frame that owns an inner Tk textbox."""
+
+    def __init__(self, inner: FakeText, master: object | None = None) -> None:
+        super().__init__(master)
+        self._textbox = inner
+        inner.master = self
+
+
 def test_every_widget_is_created_with_an_explicit_text() -> None:
     """A ``CTkLabel``/``CTkButton`` built without ``text`` paints its class name.
 
@@ -1347,12 +1381,12 @@ def test_every_widget_is_created_with_an_explicit_text() -> None:
 
 def test_wheel_steps_follow_each_platform() -> None:
     empty = FakeWidget()
-    # macOS: delta is ±1 per notch and must never be divided by 120; the router
-    # asks yview_scroll for -delta * 2 units, so a notch actually moves.
-    assert scroll.wheel_steps(FakeEvent(empty, delta=1), platform="darwin") == -2
-    assert scroll.wheel_steps(FakeEvent(empty, delta=-1), platform="darwin") == 2
-    assert scroll.wheel_steps(FakeEvent(empty, delta=5), platform="darwin") == -10
-    assert scroll.wheel_steps(FakeEvent(empty, delta=-3), platform="darwin") == 6
+    # macOS: delta is ±1 per notch and must never be divided by 120.  The sign
+    # flips (positive delta means "scroll up") and the notch is multiplied.
+    assert scroll.wheel_steps(FakeEvent(empty, delta=1), platform="darwin") == -3
+    assert scroll.wheel_steps(FakeEvent(empty, delta=-1), platform="darwin") == 3
+    assert scroll.wheel_steps(FakeEvent(empty, delta=5), platform="darwin") == -15
+    assert scroll.wheel_steps(FakeEvent(empty, delta=-3), platform="darwin") == 9
     assert scroll.wheel_steps(FakeEvent(empty, delta=120), platform="win32") == -1
     assert scroll.wheel_steps(FakeEvent(empty, delta=-120), platform="win32") == 1
     assert scroll.wheel_steps(FakeEvent(empty, delta=240), platform="win32") == -2
@@ -1362,105 +1396,129 @@ def test_wheel_steps_follow_each_platform() -> None:
     assert scroll.wheel_steps(FakeEvent(empty), platform="linux") == 0
 
 
-def test_router_binds_every_descendant_and_scrolls_the_area() -> None:
-    canvas = FakeCanvas()
-    frame = FakeWidget()
-    label = frame.add(FakeWidget())
-    router = scroll.MouseWheelRouter(FakeWidget(), platform="linux")
-    router.register(frame, canvas)
-    bound = router.install()
-    assert bound >= 6  # canvas, frame and the label, three sequences each
-    result = router.dispatch(FakeEvent(label, num=5))
-    assert result == "break"
-    assert canvas.scrolls == [(1, "units")]
+def test_router_takes_over_the_wheel_for_the_whole_window() -> None:
+    """``install`` drops CustomTkinter's handler and binds globally instead."""
+    root = FakeRoot()
+    router = scroll.MouseWheelRouter(root, platform="darwin")
+    router.register(FakeWidget(), FakeCanvas())
+    assert router.install() == len(scroll.WHEEL_SEQUENCES)
+    assert root.unbound == ["<MouseWheel>"]
+    assert set(root.bound) == set(scroll.WHEEL_SEQUENCES)
+    assert router.bound_count == len(scroll.WHEEL_SEQUENCES)
+    # Installing twice must not stack a second handler on the same sequence.
+    assert router.install() == len(scroll.WHEEL_SEQUENCES)
 
 
-def test_router_skips_a_canvas_customtkinter_already_handles() -> None:
-    canvas = FakeCanvas()
-    canvas.prebound = {"<MouseWheel>"}
-    frame = FakeWidget()
-    router = scroll.MouseWheelRouter(FakeWidget(), platform="darwin")
-    router.register(frame, canvas)
-    router.install()
-    assert "<MouseWheel>" not in canvas.bindings
-
-
-def test_router_lets_a_text_widget_scroll_itself() -> None:
-    canvas = FakeCanvas()
-    frame = FakeWidget()
-    text = frame.add(FakeText("body"))
-    text.view = (0.0, 0.4)
-    router = scroll.MouseWheelRouter(FakeWidget(), platform="linux")
+def test_wheel_over_a_nested_card_scrolls_the_area() -> None:
+    """The pointer sits on a label deep inside a card, far from the canvas."""
+    canvas, frame = FakeCanvas(), FakeWidget()
+    card = frame.add(FakeWidget())
+    label = card.add(FakeWidget())
+    root = FakeRoot(pointer=label)
+    router = scroll.MouseWheelRouter(root, platform="darwin")
     router.register(frame, canvas)
     router.install()
-    assert router.dispatch(FakeEvent(text, num=5)) == "break"
-    assert text.scrolls == [(1, "units")]
+
+    event = FakeEvent(label, delta=1)
+    assert router.dispatch(event) == "break"
+    assert canvas.scrolls == [(-3, "units")]
+
+
+def test_wheel_scrolls_the_area_under_the_pointer_only() -> None:
+    first_canvas, first_frame = FakeCanvas(), FakeWidget()
+    second_canvas, second_frame = FakeCanvas(), FakeWidget()
+    label = second_frame.add(FakeWidget())
+    root = FakeRoot(pointer=label)
+    router = scroll.MouseWheelRouter(root, platform="linux")
+    router.register(first_frame, first_canvas)
+    router.register(second_frame, second_canvas)
+    router.install()
+
+    assert router.dispatch(FakeEvent(label, num=5)) == "break"
+    assert second_canvas.scrolls == [(1, "units")]
+    assert first_canvas.scrolls == []
+
+
+def test_wheel_over_a_textbox_is_left_to_the_text() -> None:
+    """A text area keeps its own wheel handling: the page must not jump."""
+    canvas, frame = FakeCanvas(), FakeWidget()
+    inner = FakeText("body")
+    box = CTkTextbox(inner, master=frame)
+    root = FakeRoot(pointer=inner)
+    router = scroll.MouseWheelRouter(root, platform="darwin")
+    router.register(frame, canvas)
+    router.install()
+
+    assert router.dispatch(FakeEvent(inner, delta=1)) is None
+    assert router.dispatch(FakeEvent(box, delta=1)) is None
+    assert inner.scrolls == [], "the router must not move the text either"
     assert canvas.scrolls == []
 
 
-def test_router_forwards_the_wheel_when_the_text_is_at_its_edge() -> None:
-    canvas = FakeCanvas()
-    frame = FakeWidget()
-    text = frame.add(FakeText("body"))
-    text.view = (0.0, 1.0)
-    router = scroll.MouseWheelRouter(FakeWidget(), platform="linux")
-    router.register(frame, canvas)
-    router.install()
-    assert router.dispatch(FakeEvent(text, num=5)) == "break"
-    assert canvas.scrolls == [(1, "units")]
-
-
-def test_router_ignores_events_outside_its_areas() -> None:
-    canvas = FakeCanvas()
-    frame = FakeWidget()
+def test_wheel_outside_every_area_is_ignored() -> None:
+    canvas, frame = FakeCanvas(), FakeWidget()
     outsider = FakeWidget()
-    router = scroll.MouseWheelRouter(FakeWidget(), platform="linux")
+    root = FakeRoot(pointer=outsider)
+    router = scroll.MouseWheelRouter(root, platform="linux")
     router.register(frame, canvas)
     router.install()
     assert router.dispatch(FakeEvent(outsider, num=5)) is None
     assert canvas.scrolls == []
 
 
-def test_router_ignores_events_without_a_delta() -> None:
-    canvas = FakeCanvas()
-    frame = FakeWidget()
-    router = scroll.MouseWheelRouter(FakeWidget(), platform="linux")
+def test_wheel_without_a_delta_is_ignored() -> None:
+    canvas, frame = FakeCanvas(), FakeWidget()
+    label = frame.add(FakeWidget())
+    root = FakeRoot(pointer=label)
+    router = scroll.MouseWheelRouter(root, platform="linux")
     router.register(frame, canvas)
     router.install()
-    assert router.dispatch(FakeEvent(frame)) is None
+    assert router.dispatch(FakeEvent(label)) is None
+    assert canvas.scrolls == []
 
 
-def test_router_uninstall_removes_every_binding() -> None:
-    canvas = FakeCanvas()
-    frame = FakeWidget()
-    router = scroll.MouseWheelRouter(FakeWidget(), platform="linux")
+def test_wheel_falls_back_to_the_event_widget_without_a_display() -> None:
+    """``winfo_containing`` can fail or return nothing; the event knows its widget."""
+    canvas, frame = FakeCanvas(), FakeWidget()
+    label = frame.add(FakeWidget())
+    root = FakeRoot(pointer=None, containing=False)
+    router = scroll.MouseWheelRouter(root, platform="linux")
     router.register(frame, canvas)
+    router.install()
+    assert router.dispatch(FakeEvent(label, num=4)) == "break"
+    assert canvas.scrolls == [(-1, "units")]
+
+
+def test_router_uninstall_removes_the_global_bindings() -> None:
+    root = FakeRoot()
+    router = scroll.MouseWheelRouter(root, platform="linux")
+    router.register(FakeWidget(), FakeCanvas())
     assert router.install() > 0
     router.uninstall()
     assert router.bound_count == 0
-    assert canvas.unbound and frame.unbound
+    assert root.bound == {}
+    assert set(root.unbound) == {"<MouseWheel>", "<Button-4>", "<Button-5>"}
 
 
-def test_router_refresh_binds_widgets_added_later() -> None:
-    canvas = FakeCanvas()
-    frame = FakeWidget()
-    router = scroll.MouseWheelRouter(FakeWidget(), platform="linux")
-    router.register(frame, canvas)
-    before = router.install()
-    late = frame.add(FakeWidget())
-    after = router.refresh()
-    assert after > before
-    assert router.dispatch(FakeEvent(late, num=4)) == "break"
+def test_router_refresh_reinstalls_after_a_lost_binding() -> None:
+    root = FakeRoot()
+    router = scroll.MouseWheelRouter(root, platform="linux")
+    router.register(FakeWidget(), FakeCanvas())
+    router.install()
+    router.uninstall()
+    assert router.refresh() > 0
+    assert set(root.bound) == set(scroll.WHEEL_SEQUENCES)
 
 
 def test_install_mousewheel_helper_wires_one_area() -> None:
-    canvas = FakeCanvas()
-    frame = FakeWidget()
-    router = scroll.install_mousewheel(FakeWidget(), frame, canvas, platform="darwin")
+    canvas, frame = FakeCanvas(), FakeWidget()
+    label = frame.add(FakeWidget())
+    root = FakeRoot(pointer=label)
+    router = scroll.install_mousewheel(root, frame, canvas, platform="darwin")
     assert router.bound_count > 0
-    assert router.dispatch(FakeEvent(frame, delta=-1)) == "break"
-    # macOS: yview_scroll(int(-delta) * 2, "units") — never delta // 120.
-    assert canvas.scrolls == [(2, "units")]
+    assert router.dispatch(FakeEvent(label, delta=-1)) == "break"
+    # macOS: yview_scroll(-int(delta) * 3, "units") — never delta // 120.
+    assert canvas.scrolls == [(3, "units")]
 
 
 def test_result_window_geometry_uses_most_of_the_screen() -> None:
