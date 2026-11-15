@@ -8,6 +8,64 @@ All notable changes to PHANTOM are recorded here. The format follows
 
 ### Added
 
+- **Experimental adaptive layout (v4).** LSB matching spreads its changes
+  blindly, and blind changes are what a texture-aware detector looks for. The new
+  `phantom.stego.adaptive` module computes a cost map from the image itself — a
+  two-level Daubechies-8 wavelet decomposition (db4, four vanishing moments, so a
+  smooth gradient produces almost no response), the detail energy of the HL/LH/HH
+  bands, a HILL-style spread over a 15×15 neighbourhood, and a cost of
+  `1 / (energy + floor)` normalised to a median of 1 — and the payload goes to the
+  cheapest samples: foliage, edges, noise, never the sky. Costs are log-quantised
+  into six buckets, ordered inside each bucket by a password-derived permutation,
+  so the layout is a function of the key and the image and never of the payload.
+  `engine.embed_payload(..., container_version=4)` writes it; v3 remains the
+  default and every existing file still opens.
+  
+  The one structural problem was reproducibility: the receiver has no cover, so
+  it must rebuild the layout from the stego image, and a cost map computed after
+  the embedding is not the same map (measured: 1–1255 positions drifted
+  depending on bucket count, which corrupts the payload). The fix is a **mask
+  invariant**: a change is written in the direction that keeps the sample inside
+  its 16-value group (low nibble `0000` goes up, `1111` goes down, otherwise a
+  keyed coin), so
+  `value >> 4` never moves, the coarse image is identical on both sides, and the
+  costs — computed from that coarse image — are provably identical. The engine
+  still re-derives the layout after writing and falls back to v3 if it ever
+  disagrees, but with the mask invariant it never does: 64/64 benchmark embeds
+  reproduced themselves.
+  
+  Benchmarked with `tools/bench_steganalysis.py --layout both` on the same eight
+  carriers at the same payload sizes (percentile = median cost percentile of the
+  changed samples, 50 % = blind):
+
+  | load, bpp | layout | PSNR, dB | changed px, % | percentile | smooth half | χ² p | RS p̂ | detected |
+  |---|---|---|---|---|---|---|---|---|
+  | 0.05 | v3 | 68.95 | 2.46 | 49.9 | 49.9 % | 0.000 | 0.009 | 0/6 |
+  | 0.05 | v4 | 68.93 | 2.40 | 4.7 | 1.5 % | 0.000 | 0.025 | 0/6 |
+  | 0.10 | v3 | 65.93 | 4.89 | 50.1 | 50.3 % | 0.000 | 0.005 | 0/6 |
+  | 0.10 | v4 | 65.90 | 4.71 | 5.4 | 0.8 % | 0.000 | 0.040 | 0/6 +1 suspect |
+  | 0.20 | v3 | 62.89 | 9.70 | 50.2 | 50.2 % | 0.000 | 0.011 | 0/6 |
+  | 0.20 | v4 | 62.90 | 9.25 | 7.6 | 0.4 % | 0.000 | 0.071 | 0/6 +3 suspect |
+  | 0.40 | v3 | 59.90 | 18.67 | 49.9 | 49.9 % | 0.000 | 0.024 | 0/6 |
+  | 0.40 | v4 | 59.89 | 17.64 | 8.4 | 0.2 % | 0.000 | 0.088 | 0/6 +3 suspect |
+
+  Distortion is identical, placement is not: v4 puts its changes in the cheapest
+  tenth of the cost map and almost never in the smooth half, where v3 is at 50 %
+  by construction. Chi-square stays at 0.000 for both. RS, an estimator built for
+  LSB replacement and already known to wander on LSB matching, reads *higher* for
+  v4 at 0.1–0.4 bpp (0.040–0.088 against 0.005–0.024): concentrating changes in
+  the noisiest regions is exactly where its group model is least reliable, so the
+  number has to be reported as it is, not as a win. Both stay far below the 0.25
+  "flag" line, and no carrier was called detected.
+  
+  Limits, stated in the module: without syndrome-trellis codes the selection is a
+  hard subset, so the *set* of touched samples is visible to a detector that knows
+  the scheme; the masked writer forces the direction on 2 of 16 samples, which is
+  a small asymmetry in the ±1 distribution; and audio carriers, RGBA images with
+  transparent pixels and payloads above four million bits fall back to v3. Not
+  wired into the GUI — `container_version` is still read from `core.constants`, and
+  the interface keeps writing v3 until the layout earns its place.
+
 - The interface names the container layout: the extract tab's audit card shows a
   `FORMAT` row (`v3 · keyed positions` or `v2 · public header · older file`,
   localised), and the embed tab says which layout this build writes. The version

@@ -22,6 +22,7 @@ from __future__ import annotations
 import os
 import struct
 import threading
+from collections.abc import Collection
 from dataclasses import dataclass, field
 from typing import Final
 
@@ -49,7 +50,9 @@ _LEN_STRUCT: Final = struct.Struct(">BBI")
 
 #: Versions this module can write and read.  v1 is a different format entirely
 #: and lives in ``stego.legacy``.
-SUPPORTED_VERSIONS: Final = frozenset({C.V2_CONTAINER_VERSION, C.CONTAINER_VERSION})
+SUPPORTED_VERSIONS: Final = frozenset(
+    {C.V2_CONTAINER_VERSION, C.CONTAINER_VERSION, C.ADAPTIVE_CONTAINER_VERSION}
+)
 
 
 @dataclass(slots=True)
@@ -165,6 +168,7 @@ def open_header(
     *,
     max_payload_len: int,
     expected_version: int = C.CONTAINER_VERSION,
+    accepted_versions: Collection[int] | None = None,
     cancel: threading.Event | None = None,
     progress: ProgressFn = noop_progress,
 ) -> OpenedHeader:
@@ -173,10 +177,13 @@ def open_header(
     ``expected_version`` is the format stamp the caller expects: the version is
     authenticated inside the header, so a header belonging to another layout
     fails the tag check like any wrong password instead of being trusted.
+    ``accepted_versions`` widens that to a set, which lets a layout family share
+    one KDF run — v3 and v4 differ in payload placement, not in the header.
     """
     if len(header) != C.HEADER_BYTES:
         raise WrongPasswordOrNoData("header length mismatch")
-    if expected_version not in SUPPORTED_VERSIONS:
+    allowed = frozenset({expected_version} if accepted_versions is None else accepted_versions)
+    if not allowed or not allowed <= SUPPORTED_VERSIONS:
         raise InvalidInput("unsupported container version")
     if max_payload_len < 0:
         raise InvalidInput("max_payload_len must be >= 0")
@@ -204,7 +211,7 @@ def open_header(
             except struct.error:
                 keys.wipe()
                 continue
-            if version != expected_version or embedded_profile != profile_id:
+            if version not in allowed or embedded_profile != profile_id:
                 keys.wipe()
                 continue
             if payload_len > max_payload_len:
