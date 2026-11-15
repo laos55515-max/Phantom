@@ -12,6 +12,8 @@ from __future__ import annotations
 from typing import Final, Protocol
 
 from phantom.core import constants as C
+from phantom.core.payload import ExtractedPayload, carried_bytes
+from phantom.stego.engine import Capacity
 
 
 class Translator(Protocol):
@@ -42,3 +44,20 @@ def layout_text(translator: Translator, version: int) -> str:
 def written_layout_text(translator: Translator) -> str:
     """Label for the layout this build writes, which is always the current one."""
     return layout_text(translator, C.CONTAINER_VERSION)
+
+
+def size_text(
+    payload: ExtractedPayload,
+    capacity: Capacity | None,
+    translator: Translator,
+) -> str:
+    """``284 B → 306 B · 12 % of the carrier`` for the audit card.
+
+    Without a probed carrier (or a carrier too small to hold anything) the share
+    is left out instead of being invented.
+    """
+    text = f"{payload.original_size} B → {payload.compressed_size} B"
+    if capacity is None or capacity.usable_bits <= 0:
+        return text
+    share = capacity.carrier_share(carried_bytes(payload))
+    return f"{text} · {translator.t('lbl_capacity_share', pct=f'{share:.0f}')}"

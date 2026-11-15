@@ -235,6 +235,28 @@ def test_format_row_follows_a_language_switch(app) -> None:
     assert f"v{C.CONTAINER_VERSION}" in after
 
 
+def test_size_row_reports_the_share_of_the_carrier(app) -> None:
+    """The audit SIZE row grows a share once the carrier is known."""
+    from phantom.core.api import CarrierKind, CarrierProbe
+    from phantom.stego.engine import Capacity
+
+    app._show_tab("extract")
+    app.extract_vm.result = _extracted(C.CONTAINER_VERSION)
+    app._refresh_all()
+    assert "%" not in app.audit_rows["audit_size"].cget("text"), "no carrier probed"
+
+    app.extract_vm.carrier = CarrierProbe(
+        kind=CarrierKind.IMAGE,
+        path="carrier.png",
+        capacity=Capacity(usable_bits=57_600, payload_bytes=7_118),
+    )
+    app._refresh_all()
+    text = app.audit_rows["audit_size"].cget("text")
+    assert text.startswith("4 B → 4 B · "), text
+    assert "%" in text
+    assert "% of the carrier" in text or "% носителя" in text or "% носія" in text
+
+
 def test_password_generator_writes_entry(app) -> None:
     app._generate_password()
     assert len(app.embed_vm.password) == C.GENERATED_PASSWORD_LENGTH

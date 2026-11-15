@@ -34,7 +34,7 @@ from phantom.ui.animator import Animator
 from phantom.ui.bindings import I18nBinder
 from phantom.ui.debounce import Debouncer
 from phantom.ui.dnd import DndProvider, DropTarget
-from phantom.ui.format import layout_text, written_layout_text
+from phantom.ui.format import layout_text, size_text, written_layout_text
 from phantom.ui.result_window import ResultWindow
 from phantom.ui.scroll import MouseWheelRouter, _bind_to_children
 from phantom.ui.settings import AppSettings, SettingsStore
@@ -984,8 +984,9 @@ class PhantomApp:
         self.audit_rows["audit_integrity"].configure(
             text=("SHA-256 MATCH" if payload.integrity_ok else "SHA-256 MISMATCH")
         )
+        capacity = vm.carrier.capacity if vm.carrier is not None else None
         self.audit_rows["audit_size"].configure(
-            text=f"{payload.original_size} B → {payload.compressed_size} B"
+            text=size_text(payload, capacity, self.i18n)
         )
         if payload.integrity_ok:
             self.audit_status.configure(

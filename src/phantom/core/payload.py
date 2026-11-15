@@ -99,6 +99,17 @@ class ExtractedPayload:
     container_version: int = 0
 
 
+def carried_bytes(payload: ExtractedPayload) -> int:
+    """Bytes this payload occupies on a carrier: packed blob plus the GCM tag.
+
+    ``compressed_size`` is only the zlib stream, so the metadata the container
+    stores around it (type, name, digest, length) and the authentication tag are
+    added back to get the ciphertext length the engine actually wrote.
+    """
+    name_bytes = len(payload.name.encode("utf-8"))
+    return C.PAYLOAD_META_OVERHEAD + name_bytes + payload.compressed_size + C.TAG_SIZE
+
+
 @dataclass(frozen=True, slots=True)
 class SizeEstimate:
     """Result of a streaming size estimate."""

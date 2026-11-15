@@ -13,6 +13,39 @@ All notable changes to PHANTOM are recorded here. The format follows
   localised), and the embed tab says which layout this build writes. The version
   is authenticated inside the header, so it is reported only after a payload was
   opened; every number comes from `phantom.core.constants`, never a locale file.
+- The audit card's `SIZE` row now reports the share of the carrier the payload
+  occupies: `284 B → 306 B · 12 % of the carrier`. It is exact bookkeeping, not a
+  gauge — `stego.engine.Capacity.carrier_share` counts the header bits plus eight
+  bits per ciphertext byte against the carrier's usable bits, and
+  `core.payload.carried_bytes` rebuilds the ciphertext length from an extracted
+  payload (blob metadata + name + zlib stream + GCM tag). The heuristic
+  `fill_percent` behind the fill bar is left alone, and an unknown carrier prints
+  no share at all.
+- `tools/bench_steganalysis.py` answers the question the capacity warnings only
+  gesture at. Eight generated 512×512 carriers are embedded through the real v3
+  engine (LSB matching), written to PNG, read back, and handed to the two classic
+  blind detectors — Westfeld–Pfitzmann chi-square and Fridrich's RS. Every carrier
+  is measured untouched as well, so a detector that already fires on the cover
+  cannot be mistaken for a find, and the run opens with a calibration block on
+  synthetic LSB replacement to prove both detectors still work (χ² 0.00 → 1.00,
+  RS 0.00 → 0.99 as the replacement rate climbs):
+
+  | load, bpp | PSNR, dB | changed pixels, % | χ² p | RS p̂ | detected |
+  |---|---|---|---|---|---|
+  | 0.05 | 68.9 | 2.5 | 0.000 | 0.008 | 0/6 |
+  | 0.10 | 65.9 | 4.9 | 0.000 | 0.007 | 0/6 |
+  | 0.20 | 62.9 | 9.7 | 0.000 | 0.016 | 0/6 |
+  | 0.40 | 59.9 | 18.8 | 0.000 | 0.025 | 0/6 |
+
+  LSB matching moves samples by ±1 and keeps the histogram, and the histogram is
+  exactly what those detectors look for, so nothing fires at any payload the
+  scheme can carry: the ceiling run reaches 2.9 bpp (86 % of the pixels, PSNR
+  51 dB) with chi-square still reading 0.000 and RS flagging one carrier out of
+  six. Two carriers stay out of the denominator because RS fires on the untouched
+  cover, and the report says so instead of hiding it. The distortion columns are
+  reproducible, the detector columns wander by ±0.02 between runs because every
+  embed draws a fresh nonce. SPA, calibrated RS or SRM is the escalation path if
+  a real detector is wanted.
 - `tools/bench_positions.py` measures what the v3 bootstrap key costs next to the
   Argon2id run the container already pays for: one extra PBKDF2-HMAC-SHA256
   (600000 iterations) derivation, ~0.11 s on the development machine and

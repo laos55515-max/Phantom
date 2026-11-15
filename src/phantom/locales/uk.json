@@ -95,6 +95,7 @@
   "lbl_capacity": "ЄМНІСТЬ  ~{size} Б   ({kb} КБ)",
   "lbl_capacity_bits": "ЄМНІСТЬ  ~{size} Б   ({kb} КБ)   ·   {bits} біт",
   "lbl_capacity_error": "ПОМИЛКА ЄМНОСТІ: {error}",
+  "lbl_capacity_share": "{pct} % носія",
   "lbl_carrier_info": "НОСІЙ: {info}",
   "lbl_char_count": "СИМВОЛІВ  {chars}   ·   БАЙТІВ UTF-8  {bytes}",
   "lbl_compression": "СТИСНЕННЯ  {orig} → {comp} Б   ({ratio}%)",
