@@ -76,6 +76,23 @@ from a checkout.
 6. To extract, open the carrier, enter the password, and save the revealed text
    or file. Output file names are sanitised and the extension is forced.
 
+### Editing, scrolling and reading results
+
+Text fields behave like native ones on every platform:
+
+- `Cmd+C/V/X/A` on macOS, `Ctrl+C/V/X/A` elsewhere, plus a right-click
+  (two-finger tap) menu with Paste, Copy, Cut and Select all. Every shortcut is
+  bound on the inner Tk widget, so CustomTkinter's proxies cannot swallow it.
+- `PASTE` and `COPY KEY` buttons next to both password fields, for systems where
+  the shortcut never reaches the application.
+- The mouse wheel and the trackpad scroll the whole tab, not just the scrollbar:
+  the event is routed from any child widget to the enclosing scrollable frame
+  (macOS deltas are inverted and never rounded to zero). A text box keeps the
+  wheel while it can still scroll itself.
+- `EXPAND` opens the result in a window at 80 % of the screen with the text
+  selectable and read-only, plus `COPY TEXT`, `COPY PATH`, `SHOW IN FINDER`
+  (macOS `open -R`, Windows `explorer /select,`, Linux `xdg-open`) and `CLOSE`.
+
 Capacity warnings: above 70 % of the carrier the bit plane becomes
 statistically noticeable; above 90 % the app warns that the change is large.
 Both thresholds are constants, not opinions.
@@ -150,7 +167,7 @@ src/phantom/core/          crypto, container, payload, files, API
 src/phantom/stego/         bits, permutation, image carriers, legacy v1 reader
 src/phantom/audio/         WAV/FLAC containers, capacity, probing
 src/phantom/ui/            CustomTkinter app, worker, view model, theme
-src/phantom/locales/       uk / ru / en JSON, 188 keys with parity
+src/phantom/locales/       uk / ru / en JSON, 205 keys with parity
 tests/                     safety net, fixtures, property tests
 tools/                     fixture generators
 ```

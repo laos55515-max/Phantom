@@ -138,3 +138,73 @@ def test_secure_wipe_reports_missing_file(tmp_path: Path) -> None:
 def test_wipe_error_is_a_localizable_phantom_error() -> None:
     assert WipeError.code.value == "wipe_failed"
     assert WipeError("x").i18n_key == "err.wipe_failed"
+
+
+# ---------------------------------------------------------------------------
+# "Show in Finder" / reveal in file manager
+# ---------------------------------------------------------------------------
+def test_reveal_command_for_macos_file(tmp_path: Path) -> None:
+    target = tmp_path / "stego.png"
+    target.write_bytes(b"x")
+    assert fs.reveal_command(target, platform="darwin") == ["open", "-R", str(target)]
+
+
+def test_reveal_command_for_macos_directory(tmp_path: Path) -> None:
+    directory = tmp_path / "out"
+    directory.mkdir()
+    assert fs.reveal_command(directory, platform="darwin") == ["open", str(directory)]
+
+
+def test_reveal_command_for_windows(tmp_path: Path) -> None:
+    target = tmp_path / "stego.wav"
+    target.write_bytes(b"x")
+    assert fs.reveal_command(target, platform="win32") == ["explorer", f"/select,{target}"]
+    directory = tmp_path / "out"
+    directory.mkdir()
+    assert fs.reveal_command(directory, platform="win32") == ["explorer", str(directory)]
+
+
+def test_reveal_command_for_linux_opens_the_containing_directory(tmp_path: Path) -> None:
+    target = tmp_path / "stego.flac"
+    target.write_bytes(b"x")
+    assert fs.reveal_command(target, platform="linux") == ["xdg-open", str(tmp_path)]
+    assert fs.reveal_command(tmp_path, platform="linux") == ["xdg-open", str(tmp_path)]
+
+
+def test_reveal_command_refuses_a_missing_path(tmp_path: Path) -> None:
+    assert fs.reveal_command(tmp_path / "gone.png", platform="darwin") is None
+
+
+def test_reveal_in_file_manager_spawns_without_a_shell(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = tmp_path / "stego.png"
+    target.write_bytes(b"x")
+    calls: list[list[str]] = []
+
+    def fake_popen(argv, **kwargs):
+        calls.append(list(argv))
+        assert kwargs["close_fds"] is True
+        assert "shell" not in kwargs
+        return object()
+
+    monkeypatch.setattr(fs.subprocess, "Popen", fake_popen)
+    assert fs.reveal_in_file_manager(target) is True
+    assert calls and calls[0][0] in {"open", "explorer", "xdg-open"}
+
+
+def test_reveal_in_file_manager_reports_a_missing_binary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = tmp_path / "stego.png"
+    target.write_bytes(b"x")
+
+    def boom(*_args, **_kwargs):
+        raise OSError("no xdg-open here")
+
+    monkeypatch.setattr(fs.subprocess, "Popen", boom)
+    assert fs.reveal_in_file_manager(target) is False
+
+
+def test_reveal_in_file_manager_returns_false_when_nothing_exists(tmp_path: Path) -> None:
+    assert fs.reveal_in_file_manager(tmp_path / "missing.bin") is False

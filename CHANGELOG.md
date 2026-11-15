@@ -50,8 +50,25 @@ readable; new files are written in the v2 format.
   payload no longer overflows the permuted range.
 - Locale strings no longer hard-code KDF numbers; they are formatted from
   constants at run time.
+- Locales grew to 205 keys (paste/copy buttons, context-menu items, result
+  window) with full uk/ru/en parity.
 
 ### Fixed
+
+- macOS text editing: `Cmd+C/V/X/A` works in every entry and textbox, a
+  right-click menu offers Paste/Copy/Cut/Select all, and `PASTE` / `COPY KEY`
+  buttons next to the password fields cover systems where the shortcut never
+  arrives. The shortcuts are bound on the inner Tk widget, so they cannot be
+  swallowed by CustomTkinter proxies and cannot paste twice.
+- Scrolling: the mouse wheel and the trackpad scroll the whole tab instead of
+  only the scrollbar. Wheel events are routed from any child widget to its
+  scrollable frame, the macOS delta is inverted instead of being divided by 120
+  (which rounded a trackpad notch to zero), and a text box keeps the wheel while
+  it still has room to scroll itself.
+- Reading results: `EXPAND` opens the result at 80 % of the screen with a
+  read-only, selectable copy of the text plus `COPY TEXT`, `COPY PATH`,
+  `SHOW IN FINDER` (`open -R` / `explorer /select,` / `xdg-open`) and `CLOSE`;
+  the main result row gained the same path actions.
 
 - AES-256-GCM is now used correctly (1.x reused salt and nonce in places).
 - The GUI smoke tests drive the real widgets: the embed test used to fill only

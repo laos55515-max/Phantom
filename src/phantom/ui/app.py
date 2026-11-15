@@ -28,11 +28,14 @@ from phantom.core.errors import (
 from phantom.core.payload import PayloadKind
 from phantom.core.progress import INDETERMINATE_STAGES
 from phantom.i18n import I18n
+from phantom.ui import clipboard as clip
 from phantom.ui import theme as T
 from phantom.ui.animator import Animator
 from phantom.ui.bindings import I18nBinder
 from phantom.ui.debounce import Debouncer
 from phantom.ui.dnd import DndProvider, DropTarget
+from phantom.ui.result_window import ResultWindow
+from phantom.ui.scroll import MouseWheelRouter
 from phantom.ui.settings import AppSettings, SettingsStore
 from phantom.ui.system_theme import SystemThemeWatcher
 from phantom.ui.viewmodel import (
@@ -42,10 +45,12 @@ from phantom.ui.viewmodel import (
     PayloadMode,
 )
 from phantom.ui.widgets import (
+    CTkAdapter,
     card,
     card_title,
     display_font,
     hint_label,
+    install_text_shortcuts,
     mono_font,
     primary_button,
     sans_font,
@@ -108,9 +113,14 @@ class PhantomApp:
         self._mode_by_label: dict[str, PayloadMode] = {}
         self._tab_by_label: dict[str, str] = {}
         self._drop_zones: list[Any] = []
+        self._wheel = MouseWheelRouter(root)
+        self._scroll_frames: list[Any] = []
+        self._text_shortcuts: list[Any] = []
+        self._result_window: ResultWindow | None = None
 
         self._configure_root()
         self._build()
+        self._wheel.install()
         self._apply_theme(self.settings.theme, persist=False)
         self._restore_geometry()
         self._wire_shortcuts()
@@ -123,6 +133,29 @@ class PhantomApp:
     # ------------------------------------------------------------------
     def _t(self, key: str, **params: object) -> str:
         return self.binder.text(key, **params)
+
+    # -- scrolling ------------------------------------------------------
+    def _seat_scroll(self, scroll: Any) -> None:
+        """Make the whole scrollable area answer the wheel, not just its bar."""
+        canvas = CTkAdapter.scroll_canvas(scroll)
+        if canvas is None:
+            return
+        self._wheel.register(scroll, canvas)
+        self._scroll_frames.append(scroll)
+
+    def _paragraph_shortcuts(self, widget: Any) -> None:
+        """Cmd/Ctrl + C/V/X/A and a right-click menu for one text widget."""
+        self._text_shortcuts.append(
+            install_text_shortcuts(self.root, widget, labels_provider=self._menu_labels)
+        )
+
+    def _menu_labels(self) -> dict[str, str]:
+        return {
+            "menu_paste": self._t("menu_paste"),
+            "menu_copy": self._t("menu_copy"),
+            "menu_cut": self._t("menu_cut"),
+            "menu_select_all": self._t("menu_select_all"),
+        }
 
     def _security_params(self) -> dict[str, object]:
         profile = C.default_kdf_profile()
@@ -219,6 +252,7 @@ class PhantomApp:
         scroll = ctk.CTkScrollableFrame(frame, fg_color="transparent", corner_radius=0)
         scroll.pack(fill="both", expand=True, padx=6, pady=(4, 0))
         scroll.grid_columnconfigure(0, weight=1)
+        self._seat_scroll(scroll)
         row = 0
 
         # payload card ----------------------------------------------------
@@ -256,6 +290,7 @@ class PhantomApp:
             corner_radius=10,
         )
         self.embed_text.pack(fill="both", expand=True)
+        self._paragraph_shortcuts(self.embed_text)
         self.embed_text.bind("<KeyRelease>", self._on_text_changed)
         self.embed_text.bind("<FocusOut>", self._on_text_changed)
 
@@ -303,6 +338,7 @@ class PhantomApp:
             corner_radius=10,
         )
         self.embed_pwd.pack(side="left", fill="x", expand=True)
+        self._paragraph_shortcuts(self.embed_pwd)
         self.embed_pwd.bind("<KeyRelease>", self._on_password_changed)
         self.show_embed_pwd: ctk.CTkCheckBox = ctk.CTkCheckBox(
             pwd_row,
@@ -316,6 +352,12 @@ class PhantomApp:
         actions.pack(fill="x", padx=18, pady=(10, 4))
         self.generate_button = secondary_button(actions, self.root, "", self._generate_password)
         self.generate_button.pack(side="left")
+        self.paste_pwd_button = secondary_button(actions, self.root, "", self._paste_password)
+        self.paste_pwd_button.pack(side="left", padx=(10, 0))
+        self.copy_pwd_button = secondary_button(actions, self.root, "", self._copy_password)
+        self.copy_pwd_button.pack(side="left", padx=(10, 0))
+        self.binder.bind(self.paste_pwd_button, "btn_paste")
+        self.binder.bind(self.copy_pwd_button, "btn_copy_pwd")
         self.clipboard_hint = hint_label(actions, self.root, "", wrap=520)
         self.clipboard_hint.pack(side="left", padx=(12, 0), fill="x", expand=True)
         self.password_hint = hint_label(password_card, self.root, "", wrap=620)
@@ -375,6 +417,7 @@ class PhantomApp:
             corner_radius=10,
         )
         self.output_entry.pack(side="left", fill="x", expand=True)
+        self._paragraph_shortcuts(self.output_entry)
         self.output_entry.bind("<KeyRelease>", self._on_output_changed)
         self.output_button = secondary_button(
             output_row, self.root, "", self._choose_output
@@ -424,6 +467,7 @@ class PhantomApp:
         scroll = ctk.CTkScrollableFrame(frame, fg_color="transparent", corner_radius=0)
         scroll.pack(fill="both", expand=True, padx=6, pady=(4, 0))
         scroll.grid_columnconfigure(0, weight=1)
+        self._seat_scroll(scroll)
 
         stego_card = card(scroll)
         stego_card.grid(row=0, column=0, sticky="ew", pady=(0, 12))
@@ -455,6 +499,7 @@ class PhantomApp:
             corner_radius=10,
         )
         self.extract_pwd.pack(side="left", fill="x", expand=True)
+        self._paragraph_shortcuts(self.extract_pwd)
         self.show_extract_pwd: ctk.CTkCheckBox = ctk.CTkCheckBox(
             pwd_row,
             text="",
@@ -464,6 +509,18 @@ class PhantomApp:
             ),
         )
         self.show_extract_pwd.pack(side="left", padx=(10, 0))
+        extract_actions = ctk.CTkFrame(stego_card, fg_color="transparent")
+        extract_actions.pack(fill="x", padx=18, pady=(8, 4))
+        self.paste_extract_button = secondary_button(
+            extract_actions, self.root, "", self._paste_password
+        )
+        self.paste_extract_button.pack(side="left")
+        self.copy_extract_button = secondary_button(
+            extract_actions, self.root, "", self._copy_password
+        )
+        self.copy_extract_button.pack(side="left", padx=(10, 0))
+        self.binder.bind(self.paste_extract_button, "btn_paste")
+        self.binder.bind(self.copy_extract_button, "btn_copy_pwd")
         self.stego_notice = hint_label(stego_card, self.root, "", wrap=620)
         self.stego_notice.pack(fill="x", padx=18, pady=(0, 12))
 
@@ -484,6 +541,7 @@ class PhantomApp:
         )
         self.result_text.pack(fill="both", expand=True, padx=18, pady=(0, 8))
         self.result_text.configure(state="disabled")
+        self._paragraph_shortcuts(self.result_text)
         self.result_file_label = value_label(result_card, self.root, "")
         self.result_file_label.pack(fill="x", padx=18)
         buttons_row = ctk.CTkFrame(result_card, fg_color="transparent")
@@ -498,10 +556,25 @@ class PhantomApp:
             buttons_row, self.root, "", self._save_result_file_as
         )
         self.save_as_button.pack(side="left", padx=(10, 0))
+        self.expand_button = secondary_button(
+            buttons_row, self.root, "", self._expand_result
+        )
+        self.expand_button.pack(side="left", padx=(10, 0))
         self.clear_result_button = secondary_button(
             buttons_row, self.root, "", self._clear_extract
         )
         self.clear_result_button.pack(side="left", padx=(10, 0))
+        self.copy_path_button = secondary_button(
+            buttons_row, self.root, "", self._copy_result_path
+        )
+        self.copy_path_button.pack(side="left", padx=(10, 0))
+        self.reveal_button = secondary_button(
+            buttons_row, self.root, "", self._reveal_result
+        )
+        self.reveal_button.pack(side="left", padx=(10, 0))
+        self.binder.bind(self.expand_button, "btn_expand")
+        self.binder.bind(self.copy_path_button, "btn_copy_path")
+        self.binder.bind(self.reveal_button, "btn_reveal")
         self.binder.bind(self.copy_button, "btn_copy")
         self.binder.bind(self.save_button, "btn_save")
         self.binder.bind(self.save_as_button, "btn_save_as")
@@ -545,6 +618,7 @@ class PhantomApp:
         scroll = ctk.CTkScrollableFrame(frame, fg_color="transparent", corner_radius=0)
         scroll.pack(fill="both", expand=True, padx=6, pady=(4, 0))
         scroll.grid_columnconfigure(0, weight=1)
+        self._seat_scroll(scroll)
 
         lang_card = card(scroll)
         lang_card.grid(row=0, column=0, sticky="ew", pady=(0, 12))
@@ -859,6 +933,9 @@ class PhantomApp:
             self.audit_status.configure(text="")
             for value in self.audit_rows.values():
                 value.configure(text="—")
+            self.expand_button.configure(state="disabled")
+            self.copy_path_button.configure(state="disabled")
+            self.reveal_button.configure(state="disabled")
             return
         self.audit_rows["audit_cipher"].configure(
             text=f"AES-256-GCM · v{payload.container_version}"
@@ -891,6 +968,11 @@ class PhantomApp:
         state = "normal" if not has_text else "disabled"
         self.save_button.configure(state=state)
         self.save_as_button.configure(state=state)
+        self.expand_button.configure(state="normal")
+        path = self._result_path()
+        self.copy_path_button.configure(state="normal" if path else "disabled")
+        revealable = bool(path) and os.path.exists(path)
+        self.reveal_button.configure(state="normal" if revealable else "disabled")
 
     def _refresh_settings_state(self) -> None:
         if self.settings.animations:
@@ -1423,7 +1505,103 @@ class PhantomApp:
         self._set_status_key("status_cancelling", severity="warn")
         self.cancel_button.configure(state="disabled")
 
-    # -- results --------------------------------------------------------
+    # -- clipboard / result helpers --------------------------------------
+    def _password_entry(self) -> Any:
+        """The password field of the visible tab (both tabs have one)."""
+        if self.current_tab == "extract":
+            return self.extract_pwd
+        return self.embed_pwd
+
+    def _paste_password(self) -> None:
+        """Paste button: a fallback for systems where Cmd+V never arrives."""
+        entry = self._password_entry()
+        inner = CTkAdapter.inner_entry(entry) or entry
+        pasted = clip.paste(inner)
+        if pasted is None:
+            self._set_status_key("status_clipboard_empty", severity="warn")
+            return
+        entry.focus_set()
+        if entry is self.embed_pwd:
+            self._on_password_changed()
+        self._set_status_key("status_pasted", severity="ok")
+
+    def _copy_password(self) -> None:
+        value = self._password_entry().get()
+        if not value:
+            self._set_status_key("status_password_empty", severity="warn")
+            return
+        self._copy_to_clipboard(value)
+        self._set_status_key("status_copied", severity="ok")
+
+    def _result_path(self) -> str:
+        """Where the extracted file is (or would be) saved; empty for text."""
+        payload = self.extract_vm.result
+        if payload is None or payload.kind is not PayloadKind.FILE:
+            return ""
+        return self.extract_vm.save_path or self.extract_vm.default_save_path()
+
+    def _copy_result_path(self) -> None:
+        path = self._result_path()
+        if not path:
+            self._set_status_key("status_path_missing", severity="warn")
+            return
+        self._copy_to_clipboard(path)
+        self._set_status_key("status_copied", severity="ok")
+
+    def _reveal_result(self) -> None:
+        path = self._result_path()
+        if not path:
+            self._set_status_key("status_path_missing", severity="warn")
+            return
+        if fsutil.reveal_in_file_manager(path):
+            self._set_status_key("status_revealed", severity="ok", path=path)
+        else:
+            self._set_status_key("status_reveal_failed", severity="warn")
+
+    def _expand_result(self) -> None:
+        """Open the result in a large, copyable window (80 % of the screen)."""
+        if self._result_window is not None:
+            self._result_window.close()
+            self._result_window = None
+        text = clip.all_text(CTkAdapter.inner_textbox(self.result_text) or self.result_text)
+        if not text:
+            payload = self.extract_vm.result
+            if payload is not None and payload.kind is not PayloadKind.TEXT:
+                text = f"{payload.name}\n{payload.original_size} B"
+        labels = {
+            "result_window_title": self._t("result_window_title"),
+            "btn_copy_text": self._t("btn_copy_text"),
+            "btn_copy_path": self._t("btn_copy_path"),
+            "btn_reveal": self._t("btn_reveal"),
+            "btn_close": self._t("btn_close"),
+            "menu_paste": self._t("menu_paste"),
+            "menu_copy": self._t("menu_copy"),
+            "menu_cut": self._t("menu_cut"),
+            "menu_select_all": self._t("menu_select_all"),
+            "status_copied": self._t("status_copied"),
+            "status_path_missing": self._t("status_path_missing"),
+            "status_revealed": self._t("status_revealed"),
+            "status_reveal_failed": self._t("status_reveal_failed"),
+        }
+        window = ResultWindow(
+            self.root,
+            title=self._t("result_window_title"),
+            text=text,
+            labels=labels,
+            path=self._result_path() or None,
+            copy_callback=self._copy_for_window,
+            on_close=self._forget_result_window,
+        )
+        self._result_window = window
+
+    def _forget_result_window(self) -> None:
+        self._result_window = None
+
+    def _copy_for_window(self, value: str) -> bool:
+        """Copy from the result window, keeping the 30 s auto-clear promise."""
+        self._copy_to_clipboard(value)
+        return True
+
     def _copy_result(self) -> None:
         payload = self.extract_vm.result
         if payload is None or payload.kind is not PayloadKind.TEXT:
@@ -1619,6 +1797,10 @@ class PhantomApp:
         if self._clipboard_token is not None:
             self.root.after_cancel(self._clipboard_token)
             self._clipboard_token = None
+        if self._result_window is not None:
+            self._result_window.close()
+            self._result_window = None
+        self._wheel.uninstall()
         geometry = self.root.geometry()
         if GEOMETRY_RE.match(geometry):
             self.settings.window_geometry = geometry

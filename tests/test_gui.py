@@ -208,3 +208,236 @@ def test_worker_poll_drains_events(app) -> None:
         time.sleep(0.01)
     app._poll()
     assert app.worker.busy is False
+
+
+# ---------------------------------------------------------------------------
+# clipboard: buttons, shortcuts and the context menu
+# ---------------------------------------------------------------------------
+def test_paste_button_fills_the_password_field(app) -> None:
+    app.root.clipboard_clear()
+    app.root.clipboard_append("pasted-key-1234")
+    app._paste_password()
+    assert app.embed_pwd.get() == "pasted-key-1234"
+    assert app.embed_vm.password == "pasted-key-1234"
+
+
+def test_paste_button_reports_an_empty_clipboard(app, dialogs) -> None:
+    app.root.clipboard_clear()
+    app.embed_pwd.delete(0, "end")
+    app._paste_password()
+    assert app.embed_pwd.get() == ""
+    assert dialogs.errors == []  # a status line, not a modal box
+
+
+def test_copy_button_puts_the_password_on_the_clipboard(app) -> None:
+    app.embed_pwd.delete(0, "end")
+    app.embed_pwd.insert(0, "generated-key-99")
+    app._copy_password()
+    assert app.root.clipboard_get() == "generated-key-99"
+
+
+def test_copy_button_reports_an_empty_password(app) -> None:
+    app.embed_pwd.delete(0, "end")
+    app._copy_password()
+    assert app.status_label.cget("text") == app.i18n.t("status_password_empty")
+
+
+def test_paste_shortcut_handler_reads_the_clipboard(app, monkeypatch) -> None:
+    """The Cmd/Ctrl+V handler must insert whatever the clipboard holds."""
+    inner = app.embed_pwd._entry
+    monkeypatch.setattr(inner, "clipboard_get", lambda: "mocked-clipboard-value")
+    app.embed_pwd.delete(0, "end")
+    shortcuts = next(item for item in app._text_shortcuts if item.widget is inner)
+    assert shortcuts.paste() == "break"
+    assert app.embed_pwd.get() == "mocked-clipboard-value"
+
+
+def test_command_and_control_shortcuts_are_both_installed(app) -> None:
+    inner = app.embed_pwd._entry
+    shortcuts = next(item for item in app._text_shortcuts if item.widget is inner)
+    assert "<Command-v>" in shortcuts.sequences
+    assert "<Control-v>" in shortcuts.sequences
+    assert "<Command-a>" in shortcuts.sequences
+    assert shortcuts.bound_count >= 16
+
+
+def test_context_menu_offers_paste_copy_cut_and_select_all(app) -> None:
+    from phantom.ui.widgets import install_text_shortcuts
+
+    shortcuts = install_text_shortcuts(
+        app.root, app.embed_pwd, labels_provider=app._menu_labels
+    )
+    menu = shortcuts.build_menu()
+    labels = [
+        menu.entrycget(index, "label")
+        for index in range(menu.index("end") + 1)
+        if menu.type(index) == "command"
+    ]
+    assert labels == [
+        app.i18n.t("menu_paste"),
+        app.i18n.t("menu_copy"),
+        app.i18n.t("menu_cut"),
+        app.i18n.t("menu_select_all"),
+    ]
+    app.root.clipboard_clear()
+    app.root.clipboard_append("from-the-menu")
+    app.embed_pwd.delete(0, "end")
+    menu.invoke(0)  # Paste
+    assert app.embed_pwd.get() == "from-the-menu"
+
+
+def test_right_click_binding_is_installed(app) -> None:
+    inner = app.embed_pwd._entry
+    assert inner.bind("<Button-2>")
+    assert inner.bind("<Button-3>")
+
+
+# ---------------------------------------------------------------------------
+# scrolling
+# ---------------------------------------------------------------------------
+def test_every_tab_registered_its_scrollable_area(app) -> None:
+    from phantom.ui.widgets import CTkAdapter
+
+    assert len(app._scroll_frames) == 3
+    assert app._wheel.bound_count > 0
+    for frame in app._scroll_frames:
+        assert CTkAdapter.scroll_canvas(frame) is not None
+
+
+def test_wheel_over_a_card_scrolls_the_area(app) -> None:
+    import types
+
+    from phantom.ui.widgets import CTkAdapter
+
+    frame = app._scroll_frames[0]
+    canvas = CTkAdapter.scroll_canvas(frame)
+    calls: list[tuple[int, str]] = []
+    original = canvas.yview_scroll
+    canvas.yview_scroll = lambda steps, what: (calls.append((steps, what)), original(steps, what))[1]
+    try:
+        event = types.SimpleNamespace(
+            widget=app.payload_card_title, num=5, delta=0, x_root=5, y_root=5
+        )
+        assert app._wheel.dispatch(event) == "break"
+    finally:
+        canvas.yview_scroll = original
+    assert calls == [(1, "units")]
+
+
+def test_wheel_bindings_reach_the_cards_inside_the_tab(app) -> None:
+    # CustomTkinter binds the wheel only on the canvas and the frame itself;
+    # children (the cards) are what the pointer is usually over on macOS.
+    for widget in (app.payload_card_title, app.carrier_label, app.output_entry):
+        assert app._wheel is not None
+        assert widget.bind("<Button-4>") or widget.bind("<MouseWheel>")
+
+
+# ---------------------------------------------------------------------------
+# expanded result window
+# ---------------------------------------------------------------------------
+RESULT_LABELS = {
+    "result_window_title": "RESULT",
+    "btn_copy_text": "COPY TEXT",
+    "btn_copy_path": "COPY PATH",
+    "btn_reveal": "SHOW IN FINDER",
+    "btn_close": "CLOSE",
+    "menu_paste": "Paste",
+    "menu_copy": "Copy",
+    "menu_cut": "Cut",
+    "menu_select_all": "Select all",
+    "status_copied": "COPIED",
+    "status_path_missing": "NO PATH",
+    "status_revealed": "REVEALED",
+    "status_reveal_failed": "REVEAL FAILED",
+}
+
+
+def test_expand_opens_a_large_read_only_window(app) -> None:
+    app._set_textbox(app.result_text, "readable result body")
+    app._expand_result()
+    app.root.update()
+    window = app._result_window
+    assert window is not None
+    assert window.text_box.get("1.0", "end-1c") == "readable result body"
+    assert window.text_box.cget("state") == "disabled"
+    width = int(window.geometry().split("x")[0])
+    assert width >= int(window.winfo_screenwidth() * 0.7)
+    assert window.copy_text() is True
+    assert app.root.clipboard_get() == "readable result body"
+    window.close()
+    app.root.update()
+    assert app._result_window is None
+
+
+def test_expand_button_is_disabled_without_a_result(app) -> None:
+    assert app.expand_button.cget("state") == "disabled"
+
+
+def test_result_window_reveals_the_saved_file(app, tmp_path, monkeypatch) -> None:
+    from phantom.ui.result_window import ResultWindow
+
+    target = tmp_path / "extracted.bin"
+    target.write_bytes(b"payload")
+    calls: list[object] = []
+    monkeypatch.setattr(
+        "phantom.ui.result_window.fsutil.reveal_in_file_manager",
+        lambda path: calls.append(path) or True,
+    )
+    window = ResultWindow(
+        app.root,
+        title="RESULT",
+        text="body",
+        labels=RESULT_LABELS,
+        path=target,
+        copy_callback=lambda value: True,
+        on_close=None,
+    )
+    app.root.update()
+    assert window.reveal() is True
+    assert calls == [target]
+    assert window.feedback.cget("text") == RESULT_LABELS["status_revealed"]
+    assert window.copy_path() is True
+    window.close()
+
+
+def test_result_window_without_a_path_disables_path_actions(app) -> None:
+    from phantom.ui.result_window import ResultWindow
+
+    window = ResultWindow(
+        app.root, title="RESULT", text="text only", labels=RESULT_LABELS
+    )
+    app.root.update()
+    assert window.copy_path_button.cget("state") == "disabled"
+    assert window.reveal_button.cget("state") == "disabled"
+    assert window.copy_path() is False
+    window.close()
+
+
+def test_copy_path_and_reveal_use_the_extracted_file(app, tmp_path, monkeypatch) -> None:
+    from phantom.core.payload import ExtractedPayload, PayloadKind
+
+    target = tmp_path / "report.pdf"
+    target.write_bytes(b"%PDF-1.4")
+    app.extract_vm.result = ExtractedPayload(
+        kind=PayloadKind.FILE,
+        name="report.pdf",
+        data=b"%PDF-1.4",
+        sha256_expected="a" * 64,
+        sha256_actual="a" * 64,
+        integrity_ok=True,
+        original_size=8,
+        compressed_size=8,
+    )
+    app.extract_vm.save_path = str(target)
+    app._refresh_all()
+    assert app.copy_path_button.cget("state") == "normal"
+    assert app.reveal_button.cget("state") == "normal"
+    app._copy_result_path()
+    assert app.root.clipboard_get() == str(target)
+    revealed: list[object] = []
+    monkeypatch.setattr(
+        "phantom.ui.app.fsutil.reveal_in_file_manager",
+        lambda path: revealed.append(path) or True,
+    )
+    app._reveal_result()
+    assert revealed == [target]

@@ -18,6 +18,8 @@ import logging
 import os
 import secrets
 import stat
+import subprocess
+import sys
 import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -32,6 +34,57 @@ LOGGER: Final = logging.getLogger("phantom.files")
 
 def absolute(path: str) -> str:
     return os.path.realpath(os.path.abspath(os.path.expanduser(path)))
+
+
+def reveal_command(
+    path: str | os.PathLike[str], *, platform: str | None = None
+) -> list[str] | None:
+    """Command that shows ``path`` in the platform file manager, or ``None``.
+
+    macOS          ``open -R <file>`` (``open <dir>`` for a directory)
+    Windows        ``explorer /select,<file>``
+    Linux/other    ``xdg-open <containing directory>``
+
+    The path must exist: revealing a file the user has not saved yet would open
+    an empty window, so the caller gets ``None`` and can say so in the UI.
+    """
+    target = os.path.abspath(os.fspath(path))
+    if not os.path.exists(target):
+        return None
+    name = (platform or sys.platform).lower()
+    is_directory = os.path.isdir(target)
+    if name.startswith("darwin"):
+        return ["open", target] if is_directory else ["open", "-R", target]
+    if name.startswith("win"):
+        return ["explorer", target] if is_directory else ["explorer", f"/select,{target}"]
+    directory = target if is_directory else (os.path.dirname(target) or ".")
+    return ["xdg-open", directory]
+
+
+def reveal_in_file_manager(path: str | os.PathLike[str]) -> bool:
+    """Open the platform file manager at ``path``; ``False`` when unavailable.
+
+    Best effort by design: a headless session, a missing ``xdg-open`` or a
+    locked-down desktop simply returns ``False`` and the UI reports it.  No
+    shell is involved and nothing is awaited, so a slow file manager cannot
+    freeze the Tk main loop.
+    """
+    command = reveal_command(path)
+    if command is None:
+        LOGGER.info("nothing to reveal: %s", path)
+        return False
+    try:
+        subprocess.Popen(  # fixed argv, no shell, the path comes from the UI
+            command,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            close_fds=True,
+        )
+    except OSError as exc:
+        LOGGER.warning("cannot open the file manager: %s", exc)
+        return False
+    return True
 
 
 def same_file(first: str, second: str) -> bool:
