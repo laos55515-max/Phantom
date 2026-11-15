@@ -101,6 +101,11 @@ Text fields behave like native ones on every platform:
   the event is routed from any child widget to the enclosing scrollable frame
   (macOS deltas are inverted and never rounded to zero). A text box keeps the
   wheel while it can still scroll itself.
+- The clipboard is treated as public. A copied password, key or result is cleared
+  after 30 s and again when the window closes, with the platform's own tool
+  (`pbcopy`, `clip`, `wl-copy`, `xclip`, `xsel`) instead of Tk alone, because Tk
+  only reaches the system clipboard while it owns it. If another application has
+  replaced the content in the meantime, it is left alone.
 - `EXPAND` opens the result in a window at 80 % of the screen with the text
   selectable and read-only, plus `COPY TEXT`, `COPY PATH`, `SHOW IN FINDER`
   (macOS `open -R`, Windows `explorer /select,`, Linux `xdg-open`) and `CLOSE`.

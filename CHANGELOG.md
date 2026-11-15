@@ -13,6 +13,18 @@ All notable changes to PHANTOM are recorded here. The format follows
   localised), and the embed tab says which layout this build writes. The version
   is authenticated inside the header, so it is reported only after a payload was
   opened; every number comes from `phantom.core.constants`, never a locale file.
+- Copied secrets now really leave the system clipboard. Tk's `clipboard_clear`
+  only reaches it while Tk owns the selection, and on macOS the text survives the
+  window, so the 30 s timer and the window close both call the platform's own tool
+  (`pbcopy`, `clip`, `wl-copy`, `xclip`, `xsel`) through an argument vector — never
+  a shell — with a 2 s timeout. The clear runs only when the clipboard still holds
+  the text PHANTOM put there, so another application's content is never wiped.
+- `core.security.secure_zeroize` is the single checked zeroizer behind every key
+  wipe: `kdf._zero`, `kdf.wipe_all`, `MessageKeys.wipe()` and therefore both
+  envelopes. It zeroes a `bytearray` in place and raises `TypeError` for `str`,
+  `bytes` or anything else immutable, so a wipe of a value that cannot be wiped
+  fails loudly instead of passing silently. `SECURITY.md` spells out what this
+  does not cover: the typed `str`, interpreter copies and swap.
 - The audit card's `SIZE` row now reports the share of the carrier the payload
   occupies: `284 B → 306 B · 12 % of the carrier`. It is exact bookkeeping, not a
   gauge — `stego.engine.Capacity.carrier_share` counts the header bits plus eight

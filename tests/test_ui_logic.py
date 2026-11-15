@@ -1759,3 +1759,71 @@ def test_size_line_is_localised() -> None:
     for code, text in texts.items():
         assert text.startswith("284 B → 306 B · "), code
         assert "{" not in text, f"{code} left a placeholder unfilled"
+
+
+# ---------------------------------------------------------------------------
+# native clipboard clearing (the OS part, no Tk involved)
+# ---------------------------------------------------------------------------
+def test_clear_command_knows_the_platform_tools() -> None:
+    assert ui_clipboard.clear_command("darwin") == ("pbcopy",)
+    assert ui_clipboard.clear_command("win32") == ("clip",)
+    assert ui_clipboard.clear_command("linux", which=lambda name: "/usr/bin/wl-copy") == (
+        "wl-copy",
+        "--clear",
+    )
+    assert ui_clipboard.clear_command(
+        "linux", which=lambda name: "/usr/bin/xclip" if name == "xclip" else None
+    ) == ("xclip", "-selection", "clipboard", "-i", "/dev/null")
+    assert ui_clipboard.clear_command(
+        "linux", which=lambda name: "/usr/bin/xsel" if name == "xsel" else None
+    ) == ("xsel", "--clipboard", "--delete")
+    assert ui_clipboard.clear_command("linux", which=lambda name: None) is None
+
+
+def test_clear_clipboard_runs_the_tool_with_an_empty_stdin() -> None:
+    calls: list[tuple[list[str], dict[str, object]]] = []
+
+    def runner(*args: object, **kwargs: object) -> object:
+        calls.append((list(args[0]), kwargs))  # type: ignore[call-overload]
+        return object()
+
+    assert ui_clipboard.clear_clipboard(runner=runner, platform="darwin") is True
+    assert len(calls) == 1
+    argv, kwargs = calls[0]
+    assert argv == ["pbcopy"], "an argument vector, never a shell string"
+    assert kwargs["input"] == b"", "pbcopy clears when stdin is empty"
+    assert "shell" not in kwargs, "no shell anywhere near a secret"
+    assert kwargs["check"] is False
+
+
+def test_clear_clipboard_reports_a_missing_tool_without_raising() -> None:
+    calls: list[object] = []
+
+    def runner(*args: object, **kwargs: object) -> object:
+        calls.append(args)
+        return object()
+
+    assert (
+        ui_clipboard.clear_clipboard(runner=runner, platform="linux", which=lambda name: None)
+        is False
+    )
+    assert calls == [], "nothing to run"
+
+
+def test_clear_clipboard_swallows_tool_failures() -> None:
+    def runner(*args: object, **kwargs: object) -> object:
+        raise FileNotFoundError("no pbcopy here")
+
+    assert ui_clipboard.clear_clipboard(runner=runner, platform="darwin") is False
+
+
+def test_clear_clipboard_passes_a_timeout() -> None:
+    seen: dict[str, object] = {}
+
+    def runner(*args: object, **kwargs: object) -> object:
+        seen.update(kwargs)
+        return object()
+
+    ui_clipboard.clear_clipboard(runner=runner, platform="win32")
+    assert seen["timeout"] == ui_clipboard.CLIPBOARD_TOOL_TIMEOUT
+    assert seen["timeout"] < 5.0, "a hung tool must not block the GUI thread"

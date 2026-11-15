@@ -9,7 +9,7 @@ import pytest
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from phantom.core import constants as C
-from phantom.core import container
+from phantom.core import container, security
 from phantom.core.errors import CapacityError, InvalidInput, WrongPasswordOrNoData
 from phantom.core.kdf import MessageKeys, derive_master_key, derive_message_keys
 
@@ -252,3 +252,42 @@ def test_length_field_is_not_plaintext() -> None:
         assert expected_length not in sealed.header
     finally:
         sealed.wipe()
+
+
+def _spy_zeroize(monkeypatch: pytest.MonkeyPatch) -> list[bytearray]:
+    """Record every buffer the container hands to the zeroizer."""
+    recorded: list[bytearray] = []
+
+    def spy(buffer: bytearray) -> None:
+        security.secure_zeroize(buffer)
+        recorded.append(buffer)
+
+    monkeypatch.setattr(container, "secure_zeroize", spy)
+    return recorded
+
+
+def test_sealing_zeroizes_the_master_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    recorded = _spy_zeroize(monkeypatch)
+    sealed = container.seal(PAYLOAD, PASSWORD)
+    try:
+        assert sealed.ciphertext
+    finally:
+        sealed.wipe()
+    assert recorded, "sealing derives a master key and must wipe it"
+    for buffer in recorded:
+        assert bytes(buffer) == b"\x00" * len(buffer)
+
+
+def test_a_wrong_password_also_zeroizes_every_candidate_master_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sealed = container.seal(PAYLOAD, PASSWORD)
+    try:
+        recorded = _spy_zeroize(monkeypatch)
+        with pytest.raises(WrongPasswordOrNoData):
+            container.open_header(sealed.header, "wrong password entirely", max_payload_len=4096)
+    finally:
+        sealed.wipe()
+    assert len(recorded) >= len(C.KDF_PROFILES), "every attempted profile is cleaned up"
+    for buffer in recorded:
+        assert bytes(buffer) == b"\x00" * len(buffer)

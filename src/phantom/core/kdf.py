@@ -19,6 +19,7 @@ from phantom.core import constants as C
 from phantom.core.constants import KdfProfile
 from phantom.core.errors import InvalidInput, InvalidPassword
 from phantom.core.progress import ProgressFn, Stage, check_cancel, noop_progress
+from phantom.core.security import secure_zeroize
 
 __all__ = [
     "HKDF_SHA256",
@@ -166,7 +167,7 @@ def hkdf(
 
 
 def _zero(buf: bytearray) -> None:
-    buf[:] = b"\x00" * len(buf)
+    secure_zeroize(buf)
 
 
 @dataclass(slots=True)

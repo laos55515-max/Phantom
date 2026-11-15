@@ -1,4 +1,4 @@
-"""Password generation and policy helpers (no UI, no globals)."""
+"""Password generation, policy and buffer hygiene (no UI, no globals)."""
 
 from __future__ import annotations
 
@@ -22,6 +22,22 @@ class PasswordPolicy:
     require_mixed_case: bool = True
     require_digit: bool = True
     require_symbol: bool = True
+
+
+def secure_zeroize(buffer: bytearray) -> None:
+    """Overwrite a secret buffer in place, and refuse anything that cannot be.
+
+    Python cannot wipe an immutable ``str`` or ``bytes``: the text the user typed
+    lives in the interpreter until it is collected, and a copy may hide in any
+    object the code built.  This helper is for the buffers the code *does* own —
+    key material and the encoded password — and it raises instead of pretending
+    when handed something immutable, so ``secure_zeroize(password_str)`` cannot
+    look like it worked.
+    """
+    if not isinstance(buffer, bytearray):
+        raise TypeError("secure_zeroize accepts a bytearray, not str or bytes")
+    for index in range(len(buffer)):
+        buffer[index] = 0
 
 
 def generate_password(

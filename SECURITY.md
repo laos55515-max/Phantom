@@ -117,6 +117,25 @@ older copies may persist in blocks the application cannot address.
 Treat wiping as **risk reduction, not a guarantee**. The confirmation dialog says
 exactly that; the code does not claim otherwise.
 
+**Memory buffers.** Key material and the encoded password are `bytearray`s and are
+zeroed with `core.security.secure_zeroize` as soon as they are no longer needed —
+`MessageKeys.wipe()` after sealing or opening, the password bytes right after the
+KDF run. Python cannot wipe an immutable `str`: the characters the user typed, and
+any copy the interpreter made, stay in memory until the garbage collector reuses
+the page, and they may have been written to swap. The helper raises `TypeError`
+instead of silently doing nothing when it is handed an immutable value, so a
+mistaken call cannot look like it worked.
+
+**Clipboard.** A copied password, key or extracted text is cleared after
+`CLIPBOARD_CLEAR_SECONDS` (30 s) and again when the window closes, through the
+platform's own tool — `pbcopy` on macOS, `clip` on Windows, `wl-copy`, `xclip` or
+`xsel` on Linux — rather than through Tk alone, because Tk can only reach the
+system clipboard while it owns the selection and on macOS the text outlives the
+window. The clear runs only when the clipboard still holds the text PHANTOM put
+there; another application's content is left alone. Clipboard history, cloud
+clipboard sync (Universal Clipboard, Windows clipboard history) and screenshots
+are outside our reach: a copied secret may survive there.
+
 ## Password guidance
 
 - Minimum 12 characters; the generator produces 20.
