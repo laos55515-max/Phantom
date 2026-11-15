@@ -304,38 +304,62 @@ def test_every_tab_registered_its_scrollable_area(app) -> None:
         assert CTkAdapter.scroll_canvas(frame) is not None
 
 
-def test_wheel_over_a_card_scrolls_the_area(app, monkeypatch) -> None:
-    """The pointer is on a card title; the area around it has to scroll."""
+def test_every_widget_in_every_tab_answers_the_wheel(app) -> None:
+    """Every plain Tk widget under a scrollable frame carries the handler."""
+    from phantom.ui.scroll import is_scrollbar, is_text_area
+
+    checked = 0
+    missing: list[str] = []
+    for frame in app._scroll_frames:
+        stack: list[object] = [frame]
+        while stack:
+            widget = stack.pop()
+            stack.extend(widget.winfo_children())
+            if is_text_area(widget) or is_scrollbar(widget):
+                continue
+            try:
+                script = widget.bind("<MouseWheel>")
+            except (NotImplementedError, ValueError):
+                continue
+            if script:
+                checked += 1
+                continue
+            # A CustomTkinter wrapper forwards bind() to the Tk widgets it is
+            # made of and answers nothing; those children are walked above.
+            if type(widget).__module__.startswith("customtkinter"):
+                continue
+            missing.append(
+                f"{widget} cls={type(widget).__name__} mod={type(widget).__module__} "
+                f"master={widget.master} master_cls={type(widget.master).__name__} "
+                f"children={len(widget.winfo_children())}"
+            )
+    assert not missing, "unbound: " + " | ".join(missing[:6])
+    assert checked >= 10, f"only {checked} widgets answered the wheel"
+
+
+def test_the_broken_global_handler_is_gone(app) -> None:
+    """``bind_all("<MouseWheel>")`` was the macOS dead end; the area carries it."""
+    assert not app.root.bind_all("<MouseWheel>")
+    assert app._scroll_frames[0].bind("<MouseWheel>")
+
+
+def test_wheel_steps_reach_the_canvas_of_an_area(app) -> None:
+    """The maths the bound handler runs moves the real canvas of the tab."""
     import types
 
+    from phantom.ui.scroll import scroll_canvas, wheel_steps
     from phantom.ui.widgets import CTkAdapter
 
-    frame = app._scroll_frames[0]
-    canvas = CTkAdapter.scroll_canvas(frame)
+    canvas = CTkAdapter.scroll_canvas(app._scroll_frames[0])
     calls: list[tuple[int, str]] = []
     original = canvas.yview_scroll
     canvas.yview_scroll = lambda steps, what: (calls.append((steps, what)), original(steps, what))[1]
-    # Xvfb has no pointer of its own, so the hit test is pinned to a card title.
-    monkeypatch.setattr(
-        app.root, "winfo_containing", lambda _x, _y: app.payload_card_title, raising=False
-    )
     try:
-        event = types.SimpleNamespace(
-            widget=app.payload_card_title, num=None, delta=120, x_root=5, y_root=5
-        )
-        assert app._wheel.dispatch(event) == "break"
+        event = types.SimpleNamespace(delta=120, num=None, x_root=5, y_root=5)
+        assert scroll_canvas(canvas, wheel_steps(event, platform="linux")) is True
     finally:
         canvas.yview_scroll = original
     assert calls == [(-1, "units")]
-
-
-def test_wheel_binding_is_global_so_every_card_answers(app) -> None:
-    """One ``bind_all`` per sequence on the window, not a binding per widget."""
-    from phantom.ui.scroll import WHEEL_SEQUENCES
-
-    for sequence in WHEEL_SEQUENCES:
-        assert app.root.bind_all(sequence), f"{sequence} is not bound on the window"
-    assert app._wheel.bound_count == len(WHEEL_SEQUENCES)
 
 
 # ---------------------------------------------------------------------------

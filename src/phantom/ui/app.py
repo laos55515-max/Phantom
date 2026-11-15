@@ -35,7 +35,7 @@ from phantom.ui.bindings import I18nBinder
 from phantom.ui.debounce import Debouncer
 from phantom.ui.dnd import DndProvider, DropTarget
 from phantom.ui.result_window import ResultWindow
-from phantom.ui.scroll import MouseWheelRouter
+from phantom.ui.scroll import MouseWheelRouter, _bind_to_children
 from phantom.ui.settings import AppSettings, SettingsStore
 from phantom.ui.system_theme import SystemThemeWatcher
 from phantom.ui.viewmodel import (
@@ -127,6 +127,7 @@ class PhantomApp:
         self._wire_shortcuts()
         self._render_all_labels()
         self._refresh_all()
+        self._wheel.refresh()
         self._log_startup_state()
 
     # ------------------------------------------------------------------
@@ -143,6 +144,10 @@ class PhantomApp:
             return
         self._wheel.register(scroll, canvas)
         self._scroll_frames.append(scroll)
+        # Bind the frame and its canvas right after creation; ``install`` walks
+        # the tree again once the cards inside the tab exist, because binding a
+        # widget that does not exist yet is not possible.
+        _bind_to_children(scroll, canvas)
 
     def _paragraph_shortcuts(self, widget: Any) -> None:
         """Cmd/Ctrl + C/V/X/A and a right-click menu for one text widget."""
@@ -797,6 +802,9 @@ class PhantomApp:
         self._render_mode_labels()
         self._render_tab_labels()
         self.binder.apply()
+        # A segmented button rebuilds its children whenever its values change,
+        # so the wheel has to be handed to the fresh widgets.
+        self._wheel.refresh()
 
     def _render_language_labels(self) -> None:
         codes = list(self.i18n.languages)
@@ -1732,6 +1740,7 @@ class PhantomApp:
         self.theme_watcher.set_enabled(self.settings.theme == "System")
         self._schedule_theme_poll()
         self._render_theme_labels()
+        self._wheel.refresh()
         if persist:
             self._save_settings()
 
