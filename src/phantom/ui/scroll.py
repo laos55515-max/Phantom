@@ -7,6 +7,17 @@ root.  Binding the wheel directly on the frame, the canvas and every descendant
 puts the handler where Tk actually delivers the event, so a card, a label or a
 button inside a tab scrolls the tab it belongs to.
 
+``install_tab_wheel`` is the entry point: it walks one scrollable area and
+returns a :class:`TabWheel` that can be refreshed (children appear later) and
+uninstalled.  Two macOS behaviours are handled there and not in the bindings
+themselves, because both are per-gesture state:
+
+* a trackpad reports **fractional** deltas — ``int(delta)`` turns every one of
+  them into zero and the wheel appears dead, so the leftover fraction is carried
+  over to the next event of the same tab;
+* Tk 9 reports two-finger scrolling as its own ``<TouchpadScroll>`` sequence,
+  which nothing used to bind at all.
+
 Two kinds of widget must stay untouched:
 
 * text areas (``CTkTextbox`` and the Tk ``Text`` inside it) — they scroll their
@@ -29,7 +40,14 @@ from typing import Any, Final
 
 LOGGER: Final = logging.getLogger("phantom.scroll")
 
-WHEEL_SEQUENCES: Final = ("<MouseWheel>", "<Button-4>", "<Button-5>")
+#: Tk 9 delivers two-finger scrolling on macOS as its own event; Tk 8.6 has no
+#: such sequence, and binding it there raises ``TclError`` (which the binder
+#: swallows per widget, so the same code runs on both).
+TOUCHPAD_SEQUENCE: Final = "<TouchpadScroll>"
+
+#: Every sequence one widget carries.  The classic three plus the Tk 9 trackpad
+#: event: on 8.6 the last one simply fails to bind and is skipped.
+WHEEL_SEQUENCES: Final = ("<MouseWheel>", "<Button-4>", "<Button-5>", TOUCHPAD_SEQUENCE)
 
 #: macOS reports ±1 per notch, so one notch has to move a few lines to be felt.
 MACOS_UNITS_PER_STEP: Final = 3
@@ -70,32 +88,72 @@ def is_scrollbar(widget: Any) -> bool:
     ) and "Scrollbar" in type(widget).__name__
 
 
-def wheel_steps(event: Any, *, platform: str | None = None) -> int:
-    """Convert a wheel event into ``yview_scroll`` units.
+def wheel_delta(event: Any, *, platform: str | None = None) -> float:
+    """Signed ``yview_scroll`` units for one event, fraction included.
 
     Positive means "towards the end of the content".  macOS sends a small,
-    already inverted delta (±1 per notch), Windows sends multiples of 120 and
-    X11 uses Button-4/5.
+    already inverted delta and a trackpad sends fractions of one notch, Windows
+    sends multiples of 120 and X11 uses Button-4/5.  Kept as a float because
+    dropping the fraction is exactly what made a trackpad look broken.
     """
     number = getattr(event, "num", None)
     if number in (4, 5):
-        return -1 if number == 4 else 1
+        return -1.0 if number == 4 else 1.0
     try:
-        delta = int(getattr(event, "delta", 0) or 0)
+        delta = float(getattr(event, "delta", 0) or 0)
     except (TypeError, ValueError):
-        return 0
+        return 0.0
     if delta == 0:
-        return 0
+        return 0.0
     if (platform or sys.platform).lower().startswith("darwin"):
         # delta is ±1 per notch and positive means "scroll up", while
         # ``yview_scroll`` counts positive as "towards the end": flip the sign
         # and multiply.  Dividing by 120 — the Windows convention — rounds every
         # notch to zero units, which is the "only the scrollbar works" report.
         return -delta * MACOS_UNITS_PER_STEP
-    steps = delta // WINDOWS_DELTA_UNIT
-    if steps == 0:
-        steps = 1 if delta > 0 else -1
-    return -steps
+    return -delta / WINDOWS_DELTA_UNIT
+
+
+def wheel_steps(event: Any, *, platform: str | None = None) -> int:
+    """Whole ``yview_scroll`` units for a single event.
+
+    One event, one move: a delta smaller than a unit still scrolls a line rather
+    than nothing.  :class:`WheelAccumulator` is what a live tab uses instead, so
+    that a stream of small trackpad deltas adds up to smooth motion.
+    """
+    value = wheel_delta(event, platform=platform)
+    if value == 0:
+        return 0
+    whole = int(value)
+    if whole == 0:
+        return 1 if value > 0 else -1
+    return whole
+
+
+@dataclass(slots=True)
+class WheelAccumulator:
+    """Carries the fraction of a trackpad gesture from one event to the next.
+
+    A macOS trackpad emits a long stream of deltas around ±0.1.  Rounded once
+    each, every event scrolls nothing; accumulated, nine of them scroll a line.
+    The state belongs to one scrollable area, so two tabs cannot borrow each
+    other's leftover.
+    """
+
+    leftover: float = 0.0
+
+    def units(self, event: Any, *, platform: str | None = None) -> int:
+        """Whole units this event contributes, keeping the remainder."""
+        total = self.leftover + wheel_delta(event, platform=platform)
+        whole = int(total)
+        self.leftover = total - whole
+        # A long gesture must not bank a stray fraction forever.
+        if abs(self.leftover) < 1e-6:
+            self.leftover = 0.0
+        return whole
+
+    def reset(self) -> None:
+        self.leftover = 0.0
 
 
 def scroll_canvas(canvas: Any, steps: int) -> bool:
@@ -155,11 +213,25 @@ def _descendants(widget: Any) -> Iterator[Any]:
         yield from _descendants(child)
 
 
-def _handler(canvas: Any, platform: str | None) -> Any:
-    """Build the ``<MouseWheel>`` handler for one canvas."""
+def _handler(
+    canvas: Any,
+    platform: str | None,
+    accumulator: WheelAccumulator | None = None,
+) -> Any:
+    """Build the wheel handler for one canvas.
+
+    ``accumulator`` keeps the fractional part of a trackpad gesture; without one
+    every event is rounded on its own (the old behaviour, still what the plain
+    ``wheel_steps`` callers get).
+    """
+    state = accumulator if accumulator is not None else WheelAccumulator()
 
     def handle(event: Any) -> str | None:
-        steps = wheel_steps(event, platform=platform)
+        steps = (
+            state.units(event, platform=platform)
+            if accumulator is not None
+            else wheel_steps(event, platform=platform)
+        )
         if steps == 0:
             return None
         return "break" if scroll_canvas(canvas, steps) else None
@@ -224,7 +296,7 @@ def _bind_to_children(
 ) -> list[WheelBinding]:
     """Bind ``<MouseWheel>`` on ``widget``, on ``canvas`` and on every descendant.
 
-    Children that appear later are covered by :meth:`MouseWheelRouter.refresh`,
+    Children that appear later are covered by :meth:`TabWheel.refresh`,
     which walks the same tree again.  Text areas and scrollbars are skipped, and
     the walk still descends into them: a ``CTkTextbox`` is a frame that owns an
     inner ``Text``, and neither of the two should be bound.
@@ -240,62 +312,38 @@ def _bind_to_children(
 
 
 @dataclass(slots=True)
-class ScrollTarget:
-    """A scrollable frame together with the canvas that actually scrolls."""
+class TabWheel:
+    """One scrollable area, the canvas that scrolls, and everything bound for it.
+
+    Created by :func:`install_tab_wheel`.  ``refresh`` picks up children that
+    were built after installation (every card in a tab), ``uninstall`` removes
+    exactly the bindings this object created and nothing else.
+    """
 
     frame: Any
     canvas: Any
-
-
-@dataclass(slots=True)
-class MouseWheelRouter:
-    """Keeps one binding set per scrollable area of the window."""
-
-    root: Any
+    root: Any = None
     platform: str | None = None
-    targets: list[ScrollTarget] = field(default_factory=list)
     bindings: list[WheelBinding] = field(default_factory=list)
-
-    # -- registration --------------------------------------------------
-    def register(self, frame: Any, canvas: Any) -> ScrollTarget:
-        """Add a scrollable area; returns the stored target (idempotent)."""
-        for existing in self.targets:
-            if existing.frame is frame:
-                existing.canvas = canvas
-                return existing
-        target = ScrollTarget(frame=frame, canvas=canvas)
-        self.targets.append(target)
-        return target
-
-    def unregister(self, frame: Any) -> None:
-        self.targets = [target for target in self.targets if target.frame is not frame]
+    accumulator: WheelAccumulator = field(default_factory=WheelAccumulator)
 
     @property
     def bound_count(self) -> int:
+        """How many widget/sequence bindings this tab currently owns."""
         return len(self.bindings)
 
-    # -- binding -------------------------------------------------------
-    def install(self) -> int:
-        """Bind every registered area, including the cards built after registration."""
-        self._clear_builtin_handler()
-        return self.refresh()
-
     def refresh(self) -> int:
-        """Walk the registered areas again and bind children that appeared later.
-
-        Already bound widgets are skipped by their mark, so calling this on every
-        rebuild is cheap and never stacks a second handler.
-        """
-        created: list[WheelBinding] = []
-        for target in self.targets:
-            created.extend(
-                _bind_to_children(target.frame, target.canvas, platform=self.platform)
+        """Bind children that appeared since the last walk; returns the total."""
+        handler = _handler(self.canvas, self.platform, self.accumulator)
+        self.bindings.extend(
+            _bind_to_children(
+                self.frame, self.canvas, platform=self.platform, handler=handler
             )
-        self.bindings.extend(created)
+        )
         return self.bound_count
 
     def uninstall(self) -> None:
-        """Remove every binding this router created (safe to call twice)."""
+        """Remove every binding this tab created (safe to call twice)."""
         for binding in self.bindings:
             try:
                 binding.widget.unbind(binding.sequence, binding.funcid)
@@ -303,29 +351,49 @@ class MouseWheelRouter:
                 LOGGER.debug("unbind %s failed: %s", binding.sequence, exc)
             _marked(binding.widget).discard(binding.sequence)
         self.bindings.clear()
-
-    def _clear_builtin_handler(self) -> None:
-        """Drop CustomTkinter's global wheel handler.
-
-        Each ``CTkScrollableFrame`` installs one through ``bind_all``.  It
-        resolves the target from ``event.widget``, which on macOS is the window,
-        so it scrolls nothing there — and where it does work it would scroll a
-        second time on top of our own bindings.
-        """
-        unbind_all = getattr(self.root, "unbind_all", None)
-        if not callable(unbind_all):
-            return
-        try:
-            unbind_all("<MouseWheel>")
-        except Exception as exc:  # noqa: BLE001 - nothing bound, or Tk refused
-            LOGGER.debug("unbind_all(<MouseWheel>) failed: %s", exc)
+        self.accumulator.reset()
 
 
-def install_mousewheel(
-    root: Any, frame: Any, canvas: Any, *, platform: str | None = None
-) -> MouseWheelRouter:
-    """Convenience wrapper: bind one scrollable area, ready to use."""
-    router = MouseWheelRouter(root=root, platform=platform)
-    router.register(frame, canvas)
-    router.install()
-    return router
+def _clear_builtin_handler(root: Any) -> None:
+    """Drop CustomTkinter's global wheel handler on ``root``.
+
+    Each ``CTkScrollableFrame`` installs one through ``bind_all``.  It resolves
+    the target from ``event.widget``, which on macOS is the window, so it scrolls
+    nothing there — and where it does work it would scroll a second time on top
+    of the per-widget bindings below.
+    """
+    unbind_all = getattr(root, "unbind_all", None)
+    if not callable(unbind_all):
+        return
+    try:
+        unbind_all("<MouseWheel>")
+    except Exception as exc:  # noqa: BLE001 - nothing bound, or Tk refused
+        LOGGER.debug("unbind_all(<MouseWheel>) failed: %s", exc)
+
+
+def install_tab_wheel(
+    root: Any,
+    frame: Any,
+    canvas: Any,
+    *,
+    platform: str | None = None,
+) -> TabWheel:
+    """Give one scrollable area of one tab the wheel, and return its handle.
+
+    Three things make this work where a single global binding does not:
+
+    * the handler is bound on the frame, the canvas **and every descendant**, so
+      the event is caught where Tk actually delivers it (a label inside a card
+      inside a tab), not on the window;
+    * the fraction of a trackpad gesture is carried between events, so a stream
+      of ±0.1 deltas scrolls instead of rounding to nothing;
+    * Tk 9's ``<TouchpadScroll>`` is bound as well, and Tk 8.6 simply refuses the
+      sequence per widget — the same code runs on both.
+
+    Text areas and scrollbars are left alone: they scroll their own content and
+    would move twice.  Nothing here uses ``bind_all``.
+    """
+    _clear_builtin_handler(root)
+    wheel = TabWheel(frame=frame, canvas=canvas, root=root, platform=platform)
+    wheel.refresh()
+    return wheel

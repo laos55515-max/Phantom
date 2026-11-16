@@ -212,7 +212,60 @@ All notable changes to PHANTOM are recorded here. The format follows
   independent of carrier size (0.1 % of a 12 MP embed, which is dominated by PNG
   I/O).
 
+### Fixed
+
+- **A failed embed no longer destroys the file that was already at the output
+  path.** The self-check ("read the file back and compare") ran *after* the
+  writer had replaced the destination, and a failure then deleted the output
+  path outright — so a verification problem, a cancellation or a short write cost
+  the user the only copy of whatever used to live there. The output now goes to a
+  hidden sibling (`files.staged_path`), verification runs on that file, and
+  `files.publish_staged` renames it into place only after the check passes; on
+  any failure the staged file is removed (`files.discard_staged`, a `WipeError`
+  if even that fails) and the destination is untouched, byte for byte. The forced
+  extension still wins — asking for `a.jpg` still publishes `a.png` — and the
+  "output would overwrite the carrier" check moved into the API, because the
+  writers now only ever see a temp name.
+- **The wheel works on a macOS trackpad.** Two things were wrong and neither was
+  the binding: a trackpad reports *fractional* deltas (±0.1 per event), and
+  `int(delta)` turned every one of them into zero; and Tk 9 reports two-finger
+  scrolling as its own `<TouchpadScroll>` sequence, which nothing bound. The new
+  `scroll.WheelAccumulator` carries the fraction between events of the same tab
+  (ten tenths of a notch move one line, three nines of a unit stay banked), each
+  scrollable area gets its own accumulator so two tabs cannot borrow each other's
+  remainder, and `<TouchpadScroll>` is bound alongside the classic three
+  sequences — Tk 8.6 refuses it per widget and the rest still binds. `MouseWheelRouter`
+  became `scroll.install_tab_wheel`, one handle per tab with `refresh`/`uninstall`,
+  still no `bind_all`.
+- **The writer can no longer produce a container it cannot open.** Compression was
+  bounded only by what fitted into the carrier, never by the plaintext limit the
+  extractor enforces (`C.MAX_PLAINTEXT_BYTES`, 1 GiB); a payload above it embedded
+  fine and then failed to unpack — the same build refusing its own file. The
+  ceiling is now checked while streaming in `payload._compress_stream`, and both
+  ends read the same constant.
+- **A job that finished between two polls no longer loses its result.** `_poll`
+  drained the queue, saw `worker.busy == False` and finished the operation without
+  looking again, so a thread that died in that window left its DONE (or ERROR,
+  or CANCELLED) in the queue forever: the embed succeeded, and the interface never
+  showed the output path or the verification verdict. The worker guarantees the
+  ordering — it posts the terminal event before the thread stops — so `_poll` now
+  drains a second time once `busy` goes false, and re-checks afterwards in case
+  handling those events started the next job.
+
 ### Changed
+
+- **The 2026 look: readable secondary text and larger type.** `CLR_MUTED` was one
+  mid-grey for both appearance modes (~4.8:1 on a white card, ~3.4:1 on the dark
+  one) and painted the card headings, so on the dark theme they faded into the
+  card; it is now `#4B5563` light / `#9CA3AF` dark, 7.6:1 and 6.8:1. The type
+  scale lives in `theme.FONT_SIZE_*` instead of a literal at every call site: body
+  text and card headings at 14, hints at 13, mono values at 13, the footer at 11.
+- **The embed tab names the layout the carrier will really get.** It always said
+  v5, but audio carriers fall back to the keyed layout — WAV/FLAC now read
+  `v3 · keyed positions`, images keep v5, and the badge repaints when a carrier is
+  probed. (A transparent PNG falls back the same way; only the writer can be
+  certain, so that case still shows the default.)
+
 
 - **v5 (syndrome trellis) is now the layout this build writes.** Embedding from
   the interface, the API or the engine with no `container_version` produces a v5

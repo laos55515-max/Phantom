@@ -39,7 +39,7 @@ from phantom.ui.debounce import Debouncer
 from phantom.ui.dnd import DndProvider, DropTarget
 from phantom.ui.format import layout_text, size_text, written_layout_text
 from phantom.ui.result_window import ResultWindow
-from phantom.ui.scroll import MouseWheelRouter, _bind_to_children
+from phantom.ui.scroll import TabWheel, install_tab_wheel
 from phantom.ui.settings import AppSettings, SettingsStore
 from phantom.ui.system_theme import SystemThemeWatcher
 from phantom.ui.viewmodel import (
@@ -124,20 +124,19 @@ class PhantomApp:
         self._mode_by_label: dict[str, PayloadMode] = {}
         self._tab_by_label: dict[str, str] = {}
         self._drop_zones: list[Any] = []
-        self._wheel = MouseWheelRouter(root)
+        self._wheels: list[TabWheel] = []
         self._scroll_frames: list[Any] = []
         self._text_shortcuts: list[Any] = []
         self._result_window: ResultWindow | None = None
 
         self._configure_root()
         self._build()
-        self._wheel.install()
         self._apply_theme(self.settings.theme, persist=False)
         self._restore_geometry()
         self._wire_shortcuts()
         self._render_all_labels()
         self._refresh_all()
-        self._wheel.refresh()
+        self._refresh_wheels()
         self._log_startup_state()
 
     # ------------------------------------------------------------------
@@ -147,17 +146,27 @@ class PhantomApp:
         return self.binder.text(key, **params)
 
     # -- scrolling ------------------------------------------------------
+    def _refresh_wheels(self) -> None:
+        """Hand the wheel to every widget of every tab, including fresh ones."""
+        for wheel in self._wheels:
+            wheel.refresh()
+
+    def _release_wheels(self) -> None:
+        """Drop every wheel binding this window created."""
+        for wheel in self._wheels:
+            wheel.uninstall()
+        self._wheels.clear()
+
     def _seat_scroll(self, scroll: Any) -> None:
         """Make the whole scrollable area answer the wheel, not just its bar."""
         canvas = CTkAdapter.scroll_canvas(scroll)
         if canvas is None:
             return
-        self._wheel.register(scroll, canvas)
+        # Bind the frame and its canvas right after creation; ``_refresh_wheels``
+        # walks the tree again once the cards inside the tab exist, because a
+        # widget that does not exist yet cannot be bound.
+        self._wheels.append(install_tab_wheel(self.root, scroll, canvas))
         self._scroll_frames.append(scroll)
-        # Bind the frame and its canvas right after creation; ``install`` walks
-        # the tree again once the cards inside the tab exist, because binding a
-        # widget that does not exist yet is not possible.
-        _bind_to_children(scroll, canvas)
 
     def _paragraph_shortcuts(self, widget: Any) -> None:
         """Cmd/Ctrl + C/V/X/A and a right-click menu for one text widget."""
@@ -232,7 +241,7 @@ class PhantomApp:
         subtitle = ctk.CTkLabel(
             header,
             text="",
-            font=sans_font(self.root, 10),
+            font=sans_font(self.root, T.FONT_SIZE_SMALL),
             text_color=T.CLR_MUTED,
             anchor="w",
         )
@@ -241,7 +250,7 @@ class PhantomApp:
         version = ctk.CTkLabel(
             header,
             text=f"v{C.APP_VERSION}",
-            font=mono_font(self.root, 11),
+            font=mono_font(self.root, T.FONT_SIZE_SMALL),
             text_color=T.CLR_MUTED,
             anchor="e",
         )
@@ -252,8 +261,8 @@ class PhantomApp:
             self.root,
             values=[],
             command=self._on_tab_click,
-            font=sans_font(self.root, 12, weight="bold"),
-            height=32,
+            font=sans_font(self.root, T.FONT_SIZE_LABEL, weight="bold"),
+            height=34,
             corner_radius=10,
             selected_color=T.CLR_ACCENT,
             selected_hover_color=T.CLR_ACCENT_HOVER,
@@ -286,8 +295,8 @@ class PhantomApp:
             payload_card,
             values=[],
             command=self._on_mode_click,
-            font=sans_font(self.root, 11, weight="bold"),
-            height=30,
+            font=sans_font(self.root, T.FONT_SIZE_LABEL, weight="bold"),
+            height=32,
             selected_color=T.CLR_ACCENT,
             selected_hover_color=T.CLR_ACCENT_HOVER,
             unselected_color=T.CLR_FIELD,
@@ -301,7 +310,7 @@ class PhantomApp:
         self.embed_text = ctk.CTkTextbox(
             self.text_frame,
             height=168,
-            font=sans_font(self.root, 12),
+            font=sans_font(self.root, T.FONT_SIZE_BODY),
             wrap="word",
             fg_color=T.CLR_FIELD,
             border_color=T.CLR_BORDER,
@@ -316,7 +325,7 @@ class PhantomApp:
         self.char_label = ctk.CTkLabel(
             payload_card,
             text="",
-            font=mono_font(self.root, 10),
+            font=mono_font(self.root, T.FONT_SIZE_FOOTER),
             text_color=T.CLR_MUTED,
             anchor="w",
         )
@@ -330,7 +339,7 @@ class PhantomApp:
         self.secret_label = ctk.CTkLabel(
             self.file_frame,
             text="",
-            font=sans_font(self.root, 11),
+            font=sans_font(self.root, T.FONT_SIZE_HINT),
             text_color=T.CLR_TEXT_DIM,
             anchor="w",
         )
@@ -351,9 +360,9 @@ class PhantomApp:
         pwd_row.pack(fill="x", padx=18)
         self.embed_pwd = ctk.CTkEntry(
             pwd_row,
-            height=38,
+            height=40,
             show="•",
-            font=sans_font(self.root, 13),
+            font=sans_font(self.root, T.FONT_SIZE_BODY),
             fg_color=T.CLR_FIELD,
             border_color=T.CLR_BORDER,
             corner_radius=10,
@@ -433,8 +442,8 @@ class PhantomApp:
         output_row.pack(fill="x", padx=18)
         self.output_entry = ctk.CTkEntry(
             output_row,
-            height=36,
-            font=mono_font(self.root, 11),
+            height=38,
+            font=mono_font(self.root, T.FONT_SIZE_MONO),
             fg_color=T.CLR_FIELD,
             border_color=T.CLR_BORDER,
             corner_radius=10,
@@ -450,7 +459,7 @@ class PhantomApp:
         self.wipe_checkbox = ctk.CTkCheckBox(
             output_card,
             text="",
-            font=sans_font(self.root, 11),
+            font=sans_font(self.root, T.FONT_SIZE_BODY),
             command=self._on_wipe_toggle,
             checkbox_width=20,
             checkbox_height=20,
@@ -462,7 +471,7 @@ class PhantomApp:
         self.verify_checkbox = ctk.CTkCheckBox(
             output_card,
             text="",
-            font=sans_font(self.root, 11),
+            font=sans_font(self.root, T.FONT_SIZE_BODY),
             command=self._on_verify_toggle,
             checkbox_width=20,
             checkbox_height=20,
@@ -514,9 +523,9 @@ class PhantomApp:
         pwd_row.pack(fill="x", padx=18, pady=(10, 4))
         self.extract_pwd = ctk.CTkEntry(
             pwd_row,
-            height=38,
+            height=40,
             show="•",
-            font=sans_font(self.root, 13),
+            font=sans_font(self.root, T.FONT_SIZE_BODY),
             fg_color=T.CLR_FIELD,
             border_color=T.CLR_BORDER,
             corner_radius=10,
@@ -555,7 +564,7 @@ class PhantomApp:
         self.result_text = ctk.CTkTextbox(
             result_card,
             height=150,
-            font=sans_font(self.root, 12),
+            font=sans_font(self.root, T.FONT_SIZE_BODY),
             wrap="word",
             fg_color=T.CLR_FIELD,
             border_color=T.CLR_BORDER,
@@ -623,7 +632,7 @@ class PhantomApp:
                 text="",
                 width=110,
                 anchor="w",
-                font=sans_font(self.root, 10, weight="bold"),
+                font=sans_font(self.root, T.FONT_SIZE_SMALL, weight="bold"),
                 text_color=T.CLR_MUTED,
             )
             caption.pack(side="left")
@@ -659,8 +668,8 @@ class PhantomApp:
             lang_card,
             values=[],
             command=self._on_language_click,
-            font=sans_font(self.root, 11, weight="bold"),
-            height=32,
+            font=sans_font(self.root, T.FONT_SIZE_LABEL, weight="bold"),
+            height=34,
             selected_color=T.CLR_ACCENT,
             selected_hover_color=T.CLR_ACCENT_HOVER,
             unselected_color=T.CLR_FIELD,
@@ -678,8 +687,8 @@ class PhantomApp:
             theme_card,
             values=[],
             command=self._on_theme_click,
-            font=sans_font(self.root, 11, weight="bold"),
-            height=32,
+            font=sans_font(self.root, T.FONT_SIZE_LABEL, weight="bold"),
+            height=34,
             selected_color=T.CLR_ACCENT,
             selected_hover_color=T.CLR_ACCENT_HOVER,
             unselected_color=T.CLR_FIELD,
@@ -697,7 +706,7 @@ class PhantomApp:
             options_card,
             text="",
             command=self._on_animations_toggle,
-            font=sans_font(self.root, 12),
+            font=sans_font(self.root, T.FONT_SIZE_BODY),
             progress_color=T.CLR_ACCENT,
             button_color=T.CLR_ON_ACCENT,
             button_hover_color=T.CLR_ACCENT_DIM,
@@ -708,7 +717,7 @@ class PhantomApp:
             options_card,
             text="",
             command=self._on_verify_switch,
-            font=sans_font(self.root, 12),
+            font=sans_font(self.root, T.FONT_SIZE_BODY),
             progress_color=T.CLR_ACCENT,
             button_color=T.CLR_ON_ACCENT,
             button_hover_color=T.CLR_ACCENT_DIM,
@@ -758,7 +767,7 @@ class PhantomApp:
         self.stage_label = ctk.CTkLabel(
             footer,
             text="",
-            font=mono_font(self.root, 10),
+            font=mono_font(self.root, T.FONT_SIZE_FOOTER),
             text_color=T.CLR_MUTED,
             anchor="w",
         )
@@ -770,7 +779,7 @@ class PhantomApp:
         self.status_label = ctk.CTkLabel(
             footer,
             text="",
-            font=sans_font(self.root, 11, weight="bold"),
+            font=sans_font(self.root, T.FONT_SIZE_LABEL, weight="bold"),
             text_color=T.CLR_TEXT_DIM,
             anchor="w",
         )
@@ -823,13 +832,17 @@ class PhantomApp:
         self.binder.apply()
         # A segmented button rebuilds its children whenever its values change,
         # so the wheel has to be handed to the fresh widgets.
-        self._wheel.refresh()
+        self._refresh_wheels()
 
     def _render_format_labels(self) -> None:
-        """Say which layout this build writes, in the user's language."""
+        """Say which layout this build writes, for the carrier that is chosen."""
+        carrier = self.embed_vm.carrier
         self.format_label.configure(
             text=self.i18n.t(
-                "lbl_embed_format", layout=written_layout_text(self.i18n)
+                "lbl_embed_format",
+                layout=written_layout_text(
+                    self.i18n, carrier.kind if carrier is not None else None
+                ),
             )
         )
 
@@ -880,6 +893,8 @@ class PhantomApp:
         self._refresh_extract_state()
         self._refresh_settings_state()
         self._refresh_busy_state()
+        # A new carrier (or none) changes which layout the tab promises to write.
+        self._render_format_labels()
         # The binder has just re-rendered the static labels, the footer included:
         # put the running stage back, in the new language and with its clock.
         self._render_stage_label()
@@ -1393,14 +1408,35 @@ class PhantomApp:
 
     def _poll(self) -> None:
         self._poll_token = None
-        for event in self.worker.poll():
-            self._handle_worker_event(event)
+        self._drain_events()
         if self.worker.watchdog_expired():
             self._handle_watchdog()
-        if self.worker.busy:
+        if self._worker_has_work():
             self._ensure_polling()
-        elif self._busy:
+            return
+        # The worker posts its terminal event and clears the job *before* its
+        # thread stops, so ``busy`` going false promises that whatever it had
+        # left to say is already in the queue.  Without this second drain a
+        # thread that finished between the loop above and this check left its
+        # DONE unhandled: the operation ended, nothing polled again, and the
+        # result — the output path, the verification verdict — never reached the
+        # interface.
+        self._drain_events()
+        if self._worker_has_work():
+            # Handling those events may have started the next job (the probe a
+            # finished embed schedules, for instance).
+            self._ensure_polling()
+            return
+        if self._busy:
             self._finish_operation_ui()
+
+    def _drain_events(self) -> None:
+        for event in self.worker.poll():
+            self._handle_worker_event(event)
+
+    def _worker_has_work(self) -> bool:
+        """``worker.busy``, read through a call because it changes mid-poll."""
+        return self.worker.busy
 
     def _handle_watchdog(self) -> None:
         LOGGER.warning("watchdog expired for %s", self._operation)
@@ -1846,7 +1882,7 @@ class PhantomApp:
         self.theme_watcher.set_enabled(self.settings.theme == "System")
         self._schedule_theme_poll()
         self._render_theme_labels()
-        self._wheel.refresh()
+        self._refresh_wheels()
         if persist:
             self._save_settings()
 
@@ -1950,7 +1986,7 @@ class PhantomApp:
         if self._result_window is not None:
             self._result_window.close()
             self._result_window = None
-        self._wheel.uninstall()
+        self._release_wheels()
         geometry = self.root.geometry()
         if GEOMETRY_RE.match(geometry):
             self.settings.window_geometry = geometry

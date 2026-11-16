@@ -26,7 +26,7 @@ from phantom.i18n import I18n
 from phantom.stego.engine import Capacity
 from phantom.ui import clipboard as ui_clipboard
 from phantom.ui import format as ui_format
-from phantom.ui import layout, scroll
+from phantom.ui import layout, scroll, theme
 from phantom.ui.animator import Animator
 from phantom.ui.debounce import Debouncer
 from phantom.ui.dnd import filter_by_extension, parse_drop_paths, paths_from_uri
@@ -1016,6 +1016,76 @@ def test_animator_step_without_tweens() -> None:
     assert Animator().step() is None
 
 
+def test_the_worker_queues_its_terminal_event_before_it_looks_idle() -> None:
+    """The invariant ``_poll`` relies on: ``busy`` false means "drained already".
+
+    ``_finish`` clears the job *and* posts the terminal event before the thread
+    stops, so a finished worker cannot be observed without its DONE/ERROR/
+    CANCELLED event already in the queue.  If that order ever flips, the GUI
+    loses the result of every operation that finishes between two polls.
+    """
+    from phantom.core.errors import IntegrityError
+    from phantom.ui.worker import WorkerEventType, WorkerService
+
+    def fail() -> None:
+        raise IntegrityError("boom")
+
+    service = WorkerService()
+    assert service.start("failing", lambda report, cancel: fail()) is True
+    deadline = time.monotonic() + 5
+    while service.busy and time.monotonic() < deadline:
+        time.sleep(0.005)
+
+    assert service.busy is False
+    queued = service.poll()
+    assert [event.kind for event in queued] == [WorkerEventType.ERROR], (
+        "the terminal event was not in the queue when the thread went idle: "
+        f"{[event.kind for event in queued]}"
+    )
+
+
+def test_muted_text_reaches_wcag_aa_in_both_appearance_modes() -> None:
+    """Card headings used to be one mid-grey for both modes: 3.4:1 on the dark one."""
+    light, dark = theme.CLR_MUTED
+    assert theme.contrast_ratio(light, theme.CLR_CARD[0]) >= 4.5
+    assert theme.contrast_ratio(dark, theme.CLR_CARD[1]) >= 4.5
+    # ... and it must have actually changed, not merely passed by luck.
+    assert light == "#4B5563" and dark == "#9CA3AF"
+
+
+def test_every_readable_colour_clears_the_contrast_floor() -> None:
+    floor = 4.5
+    for name in ("CLR_TEXT", "CLR_TEXT_DIM", "CLR_MUTED"):
+        light, dark = getattr(theme, name)
+        assert theme.contrast_ratio(light, theme.CLR_CARD[0]) >= floor, f"{name} (light)"
+        assert theme.contrast_ratio(dark, theme.CLR_CARD[1]) >= floor, f"{name} (dark)"
+
+
+def test_the_type_scale_puts_body_text_first() -> None:
+    """Body 14, card titles 13-14: a heading smaller than its text was the report."""
+    assert theme.FONT_SIZE_BODY == 14
+    assert 13 <= theme.FONT_SIZE_CARD_TITLE <= 14
+    assert theme.FONT_SIZE_CARD_TITLE >= 13
+    assert theme.FONT_SIZE_HINT >= 12, "hints must stay readable next to the body"
+    assert theme.FONT_SIZE_FOOTER >= 10
+    assert theme.FONT_SIZE_TITLE > theme.FONT_SIZE_BODY
+
+
+def test_the_promised_layout_follows_the_carrier_kind() -> None:
+    """Audio has no trellis: the tab must say v3, not the v5 default."""
+    from phantom.core.api import CarrierKind
+
+    i18n = I18n("ru", locales_dir=LOCALES_DIR)
+    v5 = ui_format.written_layout_text(i18n)
+    image = ui_format.written_layout_text(i18n, CarrierKind.IMAGE)
+    audio = ui_format.written_layout_text(i18n, CarrierKind.AUDIO)
+
+    assert "v5" in v5 and "v5" in image
+    assert "v3" in audio and "v5" not in audio, audio
+    assert ui_format.written_layout_version(None) == C.CONTAINER_VERSION
+    assert ui_format.written_layout_version(CarrierKind.AUDIO) == C.KEYED_CONTAINER_VERSION
+
+
 def test_worker_event_properties_and_cancel_event() -> None:
     from phantom.ui.worker import WorkerEvent
 
@@ -1526,51 +1596,146 @@ def test_wheel_over_a_nested_card_scrolls_the_area() -> None:
     assert canvas.scrolls == [(-3, "units")]
 
 
-def test_router_binds_the_tree_and_never_binds_globally() -> None:
+def test_tab_wheel_binds_the_tree_and_never_binds_globally() -> None:
+    """``install_tab_wheel`` is the per-tab entry point: bind, don't bind_all."""
     canvas, frame, parts = _tree()
     root = FakeRoot(pointer=parts["label"])
-    router = scroll.MouseWheelRouter(root, platform="darwin")
-    router.register(frame, canvas)
-    assert router.install() > 0
-    # CustomTkinter's own global handler is removed, nothing is bound globally.
+
+    wheel = scroll.install_tab_wheel(root, frame, canvas, platform="darwin")
+
+    # CustomTkinter's own global handler is removed; nothing is bound globally.
     assert root.unbound == ["<MouseWheel>"]
     assert root.bound == {}
     assert "<MouseWheel>" in parts["label"].bindings
-    assert len(router.bindings) == router.bound_count
+    assert wheel.bound_count == len(wheel.bindings) > 0
 
 
-def test_router_refresh_binds_children_added_later() -> None:
+def test_tab_wheel_refresh_binds_children_added_later() -> None:
     canvas, frame, _parts = _tree()
-    router = scroll.MouseWheelRouter(FakeRoot(), platform="linux")
-    router.register(frame, canvas)
-    before = router.install()
+    wheel = scroll.install_tab_wheel(FakeRoot(), frame, canvas, platform="linux")
+    before = wheel.bound_count
     late = frame.add(FakeWidget())
-    after = router.refresh()
+
+    after = wheel.refresh()
+
     assert after > before
     assert "<MouseWheel>" in late.bindings
 
 
-def test_router_uninstall_removes_every_binding() -> None:
+def test_tab_wheel_uninstall_removes_every_binding() -> None:
     canvas, frame, parts = _tree()
-    router = scroll.MouseWheelRouter(FakeRoot(), platform="linux")
-    router.register(frame, canvas)
-    router.install()
-    router.uninstall()
-    assert router.bound_count == 0
+    wheel = scroll.install_tab_wheel(FakeRoot(), frame, canvas, platform="linux")
+    wheel.uninstall()
+    assert wheel.bound_count == 0
     assert parts["label"].bindings == {}
-    assert canvas.bindings == {}
-    # After unbinding, a fresh walk binds everything again.
-    assert router.refresh() > 0
+    wheel.uninstall()  # idempotent: closing twice must not raise
 
 
-def test_install_mousewheel_helper_wires_one_area() -> None:
+def test_tab_wheel_binds_the_tk9_trackpad_event() -> None:
+    """Tk 9 sends two-finger scrolling as ``<TouchpadScroll>``; nothing bound it."""
     canvas, frame, parts = _tree()
-    router = scroll.install_mousewheel(FakeRoot(), frame, canvas, platform="darwin")
-    assert router.bound_count > 0
+    scroll.install_tab_wheel(FakeRoot(), frame, canvas, platform="darwin")
+
+    assert scroll.TOUCHPAD_SEQUENCE in scroll.WHEEL_SEQUENCES
+    assert scroll.TOUCHPAD_SEQUENCE in parts["label"].bindings
+
+
+def test_a_widget_that_refuses_the_trackpad_sequence_still_gets_the_wheel() -> None:
+    """Tk 8.6 raises ``TclError`` for ``<TouchpadScroll>``; the rest must bind."""
+    canvas, frame, parts = _tree()
+    label = parts["label"]
+
+    def refuse(sequence: str, *_args: object) -> str:
+        if sequence == scroll.TOUCHPAD_SEQUENCE:
+            raise RuntimeError("bad event type or keysym")
+        return "funcid"
+
+    label.bind = refuse  # type: ignore[method-assign]
+    bound = scroll._bind_to_children(frame, canvas, platform="darwin")
+
+    assert any(item.widget is label for item in bound), "the wheel binding vanished"
+    assert not any(
+        item.widget is label and item.sequence == scroll.TOUCHPAD_SEQUENCE
+        for item in bound
+    )
+
+
+def test_two_tabs_do_not_share_the_trackpad_remainder() -> None:
+    """Each scrollable area carries its own fraction, or one tab steals another's."""
+    canvas_a, frame_a, _parts_a = _tree()
+    canvas_b, frame_b, _parts_b = _tree()
+    first = scroll.install_tab_wheel(FakeRoot(), frame_a, canvas_a, platform="darwin")
+    second = scroll.install_tab_wheel(FakeRoot(), frame_b, canvas_b, platform="darwin")
+    first.accumulator.leftover = 0.9
+
+    assert first.accumulator.units(FakeEvent(None, delta=-0.1), platform="darwin") != 0
+    assert second.accumulator.leftover == 0.0
+    assert second.accumulator.units(FakeEvent(None, delta=-0.1), platform="darwin") == 0
+
+
+def test_a_trackpad_gesture_accumulates_instead_of_rounding_to_nothing() -> None:
+    """A macOS trackpad sends tenths of a notch; one event at a time scrolls zero."""
+    accumulator = scroll.WheelAccumulator()
+    moves = [
+        accumulator.units(FakeEvent(None, delta=-0.1), platform="darwin")
+        for _ in range(10)
+    ]
+    # 0.1 notch = 0.3 units, so ten events must move three lines in total, none
+    # of them more than one at a time, and the gesture must not bank a fraction.
+    assert sum(moves) == 3, moves
+    assert max(moves) == 1, moves
+    assert moves[:3] == [0, 0, 0], moves
+    assert accumulator.leftover == pytest.approx(0.0, abs=1e-9)
+
+
+def test_the_accumulator_keeps_its_remainder_across_events() -> None:
+    accumulator = scroll.WheelAccumulator()
+    # 0.4 of a notch is 1.2 units: one line per event, 0.6 of a unit banked.
+    steps = [
+        accumulator.units(FakeEvent(None, delta=-0.4), platform="darwin")
+        for _ in range(3)
+    ]
+    assert steps == [1, 1, 1]
+    assert accumulator.leftover == pytest.approx(0.6, abs=1e-6)
+
+
+def test_the_accumulator_resets_and_never_banks_forever() -> None:
+    accumulator = scroll.WheelAccumulator()
+    assert accumulator.units(FakeEvent(None, delta=-0.1), platform="darwin") == 0
+    accumulator.reset()
+    assert accumulator.leftover == 0.0
+
+
+def test_a_trackpad_scrolls_a_tab_through_the_bound_handler() -> None:
+    """The whole path: fractional event → bound handler → canvas moves."""
+    canvas, frame, parts = _tree()
+    scroll.install_tab_wheel(FakeRoot(), frame, canvas, platform="darwin")
+    handler = parts["label"].bindings["<MouseWheel>"]
+
+    results = [handler(FakeEvent(parts["label"], delta=-0.1)) for _ in range(10)]
+
+    # Three lines over ten events, each a whole unit when it happens; the other
+    # seven events move nothing but are still consumed by the accumulator.
+    assert canvas.scrolls == [(1, "units")] * 3, canvas.scrolls
+    assert results.count("break") == 3
+    assert results.count(None) == 7
+
+
+def test_wheel_delta_is_exact_where_wheel_steps_rounds() -> None:
+    event = FakeEvent(None, delta=-0.25)
+    assert scroll.wheel_delta(event, platform="darwin") == pytest.approx(0.75)
+    assert scroll.wheel_steps(event, platform="darwin") == 1
+
+
+def test_a_tab_wheel_scrolls_its_own_canvas_from_a_deep_child() -> None:
+    canvas, frame, parts = _tree()
+    wheel = scroll.install_tab_wheel(FakeRoot(), frame, canvas, platform="darwin")
     handler = parts["card"].bindings["<MouseWheel>"]
+
     assert handler(FakeEvent(parts["card"], delta=-1)) == "break"
     # macOS: yview_scroll(-int(delta) * 3, "units") — never delta // 120.
     assert canvas.scrolls == [(3, "units")]
+    assert wheel.bound_count > 0
 
 
 def test_result_window_geometry_uses_most_of_the_screen() -> None:

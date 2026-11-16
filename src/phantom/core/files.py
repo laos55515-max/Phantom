@@ -6,6 +6,12 @@ Two jobs:
 and then ``os.replace``d, so a crash or a full disk never leaves a half-written
 stego file and never destroys the original (D8).
 
+``staged_path``/``publish_staged`` — the same idea one level up, for the verify
+step: a writer that must be *checked* before it may replace anything writes into
+a staged sibling, the check runs on that file, and only a passing check publishes
+it.  A rejected output therefore costs a temp file, never the file that was
+already sitting at the destination.
+
 ``secure_wipe`` — one CSPRNG pass + fsync + rename + unlink, chunked, refusing
 symlinks and non-regular files.  It cannot beat SSD wear levelling, copy-on-write
 snapshots or journaling: the UI says exactly that (D7).
@@ -33,6 +39,7 @@ from phantom.core.errors import (
     PhantomIOError,
     SourceOverwriteError,
     UnsafePathError,
+    WipeError,
 )
 from phantom.core.progress import ProgressFn, Stage, check_cancel, noop_progress
 
@@ -245,6 +252,67 @@ def atomic_path(target: str, *, new_mode: int = 0o644) -> Iterator[str]:
         if created or os.path.exists(tmp_path):
             with contextlib.suppress(OSError):
                 os.unlink(tmp_path)
+
+
+def staged_path(target: str, *, suffix: str = C.ATOMIC_TEMP_SUFFIX) -> str:
+    """A hidden sibling of ``target`` for a writer that must not publish yet.
+
+    Same directory as ``target`` — ``os.replace`` only renames within one
+    filesystem — and the target's own extension, because the stego writers force
+    an extension of their own and that forcing has to survive.
+    """
+    target_abs = os.path.abspath(target)
+    directory = os.path.dirname(target_abs) or "."
+    ensure_output_dir(target_abs)
+    stem, extension = os.path.splitext(os.path.basename(target_abs))
+    token = secrets.token_hex(6)
+    return os.path.join(directory, f".{stem}.{token}{suffix}{extension}")
+
+
+def published_path(target: str, staged: str) -> str:
+    """The real name ``target`` takes once ``staged`` (from :func:`staged_path`) is in.
+
+    The writer is free to rewrite the extension — ``a.jpg`` becomes ``a.png``,
+    ``a.ogg`` becomes ``a.flac`` — so the published name keeps the requested stem
+    and takes the extension the writer actually produced.
+    """
+    target_abs = os.path.abspath(target)
+    directory = os.path.dirname(target_abs) or "."
+    stem = os.path.splitext(os.path.basename(target_abs))[0]
+    extension = os.path.splitext(staged)[1]
+    return os.path.join(directory, f"{stem}{extension}")
+
+
+def publish_staged(staged: str, target: str) -> None:
+    """fsync ``staged`` and rename it onto ``target``: the old file dies only now.
+
+    Everything that can go wrong happens before the rename, which is what makes
+    this safe to call after a verification: either the destination is untouched,
+    or it holds the complete, checked file.
+    """
+    try:
+        _fsync_file(staged)
+        os.replace(staged, target)
+    except OSError as exc:
+        raise PhantomIOError("cannot publish the output file", detail=str(exc)) from exc
+    _fsync_dir(os.path.dirname(os.path.abspath(target)) or ".")
+
+
+def discard_staged(staged: str) -> None:
+    """Delete a staged file that will never be published.
+
+    A failure here is a :class:`WipeError`, never a shrug: the caller is already
+    reporting a failed operation, and leaving a temp file behind silently would
+    keep the user's payload in a directory they believe they cleaned up.
+    """
+    try:
+        os.unlink(staged)
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        raise WipeError(
+            "the staged output could not be removed", detail=str(exc)
+        ) from exc
 
 
 def _fsync_file(path: str) -> None:

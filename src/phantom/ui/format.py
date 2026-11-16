@@ -12,6 +12,7 @@ from __future__ import annotations
 from typing import Final, Protocol
 
 from phantom.core import constants as C
+from phantom.core.api import CarrierKind
 from phantom.core.payload import ExtractedPayload, carried_bytes
 from phantom.core.progress import Stage
 from phantom.stego.engine import Capacity
@@ -46,9 +47,28 @@ def layout_text(translator: Translator, version: int) -> str:
     return translator.t(layout_key(version), version=version)
 
 
-def written_layout_text(translator: Translator) -> str:
-    """Label for the layout this build writes: the syndrome-trellis one (v5)."""
-    return layout_text(translator, C.CONTAINER_VERSION)
+#: Layout actually written for an audio carrier.  The syndrome-trellis code needs
+#: an image's wavelet cost map, so WAV/FLAC output falls back to the keyed layout —
+#: telling the user "v5" for an audio carrier would be a promise the writer never
+#: keeps.
+AUDIO_LAYOUT_VERSION: Final = C.KEYED_CONTAINER_VERSION
+
+
+def written_layout_version(kind: CarrierKind | None) -> int:
+    """Layout version this build writes for ``kind`` (``None`` = not chosen yet)."""
+    if kind is CarrierKind.AUDIO:
+        return AUDIO_LAYOUT_VERSION
+    return C.CONTAINER_VERSION
+
+
+def written_layout_text(translator: Translator, kind: CarrierKind | None = None) -> str:
+    """Label for the layout this build writes, e.g. ``v5 · syndrome-trellis``.
+
+    Audio carriers get v3 because that is what they really get; an image
+    carrier — or no carrier at all yet — gets the v5 default.  (A *transparent*
+    PNG falls back the same way, but only the writer knows that for certain.)
+    """
+    return layout_text(translator, written_layout_version(kind))
 
 
 def stage_line(

@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from phantom.core import constants as C
+from phantom.core import payload as payload_mod
 from phantom.core.errors import CapacityError, IntegrityError, InvalidInput
 from phantom.core.payload import (
     Payload,
@@ -171,3 +172,58 @@ def test_estimate_size_for_text() -> None:
 def test_iter_bytes_chunks_covers_input() -> None:
     data = bytes(range(256)) * 100
     assert b"".join(iter_bytes_chunks(data, chunk=1_000)) == data
+
+
+# ---------------------------------------------------------------------------
+# the writer may not build a container its own extractor refuses
+# ---------------------------------------------------------------------------
+def test_a_payload_beyond_the_safety_limit_is_refused_before_it_is_packed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``unpack_payload`` caps the plaintext it will inflate; packing has to agree.
+
+    Without the same ceiling in the compressor the writer produced a container
+    that this very build could embed and never extract — the payload was bounded
+    only by what the *compressed* stream could fit into.
+    """
+    monkeypatch.setattr(C, "MAX_PLAINTEXT_BYTES", 64)
+    payload = Payload.file("big.bin", b"\0" * 1024)
+
+    with pytest.raises(CapacityError) as caught:
+        pack_payload(payload)
+    assert "safety limit" in str(caught.value)
+
+    packed = pack_payload(Payload.file("small.bin", b"\0" * 8))
+    assert packed.blob, "a payload under the limit still packs"
+
+
+def test_the_plaintext_ceiling_is_checked_while_streaming(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A file is refused mid-read, not after the whole thing was compressed."""
+    monkeypatch.setattr(C, "MAX_PLAINTEXT_BYTES", 4096)
+    monkeypatch.setattr(payload_mod, "iter_bytes_chunks", _counted_chunks)
+
+    with pytest.raises(CapacityError) as caught:
+        pack_payload(Payload.file("big.bin", b"x" * (1 << 20)))
+    assert "safety limit" in str(caught.value)
+    assert _CHUNKS_READ[0] < (1 << 20) // 1024, "it must stop before the end"
+
+
+_CHUNKS_READ = [0]
+
+
+def _counted_chunks(data: bytes, *args: object, **kwargs: object):
+    for start in range(0, len(data), 1024):
+        _CHUNKS_READ[0] += 1
+        yield data[start : start + 1024]
+
+
+def test_the_extractor_and_the_packer_share_one_default_limit() -> None:
+    """Same constant on both sides, so the two can never drift apart."""
+    import inspect  # noqa: PLC0415
+
+    pack_source = inspect.getsource(payload_mod._compress_stream)
+    unpack_source = inspect.getsource(payload_mod.unpack_payload)
+    assert "MAX_PLAINTEXT_BYTES" in pack_source
+    assert "MAX_PLAINTEXT_BYTES" in unpack_source
