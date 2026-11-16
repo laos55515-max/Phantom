@@ -345,3 +345,166 @@ def test_temporary_files_are_not_left_behind(rgb_carrier: Path, tmp_path: Path, 
     api.embed_payload(str(rgb_carrier), str(output), Payload.text("clean"), password=password)
     leftovers = [name for name in os.listdir(tmp_path) if name.startswith(".")]
     assert leftovers == []
+
+
+# ---------------------------------------------------------------------------
+# the destination is published last: a failed embed must not eat the old file
+# ---------------------------------------------------------------------------
+SENTINEL = b"a file the user already had\n"
+
+
+def _leftovers(directory: Path) -> list[str]:
+    """Temp names a failed or finished embed must never leave behind."""
+    return [item.name for item in directory.iterdir() if C.ATOMIC_TEMP_SUFFIX in item.name]
+
+
+def test_failed_self_check_keeps_the_file_that_was_already_there(
+    tmp_path: Path, password: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The bug this pins: verification failed *after* the destination was replaced.
+
+    The output was written straight to the requested name and then unlinked when
+    the self-check complained, so the only copy of whatever used to live at that
+    path was gone — replaced by a stego file, then deleted.
+    """
+    carrier = _png(tmp_path / "carrier.png")
+    output = tmp_path / "stego.png"
+    output.write_bytes(SENTINEL)
+
+    def broken(*args: object, **kwargs: object) -> None:
+        raise IntegrityError("self-check failed")
+
+    monkeypatch.setattr(api, "_verify_output", broken)
+    with pytest.raises(IntegrityError):
+        api.embed_payload(str(carrier), str(output), Payload.text("x"), password=password)
+
+    assert output.read_bytes() == SENTINEL, "the previous output was destroyed"
+    assert _leftovers(tmp_path) == [], "a rejected embed must not leave temp files"
+
+
+def test_failed_self_check_keeps_the_previous_audio_file(
+    tmp_path: Path, password: str, monkeypatch: pytest.MonkeyPatch, wav_factory
+) -> None:
+    """Same guarantee on the audio path, where the writer also forces the suffix."""
+    carrier = wav_factory(bits=16, channels=1, frames=6_000, kind="noise")
+    output = tmp_path / "stego.wav"
+    output.write_bytes(SENTINEL)
+
+    def broken(*args: object, **kwargs: object) -> None:
+        raise IntegrityError("self-check failed")
+
+    monkeypatch.setattr(api, "_verify_output", broken)
+    with pytest.raises(IntegrityError):
+        api.embed_payload(str(carrier), str(output), Payload.text("x"), password=password)
+
+    assert output.read_bytes() == SENTINEL
+    assert _leftovers(tmp_path) == []
+
+
+def test_a_payload_that_does_not_fit_keeps_the_previous_output(
+    tmp_path: Path, password: str
+) -> None:
+    """A carrier too small fails before anything is published — or deleted."""
+    carrier = _png(tmp_path / "carrier.png", size=(64, 48))
+    output = tmp_path / "stego.png"
+    output.write_bytes(SENTINEL)
+
+    with pytest.raises(CapacityError):
+        api.embed_payload(
+            str(carrier),
+            str(output),
+            # Incompressible on purpose: zeros would squash into the carrier.
+            Payload.file("big.bin", np.random.default_rng(3).bytes(900_000)),
+            password=password,
+        )
+
+    assert output.read_bytes() == SENTINEL
+    assert _leftovers(tmp_path) == []
+
+
+def test_a_cancelled_embed_keeps_the_previous_output(
+    tmp_path: Path, password: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Cancel arrives before the publish: the old file has to survive it too."""
+    carrier = _png(tmp_path / "carrier.png")
+    output = tmp_path / "stego.png"
+    output.write_bytes(SENTINEL)
+
+    def cancelled(*args: object, **kwargs: object) -> None:
+        raise OperationCancelled("cancelled")
+
+    monkeypatch.setattr(api, "_verify_output", cancelled)
+    with pytest.raises(OperationCancelled):
+        api.embed_payload(str(carrier), str(output), Payload.text("x"), password=password)
+
+    assert output.read_bytes() == SENTINEL
+    assert _leftovers(tmp_path) == []
+
+
+def test_a_successful_embed_replaces_the_old_file_and_leaves_no_temp(
+    tmp_path: Path, password: str
+) -> None:
+    carrier = _png(tmp_path / "carrier.png")
+    output = tmp_path / "stego.png"
+    output.write_bytes(SENTINEL)
+
+    outcome = api.embed_payload(
+        str(carrier), str(output), Payload.text("replaced"), password=password
+    )
+
+    assert outcome.verified is True
+    assert Path(outcome.output_path) == output
+    assert output.read_bytes() != SENTINEL
+    assert _leftovers(tmp_path) == []
+    extracted = api.extract_from_path(str(output), password=password)
+    assert extracted.payload.data == b"replaced"
+
+
+def test_a_failing_publish_keeps_the_previous_output(
+    tmp_path: Path, password: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If the rename itself fails (read-only target), nothing is lost either."""
+    carrier = _png(tmp_path / "carrier.png")
+    output = tmp_path / "stego.png"
+    output.write_bytes(SENTINEL)
+
+    def refuse(staged: str, target: str) -> None:
+        raise PhantomIOError("cannot publish the output file", detail="read-only")
+
+    monkeypatch.setattr(api.fsutil, "publish_staged", refuse)
+    with pytest.raises(PhantomIOError):
+        api.embed_payload(str(carrier), str(output), Payload.text("x"), password=password)
+
+    assert output.read_bytes() == SENTINEL
+    assert _leftovers(tmp_path) == []
+
+
+def test_the_forced_extension_still_wins_over_the_requested_one(
+    tmp_path: Path, password: str
+) -> None:
+    """Staging must not change the published name: ``a.jpg`` is still ``a.png``."""
+    carrier = _png(tmp_path / "carrier.png")
+    requested = tmp_path / "stego.jpg"
+
+    outcome = api.embed_payload(
+        str(carrier), str(requested), Payload.text("png wins"), password=password
+    )
+
+    assert outcome.output_path == str(tmp_path / "stego.png")
+    assert (tmp_path / "stego.png").exists()
+    assert not requested.exists(), "the requested extension must not be created"
+
+
+def test_an_output_that_would_overwrite_the_carrier_is_still_refused(
+    tmp_path: Path, password: str
+) -> None:
+    """The writers now see a temp name, so the check has to happen in the API."""
+    carrier = _png(tmp_path / "carrier.png")
+
+    with pytest.raises(Exception) as caught:
+        api.embed_payload(
+            str(carrier), str(tmp_path / "carrier.jpg"), Payload.text("x"), password=password
+        )
+
+    assert "carrier" in str(caught.value).lower()
+    assert carrier.exists(), "the carrier must survive the refusal"

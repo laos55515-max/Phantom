@@ -486,7 +486,8 @@ def test_every_tab_registered_its_scrollable_area(app) -> None:
     from phantom.ui.widgets import CTkAdapter
 
     assert len(app._scroll_frames) == 3
-    assert app._wheel.bound_count > 0
+    assert len(app._wheels) == 3
+    assert sum(wheel.bound_count for wheel in app._wheels) > 0
     for frame in app._scroll_frames:
         assert CTkAdapter.scroll_canvas(frame) is not None
 
@@ -821,3 +822,128 @@ def test_the_stage_line_survives_a_language_switch(app) -> None:
     assert app.i18n.t("stage.analysing") in text, text
     assert text != app.i18n.t("lbl_progress_idle")
     assert "3" in text, text
+
+
+# ---------------------------------------------------------------------------
+# the poll loop must not lose the last event of a finished job
+# ---------------------------------------------------------------------------
+class _ScriptedWorker:
+    """A worker whose queue and liveness the test dictates, event by event."""
+
+    def __init__(self, script: list[list[object]], *, busy: bool = False) -> None:
+        self.script = [list(batch) for batch in script]
+        self.busy = busy
+
+    def poll(self) -> list[object]:
+        return self.script.pop(0) if self.script else []
+
+    def watchdog_expired(self) -> bool:
+        return False
+
+
+def test_poll_handles_a_done_that_arrived_while_the_thread_was_dying(
+    app, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The race this pins: ``poll`` empty, thread dead, DONE still in the queue.
+
+    ``_poll`` used to drain once, see ``busy`` false and finish the operation
+    without ever looking again — the finished job's DONE stayed in the queue
+    forever, so the output path and the verification verdict never reached the
+    interface.
+    """
+    from phantom.ui.worker import WorkerEvent, WorkerEventType
+
+    late = WorkerEvent(WorkerEventType.DONE, value="the-result", operation="embed")
+    app.worker = _ScriptedWorker([[], [late]])
+    app._busy = True
+    handled: list[object] = []
+    app._on_done = handled.append  # type: ignore[method-assign]
+
+    app._poll()
+
+    assert [getattr(event, "value", None) for event in handled] == ["the-result"], (
+        "the terminal event was dropped"
+    )
+    assert app._busy is False
+
+
+def test_poll_does_nothing_extra_when_the_queue_was_already_drained(app) -> None:
+    from phantom.ui.worker import WorkerEvent, WorkerEventType
+
+    app.worker = _ScriptedWorker([[WorkerEvent(WorkerEventType.DONE, value=1)], []])
+    app._busy = True
+    handled: list[object] = []
+    app._on_done = handled.append  # type: ignore[method-assign]
+
+    app._poll()
+
+    assert len(handled) == 1, "a terminal event must be handled exactly once"
+
+
+# ---------------------------------------------------------------------------
+# the 2026 pass: contrast, type scale, and an honest layout badge
+# ---------------------------------------------------------------------------
+def _font_size(widget) -> int:
+    font = widget.cget("font")
+    if hasattr(font, "cget"):  # CustomTkinter keeps a CTkFont
+        return int(font.cget("size"))
+    return int(font[1])  # a (family, size, weight) tuple
+
+
+def test_body_text_is_fourteen_points_and_headings_are_not_smaller(app) -> None:
+    from phantom.ui import theme as T
+
+    assert _font_size(app.embed_text) == T.FONT_SIZE_BODY == 14
+    assert 13 <= _font_size(app.result_card_title) <= 14, "a card heading under 13 pt"
+    assert _font_size(app.stage_label) >= 10
+
+
+def test_the_audio_carrier_says_v3_not_the_trellis_default(app) -> None:
+    """The writer falls back to the keyed layout for audio; the tab must agree."""
+    from phantom.core.api import CarrierKind, CarrierProbe
+    from phantom.stego.engine import Capacity
+
+    app.embed_vm.apply_probe(
+        CarrierProbe(
+            kind=CarrierKind.AUDIO,
+            path="song.wav",
+            capacity=Capacity(usable_bits=8000, payload_bytes=900),
+        )
+    )
+    app._render_format_labels()
+    audio_text = app.format_label.cget("text")
+    assert "v3" in audio_text and "v5" not in audio_text, audio_text
+
+    app.embed_vm.apply_probe(
+        CarrierProbe(
+            kind=CarrierKind.IMAGE,
+            path="photo.png",
+            capacity=Capacity(usable_bits=8000, payload_bytes=900),
+        )
+    )
+    app._render_format_labels()
+    assert "v5" in app.format_label.cget("text")
+
+
+def test_the_probed_carrier_repaints_the_layout_badge(app) -> None:
+    """A fresh probe goes through ``_refresh_all``; the badge has to follow it."""
+    from phantom.core.api import CarrierKind, CarrierProbe
+    from phantom.stego.engine import Capacity
+
+    app.embed_vm.carrier = CarrierProbe(
+        kind=CarrierKind.AUDIO,
+        path="song.flac",
+        capacity=Capacity(usable_bits=4096, payload_bytes=400),
+    )
+    app._refresh_all()
+
+    assert "v3" in app.format_label.cget("text")
+
+
+def test_closing_the_window_releases_every_wheel_binding(app) -> None:
+    assert app._wheels, "nothing was bound"
+    wheels = list(app._wheels)
+    app._release_wheels()
+
+    assert app._wheels == []
+    assert all(wheel.bound_count == 0 for wheel in wheels)

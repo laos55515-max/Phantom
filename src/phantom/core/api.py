@@ -6,6 +6,7 @@ verifies what it wrote and never deletes anything without being told to.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import threading
 import time
@@ -29,7 +30,6 @@ from phantom.core.errors import (
     PhantomError,
     PhantomIOError,
     UnsupportedCarrier,
-    WipeError,
 )
 from phantom.core.kdf import KdfProfile
 from phantom.core.payload import ExtractedPayload, Payload, PayloadKind
@@ -230,7 +230,12 @@ def embed_payload(
         raise PhantomIOError("carrier not found", detail=carrier_path)
     kind = detect_carrier_kind(carrier_path)
     variants = output_path_variants(output_path, kind)
-    fsutil.ensure_distinct(carrier_path, output_path)
+    # The writers below are handed a staged temp name, so they can only prove the
+    # temp does not sit on the carrier.  Every real name the request can land on
+    # has to be checked here instead, or "output = carrier" walks straight
+    # through and destroys the carrier it was supposed to read.
+    for variant in variants:
+        fsutil.ensure_distinct(carrier_path, variant)
     if secret_path is not None:
         # Refuse an output that would replace the very file we are about to hide
         # (and maybe wipe) *before* a single byte is written: once the write has
@@ -238,13 +243,18 @@ def embed_payload(
         # check covers every path the forced extension can produce.
         fsutil.ensure_output_not_source(secret_path, variants)
     started = time.perf_counter()
+    # Write to a sibling nobody can see, verify *that*, and only then let it take
+    # the destination's name: a failed self-check must cost a temp file, not the
+    # file the user already had at that path.
+    staged = fsutil.staged_path(output_path)
+    published = False
 
     if payload is not None:
         payload_kind = payload.kind
         if kind is CarrierKind.IMAGE:
             image_result = embed_into_image(
                 carrier_path,
-                output_path,
+                staged,
                 payload,
                 password,
                 profile=profile,
@@ -254,7 +264,7 @@ def embed_payload(
         else:
             audio_result = embed_into_audio(
                 carrier_path,
-                output_path,
+                staged,
                 payload,
                 password,
                 profile=profile,
@@ -267,7 +277,7 @@ def embed_payload(
         if kind is CarrierKind.IMAGE:
             image_result = embed_file_into_image(
                 carrier_path,
-                output_path,
+                staged,
                 secret_path,
                 password,
                 profile=profile,
@@ -277,7 +287,7 @@ def embed_payload(
         else:
             audio_result = embed_file_into_audio(
                 carrier_path,
-                output_path,
+                staged,
                 secret_path,
                 password,
                 profile=profile,
@@ -286,43 +296,50 @@ def embed_payload(
             )
 
     if kind is CarrierKind.IMAGE:
-        final_path = image_result.path
+        staged_file = image_result.path
         report = image_result.report
         notices = image_result.notices
         packed = image_result.packed
     else:
-        final_path = audio_result.path
+        staged_file = audio_result.path
         report = audio_result.report
         notices = audio_result.notices
         packed = audio_result.packed
 
-    if secret_path is not None:
-        # Belt and braces: the path that was really written must not be the source.
-        fsutil.ensure_output_not_source(secret_path, (final_path,))
-    check_cancel(cancel)
-    verified = False
-    if verify:
-        try:
-            _verify_output(
-                final_path,
-                kind,
-                packed.sha256_hex,
-                packed.original_size,
-                password,
-                cancel=cancel,
-                progress=progress,
-            )
-        except PhantomError:
-            # A failed self-check must never leave a bogus "successful" artifact.
+    # The writer forces its own extension, so the published name may differ from
+    # the requested one (``a.jpg`` is written as ``a.png``).
+    final_path = fsutil.published_path(output_path, staged_file)
+    try:
+        if secret_path is not None:
+            # Belt and braces: the name about to be published must not be the source.
+            fsutil.ensure_output_not_source(secret_path, (final_path,))
+        check_cancel(cancel)
+        verified = False
+        if verify:
             try:
-                os.unlink(final_path)
-            except OSError as exc:
-                raise WipeError(
-                    "self-check failed and the output could not be removed",
-                    detail=str(exc),
-                ) from exc
-            raise
-        verified = True
+                _verify_output(
+                    staged_file,
+                    kind,
+                    packed.sha256_hex,
+                    packed.original_size,
+                    password,
+                    cancel=cancel,
+                    progress=progress,
+                )
+            except PhantomError:
+                # A failed self-check must never publish anything; the staged file
+                # goes, whatever already lived at the destination stays.
+                fsutil.discard_staged(staged_file)
+                raise
+            verified = True
+        fsutil.publish_staged(staged_file, final_path)
+        published = True
+    finally:
+        if not published:
+            # Whatever went wrong — cancel, verification, a read-only directory on
+            # the rename — no temp file may survive the call.
+            with contextlib.suppress(OSError):
+                os.unlink(staged_file)
 
     if wipe_source and not verified:
         raise InvalidInput(

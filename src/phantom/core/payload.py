@@ -145,8 +145,18 @@ def _compress_stream(
     cancel: threading.Event | None,
     progress: ProgressFn,
     total_hint: int,
+    max_plaintext: int | None = None,
 ) -> tuple[bytes, bytes, int]:
-    """Compress ``chunks`` with early abort. Returns (compressed, sha256, raw_len)."""
+    """Compress ``chunks`` with early abort. Returns (compressed, sha256, raw_len).
+
+    Two ceilings, not one.  ``max_compressed`` keeps the container inside the
+    carrier; ``max_plaintext`` keeps it inside what :func:`unpack_payload` is
+    willing to inflate again.  Without the second the writer happily produced a
+    container that the same build refused to open — a payload the user could
+    embed and never extract.  ``None`` means the module default, read here rather
+    than bound as a default argument so the limit can be inspected and patched.
+    """
+    limit = C.MAX_PLAINTEXT_BYTES if max_plaintext is None else max_plaintext
     compressor = zlib.compressobj(C.ZLIB_LEVEL)
     out = bytearray()
     digest = hashlib.sha256()
@@ -155,6 +165,11 @@ def _compress_stream(
     for block in chunks:
         check_cancel(cancel)
         read += len(block)
+        if read > limit:
+            raise CapacityError(
+                "payload exceeds the safety limit",
+                detail=f"{read} > {limit} bytes of plaintext",
+            )
         digest.update(block)
         out += compressor.compress(block)
         if max_compressed is not None and len(out) > max_compressed:
@@ -164,6 +179,11 @@ def _compress_stream(
             )
         progress(Stage.COMPRESSING, read, total_hint if total_hint else read)
     out += compressor.flush()
+    if read > limit:  # the last block can cross the ceiling as well
+        raise CapacityError(
+            "payload exceeds the safety limit",
+            detail=f"{read} > {limit} bytes of plaintext",
+        )
     if max_compressed is not None and len(out) > max_compressed:
         raise CapacityError(
             "payload does not fit the carrier",
@@ -362,9 +382,10 @@ def unpack_payload(
     *,
     cancel: threading.Event | None = None,
     progress: ProgressFn = noop_progress,
-    max_plaintext: int = C.MAX_PLAINTEXT_BYTES,
+    max_plaintext: int | None = None,
 ) -> ExtractedPayload:
     """Parse a decrypted payload blob and decompress it under a hard limit."""
+    limit = C.MAX_PLAINTEXT_BYTES if max_plaintext is None else max_plaintext
     if len(blob) < _HEADER.size:
         raise IntegrityError("payload truncated (header)")
     kind_byte, name_len = _HEADER.unpack_from(blob, 0)
@@ -385,7 +406,7 @@ def unpack_payload(
     compressed = blob[offset : offset + compressed_len]
 
     data = _decompress_bounded(
-        compressed, limit=max_plaintext, cancel=cancel, progress=progress
+        compressed, limit=limit, cancel=cancel, progress=progress
     )
     actual = hashlib.sha256(data).digest()
     integrity_ok = actual == stored_hash

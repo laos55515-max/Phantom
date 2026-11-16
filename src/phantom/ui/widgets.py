@@ -90,10 +90,10 @@ def card_title(master: Any, root: Any, text: str = "") -> ctk.CTkLabel:
     return ctk.CTkLabel(
         master,
         text=text,
-        font=sans_font(root, 11, weight="bold"),
+        font=sans_font(root, T.FONT_SIZE_CARD_TITLE, weight="bold"),
         text_color=T.CLR_MUTED,
         anchor="w",
-        height=16,
+        height=22,
     )
 
 
@@ -101,7 +101,7 @@ def hint_label(master: Any, root: Any, text: str = "", *, wrap: int = 520) -> ct
     return ctk.CTkLabel(
         master,
         text=text,
-        font=sans_font(root, 12),
+        font=sans_font(root, T.FONT_SIZE_HINT),
         text_color=T.CLR_TEXT_DIM,
         anchor="w",
         justify="left",
@@ -113,7 +113,9 @@ def value_label(master: Any, root: Any, text: str = "", *, mono: bool = False) -
     return ctk.CTkLabel(
         master,
         text=text,
-        font=(mono_font if mono else sans_font)(root, 12),
+        font=(mono_font if mono else sans_font)(
+            root, T.FONT_SIZE_MONO if mono else T.FONT_SIZE_BODY
+        ),
         text_color=T.CLR_TEXT,
         anchor="w",
         justify="left",
@@ -124,9 +126,9 @@ def primary_button(master: Any, root: Any, text: str, command: Any, **kwargs: An
     options: dict[str, Any] = {
         "text": text,
         "command": command,
-        "height": 42,
+        "height": 46,
         "corner_radius": 12,
-        "font": sans_font(root, 13, weight="bold"),
+        "font": sans_font(root, T.FONT_SIZE_BODY, weight="bold"),
         "fg_color": T.CLR_ACCENT,
         "hover_color": T.CLR_ACCENT_HOVER,
         "text_color": T.CLR_ON_ACCENT,
@@ -141,9 +143,9 @@ def secondary_button(
     options: dict[str, Any] = {
         "text": text,
         "command": command,
-        "height": 34,
+        "height": 38,
         "corner_radius": 10,
-        "font": sans_font(root, 12),
+        "font": sans_font(root, T.FONT_SIZE_HINT),
         "fg_color": T.CLR_CARD_ALT,
         "hover_color": T.CLR_ACCENT_DIM,
         "text_color": T.CLR_TEXT,
