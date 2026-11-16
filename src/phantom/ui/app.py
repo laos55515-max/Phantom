@@ -28,7 +28,7 @@ from phantom.core.errors import (
     UnsupportedCarrier,
 )
 from phantom.core.payload import PayloadKind
-from phantom.core.progress import INDETERMINATE_STAGES
+from phantom.core.progress import INDETERMINATE_STAGES, Stage
 from phantom.i18n import I18n
 from phantom.ui import clipboard as clip
 from phantom.ui import format as ui_format
@@ -112,7 +112,7 @@ class PhantomApp:
         self._progress_indeterminate = False
         #: What the footer is showing right now, as ``(locale key, params)`` — kept
         #: so the elapsed-time tick and a language switch can repaint it.
-        self._stage_key: tuple[str, dict[str, object]] | None = None
+        self._stage_key: tuple[str, Stage | None, str | None] | None = None
         self._stage_tick_token: str | None = None
         self._operation_started = 0.0
         self._generated_password = ""
@@ -1431,7 +1431,6 @@ class PhantomApp:
             self._show_error(event.error)
 
     def _on_progress(self, event: WorkerEvent) -> None:
-        stage_name = self.i18n.t(f"stage.{event.stage.value}") if event.stage else ""
         indeterminate = event.indeterminate or (
             event.stage is not None and event.stage in INDETERMINATE_STAGES
         )
@@ -1440,14 +1439,14 @@ class PhantomApp:
                 self._progress_indeterminate = True
                 self.progress_bar.configure(mode="indeterminate")
                 self.progress_bar.start()
-            self._show_stage("lbl_progress_indeterminate", stage=stage_name)
+            self._show_stage("lbl_progress_indeterminate", stage=event.stage)
             return
         if self._progress_indeterminate:
             self.progress_bar.stop()
             self.progress_bar.configure(mode="determinate")
             self._progress_indeterminate = False
         self._show_stage(
-            "lbl_progress_stage", stage=stage_name, pct=f"{event.fraction * 100:.0f}"
+            "lbl_progress_stage", stage=event.stage, pct=f"{event.fraction * 100:.0f}"
         )
         self.animator.to(
             "progress",
@@ -1544,23 +1543,27 @@ class PhantomApp:
         self.stage_label.configure(text=self.i18n.t("lbl_progress_idle"))
 
     # -- footer: stage line and elapsed time ------------------------------
-    def _show_stage(self, key: str, **params: object) -> None:
-        """Remember what the footer should say and paint it.
+    def _show_stage(
+        self, key: str, *, stage: Stage | None = None, pct: str | None = None
+    ) -> None:
+        """Remember what the footer should say, then paint it.
 
-        Storing the locale key rather than the rendered string is what lets the
-        elapsed-time tick and a language switch repaint the same line without
-        knowing which stage produced it.
+        The stage is stored as the enum, never as finished text: the line is
+        repainted for the elapsed-time tick and again when the language changes,
+        and a name translated at event time would survive both unchanged.
         """
-        self._stage_key = (key, params)
+        self._stage_key = (key, stage, pct)
         self._render_stage_label()
 
     def _render_stage_label(self) -> None:
         """Repaint the stage line, appending the elapsed time while a job runs."""
         if self._stage_key is None:
             return
-        key, params = self._stage_key
+        key, stage, pct = self._stage_key
         self.stage_label.configure(
-            text=ui_format.stage_line(self.i18n, key, seconds=self._elapsed_seconds(), **params)
+            text=ui_format.stage_line(
+                self.i18n, key, stage=stage, pct=pct, seconds=self._elapsed_seconds()
+            )
         )
 
     def _elapsed_seconds(self) -> int | None:

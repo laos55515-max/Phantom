@@ -13,6 +13,7 @@ from typing import Final, Protocol
 
 from phantom.core import constants as C
 from phantom.core.payload import ExtractedPayload, carried_bytes
+from phantom.core.progress import Stage
 from phantom.stego.engine import Capacity
 
 
@@ -54,17 +55,29 @@ def stage_line(
     translator: Translator,
     key: str,
     *,
+    stage: Stage | None = None,
+    pct: str | None = None,
     seconds: int | None = None,
-    **params: object,
 ) -> str:
     """One footer line: the stage text, with the elapsed time while a job runs.
 
     ``Встраивание  ·  25%`` becomes ``Встраивание  ·  25% · 12 с``.  A phase with no
     honest fraction says so instead (``Анализ изображения…``), and the clock is the
     same either way — half a minute of silence reads as a hang, a number that
-    keeps counting does not.  Kept here, free of Tk, so the wording is testable
-    without a display.
+    keeps counting does not.
+
+    The stage is passed as the enum, not as finished text: the footer repaints
+    itself while an operation runs (once a second for the clock, and again if the
+    language changes), so the name has to be translated at paint time rather than
+    frozen when the event arrived.
+
+    Kept here, free of Tk, so the wording is testable without a display.
     """
+    params: dict[str, str] = {}
+    if stage is not None:
+        params["stage"] = translator.t(f"stage.{stage.value}")
+    if pct is not None:
+        params["pct"] = pct
     text = translator.t(key, **params)
     if seconds is None:
         return text
