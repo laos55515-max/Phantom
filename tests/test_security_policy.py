@@ -118,8 +118,14 @@ def test_progress_event_fraction_is_clamped() -> None:
     assert ProgressEvent(Stage.READING, 5, 10).indeterminate is False
 
 
-def test_only_the_kdf_is_indeterminate() -> None:
-    assert frozenset(INDETERMINATE_STAGES) == frozenset({Stage.KDF})
+def test_only_the_opaque_passes_are_indeterminate() -> None:
+    """A fraction is reported everywhere it exists; these two passes have none.
+
+    The Argon2id run and the wavelet cost map are each one opaque sweep over their
+    input, so the interface shows a spinner and the elapsed time instead of a
+    progress bar that would have to invent a percentage.
+    """
+    assert frozenset(INDETERMINATE_STAGES) == frozenset({Stage.KDF, Stage.ANALYSING})
 
 
 def test_check_cancel_without_event_is_a_noop() -> None:

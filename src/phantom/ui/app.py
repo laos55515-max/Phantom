@@ -7,11 +7,13 @@ and forwards user intent.  All work that can block runs in
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import re
+import time
 from collections.abc import Callable
-from tkinter import filedialog, messagebox
+from tkinter import TclError, filedialog, messagebox
 from typing import Any, Final
 
 import customtkinter as ctk
@@ -26,9 +28,10 @@ from phantom.core.errors import (
     UnsupportedCarrier,
 )
 from phantom.core.payload import PayloadKind
-from phantom.core.progress import INDETERMINATE_STAGES
+from phantom.core.progress import INDETERMINATE_STAGES, Stage
 from phantom.i18n import I18n
 from phantom.ui import clipboard as clip
+from phantom.ui import format as ui_format
 from phantom.ui import theme as T
 from phantom.ui.animator import Animator
 from phantom.ui.bindings import I18nBinder
@@ -107,6 +110,11 @@ class PhantomApp:
         self._status_params: dict[str, object] = {}
         self._busy = False
         self._progress_indeterminate = False
+        #: What the footer is showing right now, as ``(locale key, params)`` — kept
+        #: so the elapsed-time tick and a language switch can repaint it.
+        self._stage_key: tuple[str, Stage | None, str | None] | None = None
+        self._stage_tick_token: str | None = None
+        self._operation_started = 0.0
         self._generated_password = ""
         self._suppress_events = False
         self.current_tab = self.settings.last_tab
@@ -872,6 +880,9 @@ class PhantomApp:
         self._refresh_extract_state()
         self._refresh_settings_state()
         self._refresh_busy_state()
+        # The binder has just re-rendered the static labels, the footer included:
+        # put the running stage back, in the new language and with its clock.
+        self._render_stage_label()
 
     def _refresh_embed_state(self) -> None:
         vm = self.embed_vm
@@ -1371,6 +1382,8 @@ class PhantomApp:
             self._operation = ""
             self._refresh_busy_state()
             return False
+        self._operation_started = time.monotonic()
+        self._ensure_stage_tick()
         self._ensure_polling()
         return True
 
@@ -1418,7 +1431,6 @@ class PhantomApp:
             self._show_error(event.error)
 
     def _on_progress(self, event: WorkerEvent) -> None:
-        stage_name = self.i18n.t(f"stage.{event.stage.value}") if event.stage else ""
         indeterminate = event.indeterminate or (
             event.stage is not None and event.stage in INDETERMINATE_STAGES
         )
@@ -1427,18 +1439,14 @@ class PhantomApp:
                 self._progress_indeterminate = True
                 self.progress_bar.configure(mode="indeterminate")
                 self.progress_bar.start()
-            self.stage_label.configure(
-                text=self.i18n.t("lbl_progress_indeterminate", stage=stage_name)
-            )
+            self._show_stage("lbl_progress_indeterminate", stage=event.stage)
             return
         if self._progress_indeterminate:
             self.progress_bar.stop()
             self.progress_bar.configure(mode="determinate")
             self._progress_indeterminate = False
-        self.stage_label.configure(
-            text=self.i18n.t(
-                "lbl_progress_stage", stage=stage_name, pct=f"{event.fraction * 100:.0f}"
-            )
+        self._show_stage(
+            "lbl_progress_stage", stage=event.stage, pct=f"{event.fraction * 100:.0f}"
         )
         self.animator.to(
             "progress",
@@ -1513,6 +1521,12 @@ class PhantomApp:
     def _finish_operation_ui(self) -> None:
         self._busy = False
         self._operation = ""
+        self._stop_stage_tick()
+        self._operation_started = 0.0
+        self._stage_key = None
+        # Leave no frozen "embedding · 74 % · 12 s" behind on cancel or failure;
+        # a finished operation paints its own footer line right after this.
+        self.stage_label.configure(text=self.i18n.t("lbl_progress_idle"))
         if self._progress_indeterminate:
             self.progress_bar.stop()
             self.progress_bar.configure(mode="determinate")
@@ -1525,7 +1539,58 @@ class PhantomApp:
             self.progress_bar.configure(mode="determinate")
             self._progress_indeterminate = False
         self.animator.set("progress", 0.0, notify=self.progress_bar.set)
+        self._stage_key = None
         self.stage_label.configure(text=self.i18n.t("lbl_progress_idle"))
+
+    # -- footer: stage line and elapsed time ------------------------------
+    def _show_stage(
+        self, key: str, *, stage: Stage | None = None, pct: str | None = None
+    ) -> None:
+        """Remember what the footer should say, then paint it.
+
+        The stage is stored as the enum, never as finished text: the line is
+        repainted for the elapsed-time tick and again when the language changes,
+        and a name translated at event time would survive both unchanged.
+        """
+        self._stage_key = (key, stage, pct)
+        self._render_stage_label()
+
+    def _render_stage_label(self) -> None:
+        """Repaint the stage line, appending the elapsed time while a job runs."""
+        if self._stage_key is None:
+            return
+        key, stage, pct = self._stage_key
+        self.stage_label.configure(
+            text=ui_format.stage_line(
+                self.i18n, key, stage=stage, pct=pct, seconds=self._elapsed_seconds()
+            )
+        )
+
+    def _elapsed_seconds(self) -> int | None:
+        """Whole seconds since the running operation started, or ``None`` if idle."""
+        if not self._busy or self._operation_started <= 0.0:
+            return None
+        return int(time.monotonic() - self._operation_started)
+
+    def _ensure_stage_tick(self) -> None:
+        if self._stage_tick_token is None:
+            self._stage_tick_token = self.root.after(C.STAGE_TICK_MS, self._stage_tick)
+
+    def _stop_stage_tick(self) -> None:
+        token, self._stage_tick_token = self._stage_tick_token, None
+        if token is not None:
+            # Tk forgets a callback id once it has fired, and cancelling it then
+            # raises; nothing to do in that case.
+            with contextlib.suppress(TclError):
+                self.root.after_cancel(token)
+
+    def _stage_tick(self) -> None:
+        """Once a second: repaint the stage line so a long phase keeps counting."""
+        self._stage_tick_token = None
+        if not self._busy:
+            return
+        self._render_stage_label()
+        self._ensure_stage_tick()
 
     def _ensure_animation_loop(self) -> None:
         if self._anim_token is None and self.animator.active:

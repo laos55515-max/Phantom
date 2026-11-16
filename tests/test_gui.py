@@ -7,6 +7,7 @@ pass would hide a broken Tk layer.
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 import pytest
@@ -714,3 +715,109 @@ def test_password_fields_and_paragraphs_have_clipboard_shortcuts(app) -> None:
     # 16 sequences per text widget: Cmd/Ctrl x lower/upper case for c, v, x, a.
     assert all(item.bound_count >= 16 for item in app._text_shortcuts)
     assert len(app._text_shortcuts) >= 5
+
+
+# ---------------------------------------------------------------------------
+# progress feedback: a 24 MP embed runs for half a minute
+# ---------------------------------------------------------------------------
+def _progress(app, stage, done=0, total=0):
+    """Feed one progress event the way the worker would."""
+    from phantom.ui.worker import WorkerEvent, WorkerEventType
+
+    app._handle_worker_event(
+        WorkerEvent(WorkerEventType.PROGRESS, stage=stage, done=done, total=total,
+                    operation="embed")
+    )
+
+
+def test_analysing_turns_the_bar_into_a_spinner_with_a_stage_line(app) -> None:
+    """The cost map has no fraction to report: spinner plus named stage, no 0 %."""
+    from phantom.core.progress import Stage
+
+    app._busy = True
+    app._operation_started = 0.0
+    _progress(app, Stage.ANALYSING)
+
+    assert app._progress_indeterminate is True, "the bar must animate, not sit at 0"
+    text = app.stage_label.cget("text")
+    assert text.startswith(app.i18n.t("stage.analysing")), text
+    assert "%" not in text, "an indeterminate stage must not pretend to have a share"
+
+
+def test_a_measured_stage_leaves_the_spinner_mode(app) -> None:
+    """After the analysis the trellis reports real units, so the bar fills again."""
+    from phantom.core.progress import Stage
+
+    app._busy = True
+    _progress(app, Stage.ANALYSING)
+    _progress(app, Stage.EMBEDDING, 30, 120)
+
+    assert app._progress_indeterminate is False
+    text = app.stage_label.cget("text")
+    assert "25" in text, text
+    assert app.i18n.t("stage.embedding") in text
+
+
+def test_the_stage_line_counts_the_seconds_an_operation_runs(app) -> None:
+    """Silence for a minute looks like a hang: the footer keeps counting."""
+    from phantom.core.progress import Stage
+
+    app._busy = True
+    app._operation_started = time.monotonic() - 7.2
+    _progress(app, Stage.ANALYSING)
+
+    text = app.stage_label.cget("text")
+    assert "7" in text and app.i18n.t("stage.analysing") in text, text
+
+
+def test_the_seconds_counter_grows_while_the_operation_stays_busy(app) -> None:
+    from phantom.core.progress import Stage
+
+    app._busy = True
+    app._operation_started = time.monotonic() - 2.0
+    _progress(app, Stage.EMBEDDING, 1, 4)
+    first = app.stage_label.cget("text")
+
+    app._operation_started = time.monotonic() - 11.0
+    app._stage_tick()
+
+    second = app.stage_label.cget("text")
+    assert first != second, "a tick must repaint the line"
+    assert "11" in second, second
+    assert "25" in second, "the measured share must survive the repaint"
+    app._stop_stage_tick()  # the tick rescheduled itself; do not outlive the test
+
+
+def test_the_counter_stops_and_resets_when_the_operation_ends(app) -> None:
+    from phantom.core.progress import Stage
+
+    app._busy = True
+    app._operation_started = time.monotonic() - 5.0
+    _progress(app, Stage.EMBEDDING, 1, 2)
+    assert "5" in app.stage_label.cget("text")
+
+    app._finish_operation_ui()
+
+    assert app._operation_started == 0.0
+    assert app._stage_tick_token is None, "no timer may outlive the operation"
+    assert app._stage_key is None
+    assert app._elapsed_seconds() is None
+    assert app.stage_label.cget("text") == app.i18n.t("lbl_progress_idle"), (
+        "a cancelled or failed job must not leave a frozen counter behind"
+    )
+
+
+def test_the_stage_line_survives_a_language_switch(app) -> None:
+    """Switching language mid-embed must re-render the live line, not the idle one."""
+    from phantom.core.progress import Stage
+
+    app._busy = True
+    app._operation_started = time.monotonic() - 3.0
+    _progress(app, Stage.ANALYSING)
+
+    app._on_language_click(app._label_by_lang["ru"])
+
+    text = app.stage_label.cget("text")
+    assert app.i18n.t("stage.analysing") in text, text
+    assert text != app.i18n.t("lbl_progress_idle")
+    assert "3" in text, text

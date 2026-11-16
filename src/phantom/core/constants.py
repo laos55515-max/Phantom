@@ -206,6 +206,8 @@ ATOMIC_TEMP_SUFFIX: Final = ".phantom-tmp"
 # UI / runtime
 # ---------------------------------------------------------------------------
 WORKER_POLL_MS: Final = 40
+#: How often the footer repeats the elapsed time while a job runs.
+STAGE_TICK_MS: Final = 1000
 ANIMATION_TICK_MS: Final = 16
 DEBOUNCE_MS: Final = 320
 WATCHDOG_SECONDS: Final = 90.0

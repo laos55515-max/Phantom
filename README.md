@@ -44,7 +44,10 @@ gains 3–4 dB of PSNR, and the RS estimator that greedy placement (v4) pushed t
 0.098 falls back to the v3 level (see the CHANGELOG for the three-way table). The
 cost map is built on a half-resolution copy of each channel — a cost map describes
 regions, not pixels — which buys the same placement for a quarter of the
-arithmetic and about 0.2 dB.
+arithmetic and costs 0.25 dB (66.64 vs 66.89 dB at 0.2 bpp; it is a trade-off, not
+a free lunch, and `SECURITY.md` states it as one). Long operations report what they
+are doing: the footer names the phase, spins while the cost map runs and counts the
+seconds, so a 24 MP photo that takes half a minute does not look like a hang.
 
 Everything older still opens: the audit card names **v2** (old public header),
 **v3** (keyed positions), **v4** (greedy adaptive, reachable with
