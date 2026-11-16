@@ -29,30 +29,30 @@ All notable changes to PHANTOM are recorded here. The format follows
   change below it is what the build writes by default.
 
   Same eight carriers, same payloads, all three layouts, extraction verified on
-  every file (`96 embeds in 229.1 s, 0 unreadable`). `Σρ/бит` is the total cost
+  every file (`96 embeds in 142.7 s, 0 unreadable`). `Σρ/бит` is the total cost
   of the changes divided by the payload under one shared cover-derived map — the
   number a trellis is built to minimise:
 
   | load, bpp | layout | PSNR, dB | changed px, % | Σρ/bit | χ² p | RS p̂ | detected |
   |---|---|---|---|---|---|---|---|
-  | 0.05 | v3 keyed | 68.93 | 2.48 | 0.50 | 0.000 | 0.007 | 0/6 |
-  | 0.05 | v4 greedy | 68.94 | 2.38 | 0.46 | 0.000 | 0.021 | 0/6 |
-  | 0.05 | **v5 trellis** | **72.83** | **1.00** | **0.18** | 0.000 | 0.009 | 0/6 |
-  | 0.10 | v3 | 65.91 | 4.92 | 0.50 | 0.000 | 0.010 | 0/6 |
-  | 0.10 | v4 | 65.92 | 4.73 | 0.46 | 0.000 | 0.034 | 0/6 +1 suspect |
-  | 0.10 | **v5** | **70.28** | **1.80** | **0.17** | 0.000 | 0.013 | 0/6 |
-  | 0.20 | v3 | 62.90 | 9.68 | 0.50 | 0.000 | 0.011 | 0/6 |
-  | 0.20 | v4 | 62.90 | 9.24 | 0.46 | 0.000 | 0.060 | 0/6 +3 suspect |
-  | 0.20 | **v5** | **67.37** | **3.50** | **0.17** | 0.000 | **0.011** | 0/6 |
-  | 0.40 | v3 | 59.88 | 18.73 | 0.50 | 0.000 | 0.020 | 0/6 |
-  | 0.40 | v4 | 59.89 | 17.65 | 0.47 | 0.000 | 0.094 | 0/6 +3 suspect |
-  | 0.40 | **v5** | **63.24** | **8.76** | **0.22** | 0.000 | **0.023** | 0/6 |
+  | 0.05 | v3 keyed | 68.93 | 2.48 | 0.50 | 0.000 | 0.012 | 0/6 |
+  | 0.05 | v4 greedy | 68.95 | 2.38 | 0.46 | 0.000 | 0.024 | 0/6 |
+  | 0.05 | **v5 trellis** | **72.82** | **1.01** | **0.19** | 0.000 | 0.012 | 0/6 |
+  | 0.10 | v3 | 65.89 | 4.94 | 0.50 | 0.000 | 0.004 | 0/6 |
+  | 0.10 | v4 | 65.92 | 4.72 | 0.46 | 0.000 | 0.037 | 0/6 |
+  | 0.10 | **v5** | **70.27** | **1.80** | **0.17** | 0.000 | 0.011 | 0/6 |
+  | 0.20 | v3 | 62.90 | 9.67 | 0.50 | 0.000 | 0.009 | 0/6 |
+  | 0.20 | v4 | 62.91 | 9.26 | 0.46 | 0.000 | 0.063 | 0/6 +3 suspect |
+  | 0.20 | **v5** | **67.35** | **3.51** | **0.17** | 0.000 | **0.008** | 0/6 |
+  | 0.40 | v3 | 59.90 | 18.68 | 0.50 | 0.000 | 0.007 | 0/6 |
+  | 0.40 | v4 | 59.90 | 17.61 | 0.47 | 0.000 | 0.085 | 0/6 +3 suspect |
+  | 0.40 | **v5** | **63.25** | **8.74** | **0.22** | 0.000 | **0.010** | 0/6 |
 
   The code wins on every axis it can control: three to four decibels more PSNR,
   2–2.9× lower total distortion, 2–3× fewer changed samples, chi-square still at
   zero. The RS estimator — which reads the *density* of changes and had climbed to
-  0.094 (three carriers in the "suspect" band) under greedy v4 — comes back to the
-  v3 level, 0.009–0.023, and no carrier is flagged at any load. Spreading a
+  0.085 (three carriers in the "suspect" band) under greedy v4 — comes back to the
+  v3 level, 0.008–0.012, and no carrier is flagged at any load. Spreading a
   smaller number of changes over the whole carrier beats concentrating a larger
   number in the cheapest corner, even though the greedy layout wins the placement
   columns (`перцентиль`, `в гладких 50%`): the cost model is additive and does not
@@ -197,9 +197,10 @@ All notable changes to PHANTOM are recorded here. The format follows
   better — on the eight benchmark covers at 0.2/0.4 bpp it selects changes with
   PSNR 66.89/63.04 dB and 4.02/9.71 % of pixels touched, against 66.77/62.76 dB and
   4.17/10.48 % for the two-scale map, because the coarse scale mostly steered
-  changes into mid-frequency texture where they buy nothing. `cost_map` — the
-  float64 map the v4 layout reproduces from the stego image — is untouched, so
-  existing v4 files still open.
+  changes into mid-frequency texture where they buy nothing. (The half-resolution
+  step described further down takes the same map down by another factor of four.)
+  `cost_map` — the float64 map the v4 layout reproduces from the stego image — is
+  untouched, so existing v4 files still open.
 
   Two structural fixes came out of the same work. The trellis body is now walked a
   chunk of blocks at a time (`stc.sliced`, `STC_CHUNK_SLOTS`): a 24 MP carrier has
@@ -210,15 +211,36 @@ All notable changes to PHANTOM are recorded here. The format follows
   output (checked against the previous implementation on 5 000 and 3 000 000
   indices) for a third less time.
 
-  Measured on a 24 MP carrier with a 100 KiB payload, extraction round-tripped and
-  verified:
+  Measured on a 24 MP carrier with a 100 KiB payload through the public API,
+  extraction round-tripped and verified:
 
-  | | before this change | now |
+  | | before v5 became the default | now |
   |---|---|---|
-  | embed | did not finish (OOM at 4 GB) | 35.5 s |
-  | extract | — | 18.3 s |
-  | peak RSS | — | 984 MB |
-  | cost map alone | 43.9 s / 2.1 GB | 9 s / ~0.7 GB |
+  | embed (API, includes the read-back check) | did not finish (OOM at 4 GB) | 27.5 s |
+  | extract (API) | — | 10.2 s |
+  | peak RSS | — | 728 MB |
+  | cost map alone | 43.9 s / 2.1 GB | 2.1 s / ~0.7 GB |
+
+- **The trellis cost map is computed at half resolution.** A cost map is a smooth
+  field — it says "this region is busy", not "this pixel is" — so `embedding_costs`
+  now averages every channel 2×2 down, runs the wavelet chain on the quarter-size
+  plane and repeats each cost back over its 2×2 block. Together with the single
+  detail scale that is 16× less arithmetic than the original two-scale float64 map:
+  on a 24 MP photo the map itself takes **2.1 s** instead of 43.9 s, and the whole
+  API embed drops from 61 s to **27.5 s** with a peak of 728 MB instead of 984 MB.
+
+  It costs a quarter of a decibel and nothing else that the benchmark can see: on
+  the eight covers at 0.2/0.4 bpp the full-resolution map selects changes with PSNR
+  66.89/63.04 dB and 4.03/9.69 % of pixels touched, the half-resolution one
+  66.64/62.86 dB and 4.36/10.18 % (a two-scale map at the same resolution is
+  slightly worse and twice as expensive: 66.59/62.76 dB). Across the full
+  three-layout benchmark the v5 columns barely move — PSNR within 0.02 dB of the
+  previous run at every load, `Σρ/bit` unchanged at 0.17–0.22 — while the run itself
+  drops from 229.1 s to 142.7 s. The ranking agrees with the slow map, too:
+  correlation 0.977, and the cheapest fifth of the fast map sits at the 20th
+  percentile of the full-resolution one. There is no size threshold; carriers under
+  `COST_MIN_SIZE` (8 px) keep the exact map because a 2×2 average would leave the
+  wavelet nothing to look at.
 
 - `tools/bench_steganalysis.py` and `tools/bench_positions.py` name the layouts
   explicitly (`v3` is the keyed layout, not "the current one"), the steganalysis

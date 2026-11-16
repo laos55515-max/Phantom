@@ -41,7 +41,10 @@ trellis then solves for the cheapest *combination* of ±1 changes that carries t
 payload, instead of spreading the bits evenly. At the same payload that needs
 about half the changes of the v3 keyed layout, spends 2–3× less distortion and
 gains 3–4 dB of PSNR, and the RS estimator that greedy placement (v4) pushed to
-0.098 falls back to the v3 level (see the CHANGELOG for the three-way table).
+0.098 falls back to the v3 level (see the CHANGELOG for the three-way table). The
+cost map is built on a half-resolution copy of each channel — a cost map describes
+regions, not pixels — which buys the same placement for a quarter of the
+arithmetic and about 0.2 dB.
 
 Everything older still opens: the audit card names **v2** (old public header),
 **v3** (keyed positions), **v4** (greedy adaptive, reachable with
