@@ -7,6 +7,7 @@ pass would hide a broken Tk layer.
 
 from __future__ import annotations
 
+import threading
 import time
 from pathlib import Path
 
@@ -828,17 +829,35 @@ def test_the_stage_line_survives_a_language_switch(app) -> None:
 # the poll loop must not lose the last event of a finished job
 # ---------------------------------------------------------------------------
 class _ScriptedWorker:
-    """A worker whose queue and liveness the test dictates, event by event."""
+    """A worker whose queue and liveness the test dictates, event by event.
+
+    Only ``poll``/``busy``/``watchdog_expired`` matter to ``_poll``, but the
+    fixture teardown calls ``shutdown``: a stub that only half-implements the
+    interface would fail in teardown instead of in the test.
+    """
 
     def __init__(self, script: list[list[object]], *, busy: bool = False) -> None:
         self.script = [list(batch) for batch in script]
         self.busy = busy
+        self.cancel_event = threading.Event()
 
     def poll(self) -> list[object]:
         return self.script.pop(0) if self.script else []
 
     def watchdog_expired(self) -> bool:
         return False
+
+    def seconds_since_progress(self) -> float:
+        return 0.0
+
+    def reset_watchdog(self) -> None:
+        return None
+
+    def cancel(self) -> None:
+        self.cancel_event.set()
+
+    def shutdown(self, timeout: float = 0.0) -> None:
+        return None
 
 
 def test_poll_handles_a_done_that_arrived_while_the_thread_was_dying(
@@ -854,7 +873,7 @@ def test_poll_handles_a_done_that_arrived_while_the_thread_was_dying(
     from phantom.ui.worker import WorkerEvent, WorkerEventType
 
     late = WorkerEvent(WorkerEventType.DONE, value="the-result", operation="embed")
-    app.worker = _ScriptedWorker([[], [late]])
+    monkeypatch.setattr(app, "worker", _ScriptedWorker([[], [late]]))
     app._busy = True
     handled: list[object] = []
     app._on_done = handled.append  # type: ignore[method-assign]
@@ -867,10 +886,14 @@ def test_poll_handles_a_done_that_arrived_while_the_thread_was_dying(
     assert app._busy is False
 
 
-def test_poll_does_nothing_extra_when_the_queue_was_already_drained(app) -> None:
+def test_poll_does_nothing_extra_when_the_queue_was_already_drained(
+    app, monkeypatch: pytest.MonkeyPatch
+) -> None:
     from phantom.ui.worker import WorkerEvent, WorkerEventType
 
-    app.worker = _ScriptedWorker([[WorkerEvent(WorkerEventType.DONE, value=1)], []])
+    monkeypatch.setattr(
+        app, "worker", _ScriptedWorker([[WorkerEvent(WorkerEventType.DONE, value=1)], []])
+    )
     app._busy = True
     handled: list[object] = []
     app._on_done = handled.append  # type: ignore[method-assign]

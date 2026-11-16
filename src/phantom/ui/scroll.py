@@ -296,7 +296,7 @@ def _bind_to_children(
 ) -> list[WheelBinding]:
     """Bind ``<MouseWheel>`` on ``widget``, on ``canvas`` and on every descendant.
 
-    Children that appear later are covered by :meth:`MouseWheelRouter.refresh`,
+    Children that appear later are covered by :meth:`TabWheel.refresh`,
     which walks the same tree again.  Text areas and scrollbars are skipped, and
     the walk still descends into them: a ``CTkTextbox`` is a frame that owns an
     inner ``Text``, and neither of the two should be bound.
