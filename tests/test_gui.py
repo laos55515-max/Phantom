@@ -84,7 +84,10 @@ def _pump(app, seconds: float = 30.0) -> None:
 
     ``worker.busy`` goes False when the thread exits, but ``_busy`` (the app's
     own "an operation is running" flag) is only cleared by the poll callback, so
-    both have to settle.
+    both have to settle.  If they never do, say what was still in flight instead
+    of leaving the next assertion to report a bare ``_busy is True`` — a timeout
+    here means the poll chain stalled or the job raised (the app logs that to
+    stderr), not that the test forgot to wait.
     """
     import time
 
@@ -93,6 +96,10 @@ def _pump(app, seconds: float = 30.0) -> None:
         app.root.update()
         time.sleep(0.02)
     app.root.update()
+    assert not (app.worker.busy or app._busy), (
+        f"still busy after {seconds:.0f}s: worker={app.worker.busy}, "
+        f"app={app._busy}, operation={app._operation!r}"
+    )
 
 
 @pytest.fixture
