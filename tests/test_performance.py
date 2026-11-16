@@ -23,12 +23,14 @@ EMBED_LIMIT = 60.0
 EXTRACT_LIMIT = 40.0
 
 #: The syndrome-trellis layout (v5, the default) gives *every* sample of the
-#: carrier to the trellis, so a 24 MP carrier is 72 M trellis steps plus ~19 s of
-#: AES keying per pass, and the default embed verifies itself by extracting once
-#: more.  Measured end to end through the API on the development machine: 61 s
-#: embed, 30 s extract.  These bounds catch a doubling.
-TRELLIS_EMBED_LIMIT = 90.0
-TRELLIS_EXTRACT_LIMIT = 60.0
+#: carrier to the trellis, so a 24 MP carrier is 72 M trellis steps plus the AES
+#: keying that orders them, and the default embed verifies itself by extracting
+#: once more.  Measured end to end through the API on the development machine
+#: after the cost map moved to half resolution: 27.5 s embed, 10.2 s extract
+#: (it was 61 s / 30 s before).  Bounds are ~1.5x that, to catch a regression
+#: without tripping on a slow runner.
+TRELLIS_EMBED_LIMIT = 42.0
+TRELLIS_EXTRACT_LIMIT = 16.0
 
 
 @pytest.fixture(scope="module")

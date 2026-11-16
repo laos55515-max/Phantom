@@ -363,3 +363,89 @@ def test_is_stabler_compares_layouts_element_by_element() -> None:
     assert adaptive.is_stabler(np.array([1, 2, 3]), np.array([1, 2, 3]))
     assert not adaptive.is_stabler(np.array([1, 2, 3]), np.array([1, 3, 2]))
     assert not adaptive.is_stabler(np.array([1, 2]), np.array([1, 2, 3]))
+
+
+# ---------------------------------------------------------------------------
+# the embedder-only cost map of the trellis layout
+# ---------------------------------------------------------------------------
+def test_embedding_costs_match_the_carrier_shape_and_precision() -> None:
+    pixels = _two_regions(256)
+    costs = adaptive.embedding_costs(pixels)
+
+    assert costs.shape == (256, 256, 3), "one cost per sample slot, colour only"
+    assert costs.dtype == np.float32, "the trellis path trades precision for speed"
+    assert np.all(np.isfinite(costs))
+    assert np.all(costs > 0.0), "a cost is 1/(energy+floor): never zero, never negative"
+
+
+def test_embedding_costs_ignore_a_fourth_channel() -> None:
+    rgba = np.dstack([_two_regions(128), np.full((128, 128), 255, dtype=np.uint8)])
+    assert adaptive.embedding_costs(rgba).shape == (128, 128, 3)
+
+
+def test_embedding_costs_are_normalised_to_a_median_of_one() -> None:
+    """Every channel is divided by its own median, so a threshold means the same
+    thing on a bright and a dark channel."""
+    costs = adaptive.embedding_costs(_two_regions(256))
+    for channel in range(3):
+        median = float(np.median(costs[:, :, channel]))
+        assert math.isclose(median, 1.0, rel_tol=1e-3), f"channel {channel}: {median}"
+
+
+def test_embedding_costs_prefer_busy_regions_like_the_full_map() -> None:
+    """Cost is the inverse of detail energy: foliage is cheap, sky is expensive."""
+    costs = adaptive.embedding_costs(_two_regions(256))
+    sky = float(costs[:, :100].mean())
+    foliage = float(costs[:, 156:].mean())
+    assert foliage < sky, f"sky {sky:.2f} vs foliage {foliage:.2f}"
+    assert sky / foliage > 5.0, "the two regions must be clearly separated"
+
+
+def test_embedding_costs_agree_with_the_full_resolution_map() -> None:
+    """The half-resolution shortcut must not reshuffle the ranking.
+
+    :func:`adaptive.rgb_cost_map` is the slow float64 two-scale map the v4 layout
+    uses.  The trellis path is allowed to be coarser, but it has to point at the
+    same places: measured correlation is 0.977 and the cheapest fifth of the fast
+    map sits at the 20th percentile of the slow one (uniform random would be 50).
+    """
+    pixels = _two_regions(256)
+    fast = adaptive.embedding_costs(pixels).reshape(-1)
+    slow = adaptive.rgb_cost_map(pixels).reshape(-1)
+
+    correlation = float(np.corrcoef(fast, slow)[0, 1])
+    assert correlation > 0.9, f"maps disagree, correlation {correlation:.3f}"
+
+    percentile = np.empty(slow.size)
+    percentile[np.argsort(slow, kind="stable")] = np.linspace(0.0, 100.0, slow.size)
+    cheapest = np.argsort(fast, kind="stable")[: fast.size // 5]
+    assert float(percentile[cheapest].mean()) < 30.0, "cheap samples must be cheap for both"
+
+
+def test_embedding_costs_survive_an_odd_sized_carrier() -> None:
+    """An odd row or column is dropped on the way down and cropped on the way up."""
+    costs = adaptive.embedding_costs(_two_regions(255)[:127, :131])
+    assert costs.shape == (127, 131, 3)
+
+
+def test_downsample_then_upsample_is_a_block_average() -> None:
+    plane = np.arange(64, dtype=np.float32).reshape(8, 8)
+    small = adaptive._downsample32(plane)
+    assert small.shape == (4, 4)
+    assert np.allclose(small[0, 0], plane[0:2, 0:2].mean())
+    restored = adaptive._upsample32(small, plane.shape)
+    assert restored.shape == plane.shape
+    assert np.allclose(restored[0:2, 0:2], small[0, 0]), "nearest neighbour repeats"
+
+
+def test_tiny_carriers_skip_the_decimation() -> None:
+    """Below COST_MIN_SIZE the exact map is used: a 2x2 average would leave the
+    wavelet nothing to look at."""
+    plane = np.array(
+        [[120.0, 122.0, 140.0, 138.0], [121.0, 123.0, 141.0, 139.0]] * 2, dtype=np.float32
+    )
+    assert min(plane.shape) < adaptive.COST_MIN_SIZE
+    assert np.array_equal(adaptive._channel_costs32(plane), adaptive._cost_map32(plane))
+
+    big = _two_regions(64)[:, :, 0].astype(np.float32)
+    assert not np.array_equal(adaptive._channel_costs32(big), adaptive._cost_map32(big))
