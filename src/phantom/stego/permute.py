@@ -106,17 +106,22 @@ class FeistelPermutation:
         return (left << right_bits) | right
 
     def _round_function(self, values: np.ndarray, round_index: int) -> np.ndarray:
+        # One AES block per value, assembled as four 32-bit words: the value, the
+        # round tag (bytes 4-5, little endian) and two zero words.  Building the
+        # buffer directly avoids the zeros/astype/view/tobytes copies the obvious
+        # byte-array version pays for on every round -- at 24 MP the trellis walks
+        # 72 M indices through eight rounds, so those copies dominated the run.
         count = values.size
-        blocks = np.zeros((count, 16), dtype=np.uint8)
-        blocks[:, 0:4] = (
-            np.asarray(values, dtype=np.uint32).astype(np.uint32, copy=False).view(np.uint8)
-        ).reshape(count, 4)
-        blocks[:, 4] = round_index & 0xFF
-        blocks[:, 5] = 0x50
+        # The cipher takes a byte buffer, so build it as one and fill it through a
+        # numpy view: no zeros array, no astype, no ``tobytes`` copy.
+        buffer = bytearray(count * 16)
+        blocks = np.frombuffer(buffer, dtype=np.uint32).reshape(count, 4)
+        blocks[:, 0] = values
+        blocks[:, 1] = np.uint32((round_index & 0xFF) | (0x50 << 8))
         # ECB is used as a keyed pseudorandom function inside the Feistel round,
         # never as a confidentiality mode: the output is a permutation index.
         encryptor = Cipher(algorithms.AES(self._key), modes.ECB()).encryptor()  # noqa: S305
-        ciphertext = encryptor.update(blocks.tobytes()) + encryptor.finalize()
+        ciphertext = encryptor.update(buffer) + encryptor.finalize()
         words = np.frombuffer(ciphertext, dtype=np.uint32).reshape(count, 4)[:, 0]
         return np.ascontiguousarray(words, dtype=np.int64)
 

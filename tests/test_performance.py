@@ -17,9 +17,18 @@ from phantom.stego.samples import ImageSamples
 
 pytestmark = pytest.mark.slow
 
-#: Bounds are ~4x the measured warm numbers on the development machine.
+#: Bounds are ~1.5-4x the measured warm numbers on the development machine; the
+#: point is to catch a regression, not micro-noise.
 EMBED_LIMIT = 60.0
 EXTRACT_LIMIT = 40.0
+
+#: The syndrome-trellis layout (v5, the default) gives *every* sample of the
+#: carrier to the trellis, so a 24 MP carrier is 72 M trellis steps plus ~19 s of
+#: AES keying per pass, and the default embed verifies itself by extracting once
+#: more.  Measured end to end through the API on the development machine: 61 s
+#: embed, 30 s extract.  These bounds catch a doubling.
+TRELLIS_EMBED_LIMIT = 90.0
+TRELLIS_EXTRACT_LIMIT = 60.0
 
 
 @pytest.fixture(scope="module")
@@ -42,13 +51,15 @@ def test_100kib_in_24mp_carrier(big_carrier: Path, tmp_path: Path, password: str
     outcome = api.embed_payload(str(big_carrier), str(output), payload, password=password)
     embed_seconds = time.perf_counter() - started
     assert outcome.verified
-    assert embed_seconds < EMBED_LIMIT, f"embed took {embed_seconds:.1f}s"
+    assert outcome.report is not None
+    assert outcome.report.container_version == C.CONTAINER_VERSION, "the default writes v5"
+    assert embed_seconds < TRELLIS_EMBED_LIMIT, f"embed took {embed_seconds:.1f}s"
 
     started = time.perf_counter()
     result = api.extract_from_path(str(output), password)
     extract_seconds = time.perf_counter() - started
     assert result.payload.data == secret
-    assert extract_seconds < EXTRACT_LIMIT, f"extract took {extract_seconds:.1f}s"
+    assert extract_seconds < TRELLIS_EXTRACT_LIMIT, f"extract took {extract_seconds:.1f}s"
 
     ratio = output.stat().st_size / big_carrier.stat().st_size
     assert 0.9 < ratio < 1.1, f"PNG size moved by {ratio:.3f}x"
@@ -72,7 +83,7 @@ def test_stc_layout_stays_within_budget(password: str) -> None:
     report = engine.embed_payload(space, blob, password, container_version=C.STC_CONTAINER_VERSION)
     embed_seconds = time.perf_counter() - started
     assert report.container_version == C.STC_CONTAINER_VERSION
-    assert embed_seconds < EMBED_LIMIT, f"stc embed took {embed_seconds:.1f}s"
+    assert embed_seconds < EMBED_LIMIT / 2, f"stc embed took {embed_seconds:.1f}s"
 
     started = time.perf_counter()
     extracted = engine.extract_payload(space, password)

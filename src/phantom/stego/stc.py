@@ -95,6 +95,16 @@ class Trellis:
         return 1 << self.height
 
 
+def sliced(trellis: Trellis, start: int, stop: int) -> Trellis:
+    """The same layout restricted to blocks ``[start, stop)``.
+
+    Blocks are independent, so a caller that must not hold the whole body in
+    memory can walk the trellis a chunk of blocks at a time and get exactly the
+    answer the full trellis would have given for those blocks.
+    """
+    return Trellis(width=trellis.width, height=trellis.height, blocks=stop - start)
+
+
 def plan(samples: int, bits: int) -> Trellis | None:
     """Widest block layout that carries ``bits`` over ``samples``, or ``None``.
 
@@ -215,7 +225,12 @@ def encode(
     wanted_bits = bits_of(present, trellis)
     wanted_bits[: message.size] = np.asarray(message, dtype=np.uint8)
     wanted = _pack_bits(wanted_bits, trellis) ^ present
-    weights = np.asarray(costs[: trellis.samples], dtype=np.float64).reshape(
+    supplied = np.asarray(costs)
+    # Follow the caller's precision: the embedder hands over single-precision costs
+    # on large carriers, and the trellis only compares sums, so float64 would buy
+    # nothing but memory.
+    dtype = np.float32 if supplied.dtype == np.float32 else np.float64
+    weights = np.asarray(costs[: trellis.samples], dtype=dtype).reshape(
         trellis.blocks, trellis.width
     )
     return _viterbi(np.maximum(weights, MIN_COST), wanted, trellis, columns)
@@ -244,7 +259,7 @@ def _viterbi(
     for start in range(0, trellis.blocks, chunk):
         stop = min(start + chunk, trellis.blocks)
         size = stop - start
-        best = np.full((size, states), np.inf)
+        best = np.full((size, states), np.inf, dtype=weights.dtype)
         best[:, 0] = 0.0
         back = np.zeros((width, size, states), dtype=bool)
         for column in range(width):

@@ -1648,8 +1648,37 @@ def test_layout_label_names_the_version_of_every_supported_layout() -> None:
         assert f"v{C.V2_CONTAINER_VERSION}" in legacy
         assert current != legacy
         assert ui_format.written_layout_text(i18n) == current
-        for version in (C.ADAPTIVE_CONTAINER_VERSION, C.STC_CONTAINER_VERSION):
+        for version in (
+            C.KEYED_CONTAINER_VERSION,
+            C.ADAPTIVE_CONTAINER_VERSION,
+            C.STC_CONTAINER_VERSION,
+        ):
             assert f"v{version}" in ui_format.layout_text(i18n, version)
+
+
+def test_the_written_layout_is_the_trellis_one() -> None:
+    """The embed tab advertises v5, the trellis, in every language."""
+    for code in ("en", "ru", "uk"):
+        i18n = I18n(code, locales_dir=LOCALES_DIR)
+        written = ui_format.written_layout_text(i18n)
+        assert written == ui_format.layout_text(i18n, C.STC_CONTAINER_VERSION)
+        assert written == i18n.t("layout_trellis", version=C.STC_CONTAINER_VERSION)
+        assert f"v{C.STC_CONTAINER_VERSION}" in written
+        assert written != ui_format.layout_text(i18n, C.KEYED_CONTAINER_VERSION)
+
+
+def test_russian_wording_for_every_layout_is_what_the_interface_shows() -> None:
+    """The exact strings, so a locale drift shows up as a failing test."""
+    i18n = I18n("ru", locales_dir=LOCALES_DIR)
+    expected = {
+        C.STC_CONTAINER_VERSION: "v5 · синдромный решётчатый код",
+        C.ADAPTIVE_CONTAINER_VERSION: "v4 · адаптивные позиции",
+        C.KEYED_CONTAINER_VERSION: "v3 · ключевые позиции",
+        C.V2_CONTAINER_VERSION: "v2 · открытый заголовок · старый файл",
+    }
+    for version, text in expected.items():
+        assert ui_format.layout_text(i18n, version) == text
+    assert ui_format.written_layout_text(i18n) == expected[C.STC_CONTAINER_VERSION]
 
 
 def test_layout_labels_exist_in_every_locale() -> None:
@@ -1673,7 +1702,7 @@ def test_unknown_layout_is_named_without_inventing_a_version() -> None:
 
 def test_layout_keys_cover_exactly_the_supported_versions() -> None:
     assert set(ui_format.LAYOUT_KEYS) == {
-        C.CONTAINER_VERSION,
+        C.KEYED_CONTAINER_VERSION,
         C.ADAPTIVE_CONTAINER_VERSION,
         C.STC_CONTAINER_VERSION,
         C.V2_CONTAINER_VERSION,

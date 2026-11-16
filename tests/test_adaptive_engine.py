@@ -117,7 +117,7 @@ def test_v4_falls_back_to_v3_for_audio_like_samples(password: str) -> None:
 
     report = engine.embed_text(space, "audio carrier", password, container_version=4)
 
-    assert report.container_version == C.CONTAINER_VERSION
+    assert report.container_version == C.KEYED_CONTAINER_VERSION
     assert engine.extract_payload(space, password).data.decode("utf-8") == "audio carrier"
 
 
@@ -128,7 +128,7 @@ def test_v4_falls_back_when_part_of_the_image_is_transparent(password: str) -> N
 
     report = engine.embed_text(space, "alpha carrier", password, container_version=4)
 
-    assert report.container_version == C.CONTAINER_VERSION
+    assert report.container_version == C.KEYED_CONTAINER_VERSION
     assert engine.extract_payload(space, password).data.decode("utf-8") == "alpha carrier"
 
 
@@ -139,7 +139,7 @@ def test_v4_falls_back_when_the_payload_exceeds_its_guard(
     pixels = _opaque()
     space, report = _embed(pixels, "too big for the adaptive layout", password, 4)
 
-    assert report.container_version == C.CONTAINER_VERSION
+    assert report.container_version == C.KEYED_CONTAINER_VERSION
     assert engine.extract_payload(space, password).data.decode("utf-8") == (
         "too big for the adaptive layout"
     )
@@ -168,7 +168,7 @@ def test_v4_rejects_a_wrong_password(password: str) -> None:
 
 def test_v3_files_are_unaffected_by_the_adaptive_branch(password: str) -> None:
     space, report = _embed(_opaque(), "обычный v3", password, 3)
-    assert report.container_version == C.CONTAINER_VERSION
+    assert report.container_version == C.KEYED_CONTAINER_VERSION
     assert engine.extract_payload(space, password).data.decode("utf-8") == "обычный v3"
 
 

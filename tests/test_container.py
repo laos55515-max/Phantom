@@ -165,7 +165,7 @@ def test_version_inside_aead_is_validated() -> None:
 def test_expected_version_selects_the_layout_a_header_must_match() -> None:
     """The v2 reader accepts only a v2 header, the v3 reader only a v3 one."""
     v2_header, v2_keys = _forged_header(C.V2_CONTAINER_VERSION)
-    v3_header, v3_keys = _forged_header(C.CONTAINER_VERSION)
+    v3_header, v3_keys = _forged_header(C.KEYED_CONTAINER_VERSION)
     try:
         opened = container.open_header(
             v2_header,

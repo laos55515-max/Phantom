@@ -89,7 +89,7 @@
   "lang.en": "English",
   "lang.ru": "Русский",
   "lang.uk": "Українська",
-  "layout_current": "v{version} · ключові позиції",
+  "layout_keyed": "v{version} · ключові позиції",
   "layout_legacy": "v{version} · відкритий заголовок · старий файл",
   "layout_adaptive": "v{version} · адаптивні позиції",
   "layout_trellis": "v{version} · синдромний ґратчастий код",

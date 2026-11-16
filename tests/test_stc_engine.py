@@ -101,7 +101,7 @@ def test_v5_falls_back_to_v3_for_audio_like_samples(password: str) -> None:
 
     report = engine.embed_text(space, "audio carrier", password, container_version=5)
 
-    assert report.container_version == C.CONTAINER_VERSION
+    assert report.container_version == C.KEYED_CONTAINER_VERSION
     assert engine.extract_payload(space, password).data.decode("utf-8") == "audio carrier"
 
 
@@ -112,7 +112,7 @@ def test_v5_falls_back_when_part_of_the_image_is_transparent(password: str) -> N
 
     report = engine.embed_text(space, "alpha carrier", password, container_version=5)
 
-    assert report.container_version == C.CONTAINER_VERSION
+    assert report.container_version == C.KEYED_CONTAINER_VERSION
     assert engine.extract_payload(space, password).data.decode("utf-8") == "alpha carrier"
 
 
@@ -123,7 +123,7 @@ def test_v5_falls_back_when_no_trellis_fits(password: str, monkeypatch: pytest.M
 
     report = engine.embed_text(space, "no trellis for this", password, container_version=5)
 
-    assert report.container_version == C.CONTAINER_VERSION
+    assert report.container_version == C.KEYED_CONTAINER_VERSION
     assert engine.extract_payload(space, password).data.decode("utf-8") == "no trellis for this"
 
 
@@ -159,9 +159,77 @@ def test_a_damaged_v5_file_is_refused(password: str) -> None:
 
 
 def test_older_layouts_still_extract_next_to_v5(password: str) -> None:
-    for version in (C.CONTAINER_VERSION, C.ADAPTIVE_CONTAINER_VERSION):
+    for version in (C.KEYED_CONTAINER_VERSION, C.ADAPTIVE_CONTAINER_VERSION):
         space = ImageSamples(_opaque())
         report = engine.embed_text(space, "старый файл", password, container_version=version)
         extracted = engine.extract_payload(space, password)
         assert extracted.container_version == report.container_version
         assert extracted.data.decode("utf-8") == "старый файл"
+
+
+# ---------------------------------------------------------------------------
+# the default layout
+# ---------------------------------------------------------------------------
+
+
+def test_the_default_layout_is_the_syndrome_trellis() -> None:
+    """This build writes v5 unless the caller names another layout."""
+    assert C.CONTAINER_VERSION == C.STC_CONTAINER_VERSION
+    assert C.KEYED_CONTAINER_VERSION != C.CONTAINER_VERSION
+
+
+def test_embedding_without_a_version_writes_v5(password: str) -> None:
+    space = ImageSamples(_opaque())
+    report = engine.embed_text(space, "по умолчанию", password)
+
+    assert report.container_version == C.STC_CONTAINER_VERSION
+
+    extracted = engine.extract_payload(space, password)
+    assert extracted.container_version == C.STC_CONTAINER_VERSION
+    assert extracted.data.decode("utf-8") == "по умолчанию"
+
+
+def test_the_default_layout_spends_fewer_changes_than_the_keyed_one(password: str) -> None:
+    """The whole point of the switch: same payload, quieter carrier."""
+    default_space = ImageSamples(_opaque())
+    keyed_space = ImageSamples(_opaque())
+    cover = _opaque()
+
+    engine.embed_text(default_space, "тише", password)
+    engine.embed_text(keyed_space, "тише", password, container_version=C.KEYED_CONTAINER_VERSION)
+
+    default_changes = int(np.count_nonzero(default_space.pixels[:, :, :3] != cover))
+    keyed_changes = int(np.count_nonzero(keyed_space.pixels[:, :, :3] != cover))
+    assert default_changes < keyed_changes
+
+
+@pytest.mark.parametrize(
+    "version",
+    [
+        C.V2_CONTAINER_VERSION,
+        C.KEYED_CONTAINER_VERSION,
+        C.ADAPTIVE_CONTAINER_VERSION,
+    ],
+)
+def test_every_older_layout_is_still_readable(password: str, version: int) -> None:
+    """Files written before the switch must open, and report their own version."""
+    space = ImageSamples(_opaque())
+    report = engine.embed_text(space, "старый файл", password, container_version=version)
+
+    assert report.container_version == version
+
+    extracted = engine.extract_payload(space, password)
+    assert extracted.container_version == version
+    assert extracted.integrity_ok
+    assert extracted.data.decode("utf-8") == "старый файл"
+
+
+def test_the_default_is_what_the_trellis_falls_back_from(password: str) -> None:
+    """Falling back lowers the header to v3 — it never claims the trellis."""
+    samples = np.random.default_rng(4).integers(-2000, 2000, 40000, dtype=np.int16)
+    space = ArraySamples(samples, min_value=-32768, max_value=32767)
+
+    report = engine.embed_text(space, "звук", password)
+
+    assert report.container_version == C.KEYED_CONTAINER_VERSION
+    assert engine.extract_payload(space, password).container_version == C.KEYED_CONTAINER_VERSION

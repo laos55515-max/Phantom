@@ -80,7 +80,12 @@ def bench_engine(width: int, height: int, tmp: Path) -> None:
     print(f"\n{width}x{height} = {width * height / 1e6:.1f} MP, {bits / 1e6:.1f} M usable bits")
 
     results: dict[str, float] = {}
-    for version, label in ((C.CONTAINER_VERSION, "v3"), (C.V2_CONTAINER_VERSION, "v2")):
+    layouts = (
+        (C.KEYED_CONTAINER_VERSION, "v3"),
+        (C.STC_CONTAINER_VERSION, "v5"),
+        (C.V2_CONTAINER_VERSION, "v2"),
+    )
+    for version, label in layouts:
         space = prepared.sample_space()
         results[f"embed {label}"] = _median_seconds(
             lambda space=space, version=version: engine.embed_payload(
@@ -155,7 +160,10 @@ def bench_api(width: int, height: int, tmp: Path) -> None:
 def main() -> None:
     tmp = Path("/tmp/bench_positions")
     tmp.mkdir(parents=True, exist_ok=True)
-    print(f"python {sys.version.split()[0]}  container v{C.CONTAINER_VERSION}")
+    print(
+        f"python {sys.version.split()[0]}  "
+        f"default v{C.CONTAINER_VERSION}, keyed v{C.KEYED_CONTAINER_VERSION}"
+    )
     bench_keys()
     bench_engine(3840, 2160, tmp)  # 4K UHD, 8.3 MP
     bench_engine(4000, 3000, tmp)  # 12 MP

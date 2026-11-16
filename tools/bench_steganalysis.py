@@ -70,7 +70,7 @@ PASSWORD: Final = "benchmark password, not a secret"
 LOAD_LEVELS: Final[tuple[float, ...]] = (0.05, 0.1, 0.2, 0.4)
 LAYOUTS: Final[tuple[str, ...]] = ("v3", "v4", "v5")
 LAYOUT_VERSIONS: Final[dict[str, int]] = {
-    "v3": C.CONTAINER_VERSION,
+    "v3": C.KEYED_CONTAINER_VERSION,
     "v4": C.ADAPTIVE_CONTAINER_VERSION,
     "v5": C.STC_CONTAINER_VERSION,
 }
@@ -746,8 +746,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"carriers are written to {workdir} (temporary, use --keep to keep them)")
 
     print(
-        f"PHANTOM v{C.CONTAINER_VERSION} (keyed LSB matching) "
-        f"vs v{C.ADAPTIVE_CONTAINER_VERSION} (adaptive) · "
+        f"PHANTOM v{C.KEYED_CONTAINER_VERSION} (keyed LSB matching) · "
+        f"v{C.ADAPTIVE_CONTAINER_VERSION} (adaptive) · "
+        f"v{C.STC_CONTAINER_VERSION} (syndrome trellis, the default) · "
         f"{len(CARRIERS)} carriers of {SIZE}x{SIZE} RGB · bpp = bits per pixel"
     )
     print_calibration(calibration())

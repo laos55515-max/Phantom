@@ -22,26 +22,29 @@ APP_RELEASE_LABEL: Final = f"{APP_NAME} {APP_VERSION}"
 # ---------------------------------------------------------------------------
 # Container / crypto primitives
 # ---------------------------------------------------------------------------
-#: Current on-carrier format.  v3 keeps the v2 AEAD layout and moves *every*
-#: bit of the carrier, header included, to positions derived from the password.
-CONTAINER_VERSION: Final = 3
+#: Layout written from now on: the syndrome-trellis code of
+#: :mod:`phantom.stego.stc`.  Same key-derived header as v3/v4, but the payload is
+#: a minimum-cost set of ±1 changes over the whole body instead of an even spread.
+#: Nothing about extraction depends on the image, so the layout is exact by
+#: construction.  It supersedes v3 as what this build writes.
+STC_CONTAINER_VERSION: Final = 5
+#: The v3 keyed-positions layout: the v2 AEAD layout with *every* bit of the
+#: carrier, header included, at positions derived from the password.  Still the
+#: fallback when the trellis cannot be used — audio carriers, carriers with
+#: transparent pixels, payloads the plan cannot fit — and still readable.
+KEYED_CONTAINER_VERSION: Final = 3
 #: Experimental adaptive layout: the header still sits at key-derived positions,
 #: but the payload goes to the samples whose ±1 change is least visible, chosen by
-#: a Daubechies-8 cost map (:mod:`phantom.stego.adaptive`).  Opt-in with
+#: a Daubechies-8 cost map (:mod:`phantom.stego.adaptive`).  Reachable with
 #: ``engine.embed_payload(container_version=C.ADAPTIVE_CONTAINER_VERSION)``; never
 #: the default, because selection without syndrome coding is not the final word.
 ADAPTIVE_CONTAINER_VERSION: Final = 4
-#: Syndrome-trellis layout: same key-derived header as v3/v4, but the payload is
-#: embedded by a syndrome-trellis code (:mod:`phantom.stego.stc`) over the whole
-#: body, so the changes are a minimum-cost solution rather than a greedy pick.
-#: Nothing about the extraction depends on the image, which makes the layout
-#: exact by construction.  Opt-in with
-#: ``engine.embed_payload(container_version=C.STC_CONTAINER_VERSION)``.
-STC_CONTAINER_VERSION: Final = 5
 #: Layout written by PHANTOM 2.0.0: public header positions, keyed payload only.
 #: Still readable; written only when an older build must open the file.
 V2_CONTAINER_VERSION: Final = 2
 LEGACY_CONTAINER_VERSION: Final = 1
+#: Version this build writes.  v2, v3, v4 and v5 all stay readable.
+CONTAINER_VERSION: Final = STC_CONTAINER_VERSION
 
 AES_KEY_BITS: Final = 256
 AES_KEY_SIZE: Final = 32

@@ -53,7 +53,7 @@ _LEN_STRUCT: Final = struct.Struct(">BBI")
 SUPPORTED_VERSIONS: Final = frozenset(
     {
         C.V2_CONTAINER_VERSION,
-        C.CONTAINER_VERSION,
+        C.KEYED_CONTAINER_VERSION,
         C.ADAPTIVE_CONTAINER_VERSION,
         C.STC_CONTAINER_VERSION,
     }
