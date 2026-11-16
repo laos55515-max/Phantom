@@ -35,17 +35,20 @@ layout, whose header sat at constant-seeded positions, are still read. The
 *presence* of steganography is a separate question, and statistical analysis can
 answer it.
 
-Two experimental layouts attack the visibility of the changes themselves, both
-reachable from the engine and the benchmark but not yet wired into the interface.
-`container_version=4` is the greedy one: a Daubechies wavelet cost map measures
-where the image is busy and the payload goes there first, into foliage, edges and
-noise rather than sky, skin and flat fills. `container_version=5` gives the same
-cost map to a syndrome-trellis code, which solves for the cheapest *combination*
-of ±1 changes instead of taking the cheapest samples one by one; it needs about
-half the changes for the same payload, spends 2–3× less distortion and gains 3–4 dB
-of PSNR, and the RS estimator that greedy placement pushed to 0.098 falls back to
-the v3 level (see the CHANGELOG for the three-way table). Both are opt-in and fall
-back to v3 whenever the carrier cannot support them.
+Since **v5** this build writes the payload with a syndrome-trellis code by
+default. A Daubechies wavelet cost map measures where the image is busy, and the
+trellis then solves for the cheapest *combination* of ±1 changes that carries the
+payload, instead of spreading the bits evenly. At the same payload that needs
+about half the changes of the v3 keyed layout, spends 2–3× less distortion and
+gains 3–4 dB of PSNR, and the RS estimator that greedy placement (v4) pushed to
+0.098 falls back to the v3 level (see the CHANGELOG for the three-way table).
+
+Everything older still opens: the audit card names **v2** (old public header),
+**v3** (keyed positions), **v4** (greedy adaptive, reachable with
+`container_version=4`) or **v5** (syndrome trellis, the default). The trellis
+falls back to v3 whenever the carrier cannot support it — audio, images with
+transparent pixels, payloads that no block layout fits — and the header then says
+v3, so the file is plain v3.
 
 Read [`SECURITY.md`](SECURITY.md) for the threat model, and the in-app
 "Threat model" block for the same text in your language.
@@ -93,9 +96,10 @@ from a checkout.
    target. If verification fails, nothing is published.
 6. To extract, open the carrier, enter the password, and save the revealed text
    or file. Output file names are sanitised and the extension is forced. The
-   audit card then names the layout the file was written with — v3 (positions
-   derived from the password) or v2 (older public header, still readable) —
-   together with the cipher, KDF profile, integrity check and sizes. The size
+   audit card then names the layout the file was written with — v5 (syndrome
+   trellis, what this build writes), v4 (adaptive), v3 (keyed positions) or v2
+   (older public header) — together with the cipher, KDF profile, integrity check
+   and sizes. The size
    row also says how much of the carrier the payload takes, counted in bits the
    container really wrote: `284 B → 306 B · 12 % of the carrier`. The embed tab
    states the layout this build writes before you press Save.

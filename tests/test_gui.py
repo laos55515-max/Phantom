@@ -252,6 +252,41 @@ def test_embed_tab_says_which_layout_it_writes(app) -> None:
     assert f"v{C.CONTAINER_VERSION}" in app.format_label.cget("text")
 
 
+def test_embed_tab_names_the_trellis_layout_it_writes(app) -> None:
+    """The default layout is v5, and the tab says so in the chosen language."""
+    from phantom.ui.format import written_layout_text
+
+    app._on_language_click(app._label_by_lang["ru"])
+    app._refresh_all()
+
+    label = written_layout_text(app.i18n)
+    text = app.format_label.cget("text")
+    assert label == app.i18n.t("layout_trellis", version=C.STC_CONTAINER_VERSION)
+    assert label == f"v{C.STC_CONTAINER_VERSION} · синдромный решётчатый код"
+    assert text == app.i18n.t("lbl_embed_format", layout=label), text
+
+
+def test_extract_tab_names_a_v5_file_and_its_older_siblings(app) -> None:
+    """A v5 file gets the trellis wording; v2, v3 and v4 keep their own."""
+    from phantom.ui.format import layout_text
+
+    app._on_language_click(app._label_by_lang["ru"])
+    app._show_tab("extract")
+    for version in (
+        C.STC_CONTAINER_VERSION,
+        C.KEYED_CONTAINER_VERSION,
+        C.ADAPTIVE_CONTAINER_VERSION,
+        C.V2_CONTAINER_VERSION,
+    ):
+        app.extract_vm.result = _extracted(version)
+        app._refresh_all()
+        text = app.audit_rows["audit_layout"].cget("text")
+        assert text == layout_text(app.i18n, version)
+        assert f"v{version}" in text
+        assert text != app.i18n.t("layout_unknown")
+    assert "синдромный решётчатый код" in layout_text(app.i18n, C.STC_CONTAINER_VERSION)
+
+
 def test_format_row_names_the_layout_of_the_opened_file(app) -> None:
     from phantom.ui.format import layout_text
 

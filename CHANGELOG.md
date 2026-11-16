@@ -25,34 +25,34 @@ All notable changes to PHANTOM are recorded here. The format follows
   without it, and — unlike v4 — **nothing about extraction depends on the image**:
   the trellis comes from the carrier size, the payload length and the key, so the
   layout cannot drift and needs no verification, no mask invariant and no fallback
-  check. `engine.embed_payload(..., container_version=5)` writes it; v3 stays the
-  default and every earlier file still opens.
+  check. `engine.embed_payload(..., container_version=5)` writes it, and since the
+  change below it is what the build writes by default.
 
   Same eight carriers, same payloads, all three layouts, extraction verified on
-  every file (96/96 readable). `Σρ/бит` is the total cost of the changes divided
-  by the payload under one shared cover-derived map — the number a trellis is
-  built to minimise:
+  every file (`96 embeds in 229.1 s, 0 unreadable`). `Σρ/бит` is the total cost
+  of the changes divided by the payload under one shared cover-derived map — the
+  number a trellis is built to minimise:
 
   | load, bpp | layout | PSNR, dB | changed px, % | Σρ/bit | χ² p | RS p̂ | detected |
   |---|---|---|---|---|---|---|---|
-  | 0.05 | v3 keyed | 68.95 | 2.47 | 0.49 | 0.000 | 0.011 | 0/6 |
-  | 0.05 | v4 greedy | 68.93 | 2.39 | 0.46 | 0.000 | 0.023 | 0/6 |
-  | 0.05 | **v5 trellis** | **72.83** | **1.01** | **0.18** | 0.000 | 0.010 | 0/6 |
-  | 0.10 | v3 | 65.93 | 4.89 | 0.50 | 0.000 | 0.013 | 0/6 |
-  | 0.10 | v4 | 65.92 | 4.70 | 0.46 | 0.000 | 0.039 | 0/6 +1 suspect |
-  | 0.10 | **v5** | **70.28** | **1.80** | **0.17** | 0.000 | **0.008** | 0/6 |
-  | 0.20 | v3 | 62.91 | 9.65 | 0.50 | 0.000 | 0.016 | 0/6 |
-  | 0.20 | v4 | 62.91 | 9.22 | 0.46 | 0.000 | 0.056 | 0/6 +3 suspect |
-  | 0.20 | **v5** | **67.36** | **3.51** | **0.17** | 0.000 | **0.014** | 0/6 |
-  | 0.40 | v3 | 59.89 | 18.72 | 0.50 | 0.000 | 0.014 | 0/6 |
-  | 0.40 | v4 | 59.89 | 17.63 | 0.46 | 0.000 | 0.098 | 0/6 +3 suspect |
-  | 0.40 | **v5** | **63.23** | **8.77** | **0.22** | 0.000 | **0.014** | 0/6 |
+  | 0.05 | v3 keyed | 68.93 | 2.48 | 0.50 | 0.000 | 0.007 | 0/6 |
+  | 0.05 | v4 greedy | 68.94 | 2.38 | 0.46 | 0.000 | 0.021 | 0/6 |
+  | 0.05 | **v5 trellis** | **72.83** | **1.00** | **0.18** | 0.000 | 0.009 | 0/6 |
+  | 0.10 | v3 | 65.91 | 4.92 | 0.50 | 0.000 | 0.010 | 0/6 |
+  | 0.10 | v4 | 65.92 | 4.73 | 0.46 | 0.000 | 0.034 | 0/6 +1 suspect |
+  | 0.10 | **v5** | **70.28** | **1.80** | **0.17** | 0.000 | 0.013 | 0/6 |
+  | 0.20 | v3 | 62.90 | 9.68 | 0.50 | 0.000 | 0.011 | 0/6 |
+  | 0.20 | v4 | 62.90 | 9.24 | 0.46 | 0.000 | 0.060 | 0/6 +3 suspect |
+  | 0.20 | **v5** | **67.37** | **3.50** | **0.17** | 0.000 | **0.011** | 0/6 |
+  | 0.40 | v3 | 59.88 | 18.73 | 0.50 | 0.000 | 0.020 | 0/6 |
+  | 0.40 | v4 | 59.89 | 17.65 | 0.47 | 0.000 | 0.094 | 0/6 +3 suspect |
+  | 0.40 | **v5** | **63.24** | **8.76** | **0.22** | 0.000 | **0.023** | 0/6 |
 
   The code wins on every axis it can control: three to four decibels more PSNR,
   2–2.9× lower total distortion, 2–3× fewer changed samples, chi-square still at
   zero. The RS estimator — which reads the *density* of changes and had climbed to
-  0.098 (three carriers in the "suspect" band) under greedy v4 — comes back to the
-  v3 level, 0.008–0.014, and no carrier is flagged at any load. Spreading a
+  0.094 (three carriers in the "suspect" band) under greedy v4 — comes back to the
+  v3 level, 0.009–0.023, and no carrier is flagged at any load. Spreading a
   smaller number of changes over the whole carrier beats concentrating a larger
   number in the cheapest corner, even though the greedy layout wins the placement
   columns (`перцентиль`, `в гладких 50%`): the cost model is additive and does not
@@ -176,6 +176,54 @@ All notable changes to PHANTOM are recorded here. The format follows
   (600000 iterations) derivation, ~0.11 s on the development machine and
   independent of carrier size (0.1 % of a 12 MP embed, which is dominated by PNG
   I/O).
+
+### Changed
+
+- **v5 (syndrome trellis) is now the layout this build writes.** Embedding from
+  the interface, the API or the engine with no `container_version` produces a v5
+  file; the embed tab says so before the user presses Save
+  (`v5 · синдромный решётчатый код`) and the audit card names the layout of an
+  opened file. `C.CONTAINER_VERSION` moved to 5 and a new
+  `C.KEYED_CONTAINER_VERSION` (3) names the older keyed layout, which is now the
+  *fallback*: audio carriers, images with transparent pixels and payloads no block
+  layout fits still fall back to it, and the header then says v3. v2, v3 and v4
+  files remain readable — the suite writes one of each and extracts it next to a
+  v5 file.
+
+  Making it the default needed the cost map to stop being the bottleneck. The
+  embedder now builds costs with `adaptive.embedding_costs`: single precision,
+  reusable buffers, no full-plane temporaries, and **one wavelet scale** instead
+  of two. A single scale turned out to be not just 2× cheaper but slightly
+  better — on the eight benchmark covers at 0.2/0.4 bpp it selects changes with
+  PSNR 66.89/63.04 dB and 4.02/9.71 % of pixels touched, against 66.77/62.76 dB and
+  4.17/10.48 % for the two-scale map, because the coarse scale mostly steered
+  changes into mid-frequency texture where they buy nothing. `cost_map` — the
+  float64 map the v4 layout reproduces from the stego image — is untouched, so
+  existing v4 files still open.
+
+  Two structural fixes came out of the same work. The trellis body is now walked a
+  chunk of blocks at a time (`stc.sliced`, `STC_CHUNK_SLOTS`): a 24 MP carrier has
+  72 M usable slots, and materialising the keyed order for all of them cost 576 MB
+  of int64 indices plus another 288 MB for the costs — enough to get the process
+  OOM-killed at 4 GB. And the Feistel round now assembles its AES input in one
+  buffer instead of a zeros/astype/view/tobytes chain, which is bit-identical
+  output (checked against the previous implementation on 5 000 and 3 000 000
+  indices) for a third less time.
+
+  Measured on a 24 MP carrier with a 100 KiB payload, extraction round-tripped and
+  verified:
+
+  | | before this change | now |
+  |---|---|---|
+  | embed | did not finish (OOM at 4 GB) | 35.5 s |
+  | extract | — | 18.3 s |
+  | peak RSS | — | 984 MB |
+  | cost map alone | 43.9 s / 2.1 GB | 9 s / ~0.7 GB |
+
+- `tools/bench_steganalysis.py` and `tools/bench_positions.py` name the layouts
+  explicitly (`v3` is the keyed layout, not "the current one"), the steganalysis
+  header lists all three with the default marked, and the positions benchmark
+  gained a v5 row.
 
 ### Security
 

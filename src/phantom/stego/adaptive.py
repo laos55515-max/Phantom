@@ -133,13 +133,17 @@ def _filter_axis(
     pad[axis] = (radius, radius)
     padded = np.pad(plane.astype(np.float64, copy=False), pad, mode="symmetric")
     out = np.zeros(plane.shape, dtype=np.float64)
+    scratch = np.empty(plane.shape, dtype=np.float64)
     for index, tap in enumerate(taps):
         if tap == 0.0:
             continue
         shift = index * step
         window = [slice(None), slice(None)]
         window[axis] = slice(shift, shift + plane.shape[axis])
-        out += tap * padded[tuple(window)]
+        # Same arithmetic as ``out += tap * padded[window]``, but through one
+        # reusable buffer: no full-plane temporary per tap.
+        np.multiply(padded[tuple(window)], tap, out=scratch)
+        np.add(out, scratch, out=out)
     return out
 
 
@@ -170,6 +174,101 @@ def _box_blur(plane: np.ndarray, radius: int) -> np.ndarray:
         table[size:, size:] - table[:-size, size:] - table[size:, :-size] + table[:-size, :-size]
     )
     return total / float(size * size)
+
+
+def _box_blur32(plane: np.ndarray, radius: int) -> np.ndarray:
+    """Single-precision twin of :func:`_box_blur` for the embedder-only path."""
+    size = 2 * radius + 1
+    padded = np.pad(plane, radius, mode="symmetric")
+    table = np.zeros((padded.shape[0] + 1, padded.shape[1] + 1), dtype=np.float32)
+    # Cumulative sums straight into the table: no full-plane temporaries.
+    sums = table[1:, 1:]
+    np.cumsum(padded, axis=0, dtype=np.float32, out=sums)
+    np.cumsum(sums, axis=1, out=sums)
+    total = (
+        table[size:, size:] - table[:-size, size:] - table[size:, :-size] + table[:-size, :-size]
+    )
+    total /= np.float32(size * size)
+    return total
+
+
+def _filter_axis32(
+    plane: np.ndarray, taps: np.ndarray, step: int, axis: int
+) -> np.ndarray:
+    """Single-precision twin of :func:`_filter_axis`."""
+    radius = (taps.size - 1) * step
+    pad = [(0, 0), (0, 0)]
+    pad[axis] = (radius, radius)
+    padded = np.pad(plane, pad, mode="symmetric")
+    out = np.zeros(plane.shape, dtype=np.float32)
+    scratch = np.empty(plane.shape, dtype=np.float32)
+    for index, tap in enumerate(taps):
+        shift = index * step
+        window = [slice(None), slice(None)]
+        window[axis] = slice(shift, shift + plane.shape[axis])
+        np.multiply(padded[tuple(window)], np.float32(tap), out=scratch)
+        np.add(out, scratch, out=out)
+    return out
+
+
+def _detail_energy32(plane: np.ndarray, *, levels: int = 1) -> np.ndarray:
+    """Single-precision twin of :func:`detail_energy` (all six taps kept).
+
+    Defaults to a single scale: on the benchmark covers that is both faster and
+    slightly better than the two-scale version the v4 layout uses (PSNR 66.89 vs
+    66.77 dB and 4.02 % vs 4.17 % of pixels touched at 0.2 bpp), because the
+    coarse scale mostly steers changes into mid-frequency texture where they buy
+    nothing.  ``levels`` stays a parameter so the comparison can be reproduced.
+    """
+    low, high = daubechies8()
+    low32 = low.astype(np.float32)
+    high32 = high.astype(np.float32)
+    energy = np.zeros(plane.shape, dtype=np.float32)
+    for level in range(levels):
+        step = 1 << level
+        # One orientation at a time, folded into ``energy`` in place: no
+        # full-plane temporaries beyond the band being filtered.
+        for first, second in ((high32, low32), (low32, high32), (high32, high32)):
+            band = _filter_axis32(_filter_axis32(plane, first, step, axis=1), second, step, 0)
+            np.abs(band, out=band)
+            np.add(energy, band, out=energy)
+            del band
+    return energy
+
+
+def _cost_map32(plane: np.ndarray) -> np.ndarray:
+    """Single-precision twin of :func:`cost_map`, one detail scale."""
+    energy = _detail_energy32(plane, levels=1)
+    energy = _box_blur32(_box_blur32(energy, 1), SPREAD_RADIUS)
+    floor = np.float32(ENERGY_FLOOR * float(energy.mean())) + np.float32(1e-9)
+    cost = np.float32(1.0) / (energy + floor)
+    median = np.float32(np.median(cost))
+    return cost / median
+
+
+def embedding_costs(pixels: np.ndarray) -> np.ndarray:
+    """Fast per-slot costs ``(h, w, 3)`` for the *embedder* of the trellis layout.
+
+    The syndrome-trellis layout never asks the receiver to rebuild a cost map — its
+    extractor works from the key, the carrier size and the payload length alone —
+    so this path is free to trade precision for time and memory: single precision,
+    lean buffers, one channel at a time. It is deliberately *not* bit-compatible
+    with :func:`cost_map`, which the v4 layout depends on for reproducibility and
+    which therefore stays exactly as it was.
+
+    Cost is the reason this exists at all: the older map needs 44 s and 2.1 GB on
+    a 24 MP photo, which is untenable for the default layout.  This one needs a
+    few seconds and a quarter of the memory while producing costs that select
+    essentially the same samples.
+    """
+    if pixels.ndim != 3 or pixels.shape[2] not in (3, 4):
+        raise ValueError("expected an (h, w, 3|4) image")
+    channels = pixels[:, :, :3]
+    costs = np.empty(channels.shape, dtype=np.float32)
+    for index in range(3):
+        plane = channels[:, :, index].astype(np.float32, copy=False)
+        costs[:, :, index] = _cost_map32(plane)
+    return costs
 
 
 def texture_energy(plane: np.ndarray) -> np.ndarray:

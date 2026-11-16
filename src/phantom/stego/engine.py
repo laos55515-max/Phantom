@@ -1,4 +1,4 @@
-"""Carrier-agnostic stego engine: v3 by default, v4 and v5 on request.
+"""Carrier-agnostic stego engine: v5 by default, v3, v4 and v2 on request.
 
 Layout on the carrier (all values are bits, 1 bit per sample slot):
 
@@ -20,8 +20,9 @@ keyed — are still read: :func:`extract_payload` tries the keyed layouts first 
 falls back to v2.  Writing v2 is possible through ``container_version`` for
 carriers that an older build has to open.
 
-Two experimental layouts share that header and change only where the payload
-goes, both driven by the wavelet cost map of :mod:`phantom.stego.adaptive`:
+Two more layouts share that header and change only where the payload goes, both
+driven by the wavelet cost map of :mod:`phantom.stego.adaptive`.  One of them, v5,
+is what this build writes by default:
 
 * ``C.ADAPTIVE_CONTAINER_VERSION`` (v4) selects the cheapest samples greedily and
   writes one bit into each.  Its extractor has to recompute the cost map from the
@@ -33,7 +34,9 @@ goes, both driven by the wavelet cost map of :mod:`phantom.stego.adaptive`:
   all: the trellis is built from the carrier size, the payload length and the
   password, so the extractor reproduces it exactly.  It is the layout the
   benchmark likes: same payload, about half the changes of v4 and three to four
-  decibels more PSNR.
+  decibels more PSNR.  It is the default: :data:`phantom.core.constants.CONTAINER_VERSION`
+  is v5, and v3 (``C.KEYED_CONTAINER_VERSION``) is the fallback when the trellis
+  cannot be used.
 """
 
 from __future__ import annotations
@@ -69,6 +72,11 @@ from phantom.stego.samples import SampleSpace
 
 #: Bits handled per chunk: bounds peak memory to a few MB even for huge payloads.
 CHUNK_BITS: Final = 1 << 19
+#: Slots per pass over the syndrome trellis.  The blocks are independent, so this
+#: only bounds the working set — half a million slots is ~12 MB of indices and
+#: costs — and keeps the AES buffers small enough to stay in cache, which is
+#: measurably faster than one big sweep on a 24 MP carrier.
+STC_CHUNK_SLOTS: Final = 1 << 19
 
 
 @dataclass(frozen=True, slots=True)
@@ -235,7 +243,7 @@ def _cost_map(space: SampleSpace, *, masked: bool) -> np.ndarray | None:
         return None
     if pixels.ndim != 3 or pixels.shape[2] not in (3, 4):
         return None
-    costs = adaptive.layout_costs(pixels) if masked else adaptive.rgb_cost_map(pixels)
+    costs = adaptive.layout_costs(pixels) if masked else adaptive.embedding_costs(pixels)
     flat: np.ndarray = np.ascontiguousarray(costs.reshape(-1))
     return flat
 
@@ -325,14 +333,32 @@ def stc_layout(
     return trellis, stc.columns_of(matrix)
 
 
-def _stc_body(bootstrap: FeistelPermutation, trellis: stc.Trellis) -> np.ndarray:
+def _stc_body(
+    bootstrap: FeistelPermutation,
+    trellis: stc.Trellis,
+    start: int = 0,
+    stop: int | None = None,
+) -> np.ndarray:
     """The keyed slot order the trellis reads and writes, one block after another.
 
     ``bootstrap`` is a permutation of the usable slots, so its domain is exactly
     the room left after the header — the same number the plan was made for.
+
+    ``start``/``stop`` pick a range of *blocks*.  A 24 MP carrier has 72 M usable
+    slots, so materialising the whole body would cost 576 MB of int64 indices;
+    blocks are independent, so callers walk it a chunk at a time instead.
     """
-    body = bootstrap.apply(np.arange(C.HEADER_BITS, int(bootstrap.domain)))
-    return body[: trellis.samples]
+    first = C.HEADER_BITS + start * trellis.width
+    last = C.HEADER_BITS + (trellis.blocks if stop is None else stop) * trellis.width
+    return bootstrap.apply(np.arange(first, last))
+
+
+def _stc_block_chunks(trellis: stc.Trellis) -> list[tuple[int, int]]:
+    """Block ranges for one pass over the trellis, sized by :data:`STC_CHUNK_SLOTS`."""
+    step = max(1, STC_CHUNK_SLOTS // max(1, trellis.width))
+    return [
+        (start, min(start + step, trellis.blocks)) for start in range(0, trellis.blocks, step)
+    ]
 
 
 def _embed_stc_payload(
@@ -349,24 +375,24 @@ def _embed_stc_payload(
     """Write header, then flip the samples the trellis chose, and nothing else."""
     check_cancel(cancel)
     reader = BitReader(space)
-    body = _stc_body(bootstrap, trellis)
-    cover_bits = reader.read(body)
+    writer = BitWriter(space)
     message = bytes_to_bits(envelope.ciphertext)
-    changes = stc.encode(cover_bits, costs[body], message, trellis=trellis, columns=columns)
-    changed = np.flatnonzero(changes)
-    BitWriter(space).write(
-        bootstrap.apply(np.arange(C.HEADER_BITS)), bytes_to_bits(envelope.header)
-    )
+    writer.write(bootstrap.apply(np.arange(C.HEADER_BITS)), bytes_to_bits(envelope.header))
     progress(Stage.EMBEDDING, 0, len(envelope.ciphertext))
-    step = CHUNK_BITS
-    for start in range(0, changed.size, step):
+    for start, stop in _stc_block_chunks(trellis):
         check_cancel(cancel)
-        stop = min(start + step, changed.size)
-        picked = changed[start:stop]
-        BitWriter(space).write(body[picked], 1 - cover_bits[picked])
+        body = _stc_body(bootstrap, trellis, start, stop)
+        cover_bits = reader.read(body)
+        block = stc.sliced(trellis, start, stop)
+        window = message[start * trellis.height : stop * trellis.height]
+        changes = stc.encode(cover_bits, costs[body], window, trellis=block, columns=columns)
+        changed = np.flatnonzero(changes)
+        for offset in range(0, changed.size, CHUNK_BITS):
+            picked = changed[offset : offset + CHUNK_BITS]
+            writer.write(body[picked], 1 - cover_bits[picked])
         progress(
             Stage.EMBEDDING,
-            min(len(envelope.ciphertext), (start + picked.size) // 8),
+            min(len(envelope.ciphertext), stop * trellis.height // 8),
             len(envelope.ciphertext),
         )
 
@@ -384,8 +410,15 @@ def _read_stc_payload(
     """Read the syndrome of the stego body and unpack the message out of it."""
     check_cancel(cancel)
     progress(Stage.EXTRACTING, 0, payload_len)
-    bits = BitReader(space).read(_stc_body(bootstrap, trellis))
-    message = stc.decode(bits, trellis=trellis, columns=columns)
+    reader = BitReader(space)
+    message = np.zeros(trellis.capacity, dtype=np.uint8)
+    for start, stop in _stc_block_chunks(trellis):
+        check_cancel(cancel)
+        body = _stc_body(bootstrap, trellis, start, stop)
+        block = stc.sliced(trellis, start, stop)
+        message[start * trellis.height : stop * trellis.height] = stc.decode(
+            reader.read(body), trellis=block, columns=columns
+        )
     progress(Stage.EXTRACTING, payload_len, payload_len)
     return bits_to_bytes(message[: payload_len * 8])
 
@@ -450,7 +483,7 @@ def _open_layout(
     header is placed or sealed.
     """
     keyed_versions = frozenset(
-        {C.CONTAINER_VERSION, C.ADAPTIVE_CONTAINER_VERSION, C.STC_CONTAINER_VERSION}
+        {C.KEYED_CONTAINER_VERSION, C.ADAPTIVE_CONTAINER_VERSION, C.STC_CONTAINER_VERSION}
     )
     keys = _layout_keys(space, password, cancel=cancel)
     handed_over = False
@@ -564,16 +597,18 @@ def embed_payload(
 ) -> EmbedReport:
     """Seal ``blob`` and write it into ``space`` with LSB matching.
 
-    ``container_version`` selects the layout: the current one places every bit
-    at password-derived positions, ``C.ADAPTIVE_CONTAINER_VERSION`` sends the
+    ``container_version`` selects the layout: the default is
+    ``C.STC_CONTAINER_VERSION`` (syndrome trellis), ``C.KEYED_CONTAINER_VERSION``
+    places every bit at password-derived positions,
+    ``C.ADAPTIVE_CONTAINER_VERSION`` sends the
     payload to the samples a Daubechies-8 cost map calls cheapest (edges, noise,
-    foliage) instead of spreading it evenly, ``C.STC_CONTAINER_VERSION`` embeds it
-    with a syndrome-trellis code over the whole body, and
+    foliage) instead of spreading it evenly, ``C.STC_CONTAINER_VERSION`` — the
+    default — embeds it with a syndrome-trellis code over the whole body, and
     ``C.V2_CONTAINER_VERSION`` reproduces the older public-header layout so a
     build that predates v3 can still open the file.  The default is always the
-    current version.
+    current version, and every earlier layout stays readable.
 
-    Both experimental layouts fall back to v3 when the carrier is not an opaque
+    Both adaptive layouts fall back to v3 when the carrier is not an opaque
     image (audio, RGBA with transparent pixels) or when their structure does not
     fit the payload; the header then says v3 and the file is ordinary v3.  The
     v4 layout is additionally verified before it is used, because a layout that
@@ -603,7 +638,7 @@ def embed_payload(
             layout = stc_layout(space, bytes(keys.rank_key), total_bits)
             candidate = _stc_costs(space) if layout is not None else None
             if layout is None or candidate is None:
-                version = C.CONTAINER_VERSION
+                version = C.KEYED_CONTAINER_VERSION
             else:
                 trellis, columns = layout
                 cost_map = candidate
@@ -612,7 +647,7 @@ def embed_payload(
                 space, bootstrap, bytes(keys.rank_key), total_bits
             )
             if slots is None:
-                version = C.CONTAINER_VERSION
+                version = C.KEYED_CONTAINER_VERSION
             else:
                 cover_values = np.asarray(space.gather(slots), dtype=np.uint8)
         envelope = container.seal(
@@ -659,7 +694,7 @@ def embed_payload(
                     space.scatter(slots, cover_values)
             if not settled:
                 envelope.wipe()
-                version = C.CONTAINER_VERSION
+                version = C.KEYED_CONTAINER_VERSION
                 envelope = container.seal(
                     blob,
                     password,

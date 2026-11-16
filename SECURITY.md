@@ -39,7 +39,9 @@ may be re-encoded before it reaches the recipient.
   AES-256-GCM or guessing the password. Password guesses cost one Argon2id
   evaluation each (96 MiB, t=3), which is deliberately expensive.
 - **Content, and now the layout.** Since format v3 every bit of the carrier —
-  the 50-byte header included — sits at a position derived from the password:
+  the 50-byte header included — sits at a position derived from the password.
+  Since v5 the same holds, and the payload is additionally placed by a
+  syndrome-trellis code driven by a wavelet cost map:
 
   ```
   B = Feistel(position_key(password), N)      # one keyed bijection over the carrier
@@ -67,7 +69,8 @@ may be re-encoded before it reaches the recipient.
   version is authenticated inside the header, so a v2 header never passes as v3
   or the other way round. Writing v2 is possible through the engine's
   `container_version` argument for carriers an older build has to open; the app
-  itself always writes the current version.
+  itself always writes the current version, which is v5 (syndrome trellis) unless
+  the carrier cannot support it, in which case the file is ordinary v3.
 - **Tampering.** Any modification of the header, the ciphertext, or the
   authenticated data (header bytes, container version, KDF profile id) makes
   decryption fail with an integrity error. The app never returns partially
@@ -94,9 +97,10 @@ may be re-encoded before it reaches the recipient.
   statistical steganalysis (chi-square, RS analysis, sample-pair analysis).
   Embedding a large payload changes the statistics of the lowest bit plane.
   Keeping the payload below ~70 % of capacity reduces, but does not remove, the
-  signal. The experimental adaptive layouts (v4, v5) reduce the signal — v5 uses
-  about half the changes of the default layout and concentrates them where the
-  image is busy — but they do not make embedding undetectable, and a detector
+  signal. The adaptive layouts (v4 and v5, the latter the default since this
+  change) reduce the signal — v5 uses about half the changes of the keyed v3
+  layout and concentrates them where the image is busy — but they do not make
+  embedding undetectable, and a detector
   written against this scheme specifically would still have something to work
   with: the number of changes is public, only their placement is keyed. This is a
   property of the method, not a bug to be patched.

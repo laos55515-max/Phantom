@@ -22,9 +22,11 @@ class Translator(Protocol):
     def t(self, key: str, **params: object) -> str: ...
 
 
-#: Locale key per layout version this build can read.
+#: Locale key per layout version this build can read and write.  ``C.CONTAINER_VERSION``
+#: is deliberately absent: it *is* one of the four, and listing it twice would
+#: silently drop a label, so the mapping names layouts rather than "current".
 LAYOUT_KEYS: Final[dict[int, str]] = {
-    C.CONTAINER_VERSION: "layout_current",
+    C.KEYED_CONTAINER_VERSION: "layout_keyed",
     C.ADAPTIVE_CONTAINER_VERSION: "layout_adaptive",
     C.STC_CONTAINER_VERSION: "layout_trellis",
     C.V2_CONTAINER_VERSION: "layout_legacy",
@@ -39,12 +41,12 @@ def layout_key(version: int) -> str:
 
 
 def layout_text(translator: Translator, version: int) -> str:
-    """Human label such as ``v3 · keyed positions`` for one layout version."""
+    """Human label such as ``v5 · syndrome-trellis positions`` for one version."""
     return translator.t(layout_key(version), version=version)
 
 
 def written_layout_text(translator: Translator) -> str:
-    """Label for the layout this build writes, which is always the current one."""
+    """Label for the layout this build writes: the syndrome-trellis one (v5)."""
     return layout_text(translator, C.CONTAINER_VERSION)
 
 

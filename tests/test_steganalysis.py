@@ -19,6 +19,8 @@ from types import ModuleType
 import numpy as np
 import pytest
 
+from phantom.core import constants as C
+
 TOOL = Path(__file__).resolve().parent.parent / "tools" / "bench_steganalysis.py"
 
 
@@ -169,16 +171,24 @@ def test_blob_for_rejects_a_load_that_does_not_fit(bench: ModuleType) -> None:
         bench.packed_blob_for(0.5, 64)
 
 
+@pytest.mark.parametrize(
+    ("layout", "version"),
+    [
+        ("v5", C.STC_CONTAINER_VERSION),
+        ("v4", C.ADAPTIVE_CONTAINER_VERSION),
+        ("v3", C.KEYED_CONTAINER_VERSION),
+    ],
+)
 def test_embed_png_writes_matching_and_reads_back_the_same_pixels(
-    bench: ModuleType, tmp_path: Path
+    bench: ModuleType, tmp_path: Path, layout: str, version: int
 ) -> None:
     """The tool must drive the real engine, so only ±1 moves and nothing is lost."""
     cover = _rgb(bench)
     target = tmp_path / "stego.png"
 
-    stego, version, verified = bench.embed_png(cover, 0.3, target)
+    stego, written, verified = bench.embed_png(cover, 0.3, target, layout=layout)
 
-    assert version == 3, "the default layout is still the keyed v3 one"
+    assert written == version, f"the bench must write the layout it was asked for: {layout}"
     assert verified, "the bench must prove the file it wrote can be read back"
     assert target.stat().st_size > 0
     delta = stego.astype(np.int16) - cover.astype(np.int16)

@@ -89,7 +89,7 @@
   "lang.en": "English",
   "lang.ru": "Русский",
   "lang.uk": "Українська",
-  "layout_current": "v{version} · keyed positions",
+  "layout_keyed": "v{version} · keyed positions",
   "layout_legacy": "v{version} · public header · older file",
   "layout_adaptive": "v{version} · adaptive positions",
   "layout_trellis": "v{version} · syndrome-trellis positions",
