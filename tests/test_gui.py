@@ -259,11 +259,11 @@ def test_embed_tab_names_the_trellis_layout_it_writes(app) -> None:
     app._on_language_click(app._label_by_lang["ru"])
     app._refresh_all()
 
+    label = written_layout_text(app.i18n)
     text = app.format_label.cget("text")
-    assert written_layout_text(app.i18n) == app.i18n.t(
-        "layout_trellis", version=C.STC_CONTAINER_VERSION
-    )
-    assert text == f"v{C.STC_CONTAINER_VERSION} · синдромный решётчатый код", text
+    assert label == app.i18n.t("layout_trellis", version=C.STC_CONTAINER_VERSION)
+    assert label == f"v{C.STC_CONTAINER_VERSION} · синдромный решётчатый код"
+    assert text == app.i18n.t("lbl_embed_format", layout=label), text
 
 
 def test_extract_tab_names_a_v5_file_and_its_older_siblings(app) -> None:
