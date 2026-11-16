@@ -50,6 +50,27 @@ def written_layout_text(translator: Translator) -> str:
     return layout_text(translator, C.CONTAINER_VERSION)
 
 
+def stage_line(
+    translator: Translator,
+    key: str,
+    *,
+    seconds: int | None = None,
+    **params: object,
+) -> str:
+    """One footer line: the stage text, with the elapsed time while a job runs.
+
+    ``Встраивание  ·  25%`` becomes ``Встраивание  ·  25% · 12 с``.  A phase with no
+    honest fraction says so instead (``Анализ изображения…``), and the clock is the
+    same either way — half a minute of silence reads as a hang, a number that
+    keeps counting does not.  Kept here, free of Tk, so the wording is testable
+    without a display.
+    """
+    text = translator.t(key, **params)
+    if seconds is None:
+        return text
+    return translator.t("lbl_progress_elapsed", progress=text, seconds=seconds)
+
+
 def size_text(
     payload: ExtractedPayload,
     capacity: Capacity | None,

@@ -2,7 +2,10 @@
 
 The whole core/stego/audio surface accepts ``progress(stage, done, total)`` and
 ``cancel: threading.Event`` so that the UI can move work off the Tk thread and
-still show truthful, deterministic progress (unknown only for the KDF).
+still show truthful, deterministic progress.  Two phases cannot report a fraction
+honestly — the Argon2id run and the wavelet cost map, each one opaque pass over
+its input — so they announce themselves as indeterminate and the interface shows
+a spinner with the elapsed time instead of a frozen 0 %.
 """
 
 from __future__ import annotations
@@ -22,6 +25,7 @@ class Stage(Enum):
     READING = "reading"
     COMPRESSING = "compressing"
     ESTIMATING = "estimating"
+    ANALYSING = "analysing"
     KDF = "kdf"
     ENCRYPTING = "encrypting"
     EMBEDDING = "embedding"
@@ -33,8 +37,9 @@ class Stage(Enum):
     WIPING = "wiping"
 
 
-#: Stages whose duration cannot be predicted honestly.
-INDETERMINATE_STAGES: Final[frozenset[Stage]] = frozenset({Stage.KDF})
+#: Stages whose duration cannot be predicted honestly: the Argon2id run and the
+#: wavelet cost map.  ``done``/``total`` carry no meaning for these.
+INDETERMINATE_STAGES: Final[frozenset[Stage]] = frozenset({Stage.KDF, Stage.ANALYSING})
 
 
 class ProgressFn(Protocol):

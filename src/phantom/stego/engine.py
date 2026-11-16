@@ -230,6 +230,22 @@ def _layout_keys(
         secure_zeroize(key)
 
 
+def _cost_pixels(space: SampleSpace) -> np.ndarray | None:
+    """Pixels a wavelet cost map can be computed from, or ``None``.
+
+    Audio carries no pixels and a partly transparent image has samples the writer
+    must not touch, so neither can be analysed — and the caller must not announce
+    an analysis pass it will not run.
+    """
+    pixels = getattr(space, "pixels", None)
+    if pixels is None or not getattr(space, "is_opaque", False):
+        return None
+    if pixels.ndim != 3 or pixels.shape[2] not in (3, 4):
+        return None
+    analysed: np.ndarray = pixels
+    return analysed
+
+
 def _cost_map(space: SampleSpace, *, masked: bool) -> np.ndarray | None:
     """Per-slot cost of a ±1 change, or ``None`` when the carrier is not an image.
 
@@ -238,10 +254,8 @@ def _cost_map(space: SampleSpace, *, masked: bool) -> np.ndarray | None:
     reproducible without the cover.  v5 needs no such thing — its extractor never
     looks at costs — so it reads the finer, unmasked map.
     """
-    pixels = getattr(space, "pixels", None)
-    if pixels is None or not getattr(space, "is_opaque", False):
-        return None
-    if pixels.ndim != 3 or pixels.shape[2] not in (3, 4):
+    pixels = _cost_pixels(space)
+    if pixels is None:
         return None
     costs = adaptive.layout_costs(pixels) if masked else adaptive.embedding_costs(pixels)
     flat: np.ndarray = np.ascontiguousarray(costs.reshape(-1))
@@ -418,6 +432,13 @@ def _read_stc_payload(
         block = stc.sliced(trellis, start, stop)
         message[start * trellis.height : stop * trellis.height] = stc.decode(
             reader.read(body), trellis=block, columns=columns
+        )
+        # A whole-body trellis spends seconds per megapixel here; report per chunk
+        # so the bar moves instead of sitting at zero until the payload appears.
+        progress(
+            Stage.EXTRACTING,
+            min(payload_len, stop * trellis.height // 8),
+            payload_len,
         )
     progress(Stage.EXTRACTING, payload_len, payload_len)
     return bits_to_bytes(message[: payload_len * 8])
@@ -636,13 +657,20 @@ def embed_payload(
         cost_map: np.ndarray = np.zeros(0, dtype=np.float64)
         if version == C.STC_CONTAINER_VERSION:
             layout = stc_layout(space, bytes(keys.rank_key), total_bits)
-            candidate = _stc_costs(space) if layout is not None else None
+            candidate = None
+            if layout is not None and _cost_pixels(space) is not None:
+                # One opaque pass over the image: say so, so the interface shows a
+                # spinner with the elapsed time instead of a frozen zero.
+                progress(Stage.ANALYSING, 0, 0)
+                candidate = _stc_costs(space)
             if layout is None or candidate is None:
                 version = C.KEYED_CONTAINER_VERSION
             else:
                 trellis, columns = layout
                 cost_map = candidate
         elif version == C.ADAPTIVE_CONTAINER_VERSION:
+            if _cost_pixels(space) is not None:
+                progress(Stage.ANALYSING, 0, 0)
             slots = adaptive_payload_slots(
                 space, bootstrap, bytes(keys.rank_key), total_bits
             )

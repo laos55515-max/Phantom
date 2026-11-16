@@ -8,6 +8,41 @@ All notable changes to PHANTOM are recorded here. The format follows
 
 ### Added
 
+- **Long operations now say what they are doing.** With v5 as the default a 24 MP
+  photo takes about half a minute to embed, and the interface used to show a
+  progress bar frozen at 0 % for the first stretch of it — indistinguishable from
+  a hang. Four changes fix that:
+
+  * a new `Stage.ANALYSING` for the wavelet cost map, the one phase that cannot
+    report a fraction (it is a single opaque pass over the image). `Stage` values
+    double as locale keys, so it is named in all three languages, and it joins
+    `Stage.KDF` in `INDETERMINATE_STAGES` — the interface already knew how to show
+    a spinner for those, it just had nothing to spin for;
+  * the engine announces it before the cost map is computed (both for the v5
+    trellis and for the v4 greedy layout) and only when the carrier is an opaque
+    image, so audio and transparent-pixel carriers do not claim an analysis they
+    never run;
+  * `_read_stc_payload` reports every block chunk instead of only the endpoints:
+    extracting a 24 MP file used to sit at 0 % for ten seconds and then jump to
+    100 %;
+  * the footer carries an elapsed-time counter (`C.STAGE_TICK_MS`, one repaint per
+    second), so a phase that reports nothing still visibly moves. It stops and
+    resets when the operation ends — including on cancel and failure, which used
+    to leave the last "embedding · 74 %" line on screen forever — and a language
+    switch mid-operation repaints the live line in the new language rather than
+    reverting it to "idle".
+
+  The line itself is built by `ui.format.stage_line`, which is free of Tk, so the
+  wording is covered by the headless tests; the tests also pin that the clock is a
+  suffix (`Встраивание  ·  25% · 12 с`), that an indeterminate phase never shows a
+  percentage, and that a stuck phase keeps counting past a minute without changing
+  units.
+
+- **`SECURITY.md` states the price of the half-resolution cost map** — 0.25 dB at
+  0.2 bpp, 0.18 dB at 0.4 bpp, measured against the exact map — instead of leaving
+  it in the CHANGELOG only. The READMEs mention the trade-off and the new progress
+  feedback.
+
 - **Experimental syndrome-trellis layout (v5).** The adaptive layout picked the
   cheapest samples and wrote one bit into each — greedy, and blind to the fact
   that one ±1 change can satisfy several parity constraints at once. The new

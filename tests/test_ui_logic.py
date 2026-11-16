@@ -1723,6 +1723,90 @@ def test_every_layout_the_engine_can_write_has_its_own_label() -> None:
         assert text != i18n.t("layout_unknown")
 
 
+def test_stage_line_appends_the_clock_only_when_asked() -> None:
+    """The footer's text builder: no display needed, so it is pinned here."""
+    i18n = I18n("ru", locales_dir=LOCALES_DIR)
+
+    plain = ui_format.stage_line(
+        i18n, "lbl_progress_stage", stage=i18n.t("stage.embedding"), pct="25"
+    )
+    assert plain == i18n.t(
+        "lbl_progress_stage", stage=i18n.t("stage.embedding"), pct="25"
+    )
+    assert "с" not in plain.split("·")[-1], plain
+
+    counted = ui_format.stage_line(
+        i18n, "lbl_progress_stage", seconds=12, stage=i18n.t("stage.embedding"), pct="25"
+    )
+    assert "25" in counted and "12" in counted
+    assert counted.startswith(plain), "the clock is a suffix, not a rewrite"
+    assert "{" not in counted
+
+
+def test_stage_line_names_a_phase_that_cannot_report_a_fraction() -> None:
+    i18n = I18n("ru", locales_dir=LOCALES_DIR)
+    line = ui_format.stage_line(
+        i18n, "lbl_progress_indeterminate", seconds=3, stage=i18n.t("stage.analysing")
+    )
+    assert line.startswith("Анализ изображения")
+    assert "%" not in line, "an indeterminate phase must not claim a share"
+    assert line.endswith("3 с"), line
+
+
+def test_stage_line_never_leaves_a_placeholder_in_any_locale() -> None:
+    for code in ("en", "ru", "uk"):
+        i18n = I18n(code, locales_dir=LOCALES_DIR)
+        for key in ("lbl_progress_stage", "lbl_progress_indeterminate"):
+            for seconds in (None, 0, 59):
+                line = ui_format.stage_line(
+                    i18n, key, seconds=seconds, stage=i18n.t("stage.analysing"), pct="40"
+                )
+                assert "{" not in line and "}" not in line, (code, key, line)
+                assert i18n.t("stage.analysing") in line
+                if seconds is not None:
+                    assert str(seconds) in line
+
+
+def test_a_stuck_phase_keeps_counting_past_a_minute() -> None:
+    """No unit switch at 60 s: "1 с" → "95 с" stays readable and monotonic."""
+    i18n = I18n("en", locales_dir=LOCALES_DIR)
+    values = [
+        ui_format.stage_line(
+            i18n, "lbl_progress_indeterminate", seconds=seconds,
+            stage=i18n.t("stage.analysing"),
+        )
+        for seconds in (1, 59, 60, 95)
+    ]
+    assert all("Analyzing the image" in value for value in values)
+    assert values == sorted(values, key=len), "the line grows with the number"
+
+
+def test_the_long_phases_have_wording_in_every_locale() -> None:
+    """The stage the interface shows while the cost map runs, and its clock."""
+    expected = {
+        "en": ("Analyzing the image", "{progress} · {seconds}s"),
+        "ru": ("Анализ изображения", "{progress} · {seconds} с"),
+        "uk": ("Аналіз зображення", "{progress} · {seconds} с"),
+    }
+    for code, (stage_text, elapsed) in expected.items():
+        i18n = I18n(code, locales_dir=LOCALES_DIR)
+        assert i18n.t("stage.analysing") == stage_text
+        assert i18n.t("lbl_progress_elapsed") == elapsed
+        line = i18n.t("lbl_progress_indeterminate", stage=stage_text)
+        counted = i18n.t("lbl_progress_elapsed", progress=line, seconds=12)
+        assert stage_text in counted
+        assert "12" in counted
+        assert "{" not in counted, "a placeholder was left unfilled"
+
+
+def test_every_stage_has_a_name_in_every_locale() -> None:
+    """A stage without a label would surface as a raw key in the footer."""
+    for code in ("en", "ru", "uk"):
+        i18n = I18n(code, locales_dir=LOCALES_DIR)
+        for stage in Stage:
+            assert i18n.has(f"stage.{stage.value}"), f"{code} misses stage.{stage.value}"
+
+
 def test_the_embed_hint_mentions_the_layout_it_will_write() -> None:
     i18n = I18n("en", locales_dir=LOCALES_DIR)
     text = i18n.t("lbl_embed_format", layout=ui_format.written_layout_text(i18n))

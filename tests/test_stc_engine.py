@@ -16,6 +16,7 @@ import pytest
 from phantom.core import constants as C
 from phantom.core.errors import WrongPasswordOrNoData
 from phantom.core.payload import Payload, pack_payload
+from phantom.core.progress import INDETERMINATE_STAGES, Stage
 from phantom.stego import engine, stc
 from phantom.stego.samples import ArraySamples, ImageSamples
 
@@ -233,3 +234,72 @@ def test_the_default_is_what_the_trellis_falls_back_from(password: str) -> None:
 
     assert report.container_version == C.KEYED_CONTAINER_VERSION
     assert engine.extract_payload(space, password).container_version == C.KEYED_CONTAINER_VERSION
+
+
+# ---------------------------------------------------------------------------
+# progress reporting: a 24 MP embed spends seconds in phases nobody can guess
+# ---------------------------------------------------------------------------
+class _Recorder:
+    """Collects ``(stage, done, total)`` triples from the engine's callbacks."""
+
+    def __init__(self) -> None:
+        self.events: list[tuple[Stage, int, int]] = []
+
+    def __call__(self, stage: Stage, done: int, total: int) -> None:
+        self.events.append((stage, done, total))
+
+    def stages(self) -> list[Stage]:
+        return [stage for stage, _done, _total in self.events]
+
+
+def test_v5_embed_announces_the_cost_map_before_anything_else(password: str) -> None:
+    """The cost map is one opaque pass: it must show up as an indeterminate stage."""
+    space = ImageSamples(_opaque())
+    recorder = _Recorder()
+
+    engine.embed_text(
+        space, "фаза анализа", password, container_version=C.STC_CONTAINER_VERSION,
+        progress=recorder,
+    )
+
+    stages = recorder.stages()
+    assert stages, "the engine reported nothing at all"
+    assert Stage.ANALYSING in stages
+    assert stages.index(Stage.ANALYSING) < stages.index(Stage.EMBEDDING), (
+        f"the analysis must be announced before the first bit is written: {stages}"
+    )
+    announced = recorder.events[stages.index(Stage.ANALYSING)]
+    assert announced[1:] == (0, 0), "no fraction can be honest here"
+    assert announced[0] in INDETERMINATE_STAGES
+
+
+def test_v5_extract_reports_progress_while_it_reads(password: str) -> None:
+    """Extraction used to report 0 % and then 100 %; the bar has to move."""
+    rng = np.random.default_rng(15)
+    pixels = rng.integers(0, 256, (512, 512, 3), dtype=np.uint8)
+    space = ImageSamples(pixels)
+    blob = _payload_blob(4_000)
+    engine.embed_payload(space, blob, password, container_version=C.STC_CONTAINER_VERSION)
+
+    recorder = _Recorder()
+    engine.extract_payload(ImageSamples(space.pixels.copy()), password, progress=recorder)
+
+    reporting = [done for stage, done, total in recorder.events if stage is Stage.EXTRACTING]
+    assert len(reporting) >= 3, f"only {reporting} — the bar would stall"
+    assert reporting == sorted(reporting), "progress must never go backwards"
+    assert reporting[0] == 0
+    assert reporting[-1] == max(reporting)
+    fractions = {round(done / 4000, 2) for done in reporting if done}
+    assert len(fractions) >= 2, "at least two distinct non-zero positions"
+
+
+def test_analysing_is_skipped_when_the_trellis_cannot_be_used(password: str) -> None:
+    """Audio falls back to v3 before any image analysis happens."""
+    samples = np.random.default_rng(4).integers(-2000, 2000, 40000, dtype=np.int16)
+    space = ArraySamples(samples, min_value=-32768, max_value=32767)
+    recorder = _Recorder()
+
+    engine.embed_text(space, "звук", password, container_version=C.STC_CONTAINER_VERSION,
+                      progress=recorder)
+
+    assert Stage.ANALYSING not in recorder.stages()

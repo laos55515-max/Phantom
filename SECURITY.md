@@ -97,13 +97,20 @@ may be re-encoded before it reaches the recipient.
   statistical steganalysis (chi-square, RS analysis, sample-pair analysis).
   Embedding a large payload changes the statistics of the lowest bit plane.
   Keeping the payload below ~70 % of capacity reduces, but does not remove, the
-  signal. The adaptive layouts (v4 and v5, the latter the default since this
-  change) reduce the signal — v5 uses about half the changes of the keyed v3
-  layout and concentrates them where the image is busy — but they do not make
-  embedding undetectable, and a detector
-  written against this scheme specifically would still have something to work
-  with: the number of changes is public, only their placement is keyed. This is a
-  property of the method, not a bug to be patched.
+  signal. The adaptive layouts (v4 and v5, the latter the default) reduce the
+  signal — v5 uses about half the changes of the keyed v3 layout and concentrates
+  them where the image is busy — but they do not make embedding undetectable, and
+  a detector written against this scheme specifically would still have something
+  to work with: the number of changes is public, only their placement is keyed.
+  This is a property of the method, not a bug to be patched.
+- **The cost map is computed at half resolution, and that is a deliberate
+  trade-off.** v5 decides where to write from a wavelet cost map built on a 2×2
+  downscaled copy of each channel (`adaptive.COST_DECIMATION`). On the benchmark
+  covers that costs 0.25 dB of PSNR at 0.2 bpp and 0.18 dB at 0.4 bpp — measured
+  66.64/62.86 dB against 66.89/63.04 dB for the exact map — in exchange for four
+  times less work, which is the difference between a 24 MP photo embedding in 28
+  seconds and in a minute. It is not a free lunch and it is not hidden: the exact
+  map (`adaptive.cost_map`) is still there and is what the v4 layout uses.
 - **Metadata.** PNG chunks outside `IDAT` keep whatever the carrier had. File
   timestamps, size and EXIF-like metadata survive.
 - **Re-encoding.** JPEG export, messenger "photo" mode, resizing, cropping,
