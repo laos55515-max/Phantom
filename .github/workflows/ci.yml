@@ -81,15 +81,21 @@ jobs:
         # downloads are not always reachable.
         id: gui
         # The module now covers four tabs, the scroll router and the metadata
-        # panel's jobs; 12 minutes left no room for a slow runner, and a step
-        # timeout hides which test was slow.
-        timeout-minutes: 20
+        # panel's jobs; the run itself is capped at 8 minutes by ``timeout``
+        # below, so this only catches a hang outside the test process.
+        timeout-minutes: 15
         continue-on-error: true
         run: |
           set -o pipefail
-          xvfb-run -a -s "-screen 0 1280x1024x24" python -m pytest -ra -m gui -v \
-            --durations=20 --timeout=120 --timeout-method=thread \
-            -o faulthandler_timeout=120 2>&1 | tee gui.log
+          # A wedged job leaves a non-daemon thread behind and the interpreter
+          # waits for it for ever, so a hard wall-clock cap is the only thing that
+          # ends the step early.  SIGABRT is deliberate: faulthandler is enabled,
+          # so Python dumps every thread at the moment of the hang instead of the
+          # step being killed silently twenty minutes later.
+          timeout --preserve-status --signal=ABRT --kill-after=20 480 \
+            xvfb-run -a -s "-screen 0 1280x1024x24" python -m pytest -ra -m gui -v \
+              --durations=20 --timeout=120 --timeout-method=thread \
+              -o faulthandler_timeout=120 2>&1 | tee gui.log
       - name: GUI log
         if: always()
         run: |
@@ -120,13 +126,19 @@ jobs:
           # and the tail is the part that explains a timeout.
           for line in lines[-25:]:
               print(f"::notice::tail: {line[:900]}")
-          # Thread dumps a wedged GUI job left behind (tests/test_gui.py).
-          stacks = pathlib.Path("gui_stacks.txt")
-          if stacks.exists():
-              dumped = stacks.read_text(errors="replace").splitlines()
-              print(f"::notice::gui_stacks.txt: {len(dumped)} lines")
-              for line in dumped[-40:]:
-                  print(f"::warning::stacks: {line[:900]}")
+          # Thread dumps a wedged GUI job left behind (tests/test_gui.py) and the
+          # dump faulthandler writes when the step is aborted.  Only the frames
+          # that matter are printed: the thread headers and the application code.
+          frames = [
+              line
+              for line in lines
+              if line.startswith(("Thread ", "Current thread", "=== wedged", "Fatal Python error"))
+              or "/phantom/" in line
+              or "tests/test_gui.py" in line
+          ]
+          print(f"::notice::frames: {len(frames)} lines")
+          for line in frames[:30]:
+              print(f"::warning::frame: {line.strip()[:400]}")
           for line in interesting[-5:]:
               print(f"::error::{line[:900]}")
           PY
