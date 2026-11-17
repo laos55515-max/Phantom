@@ -1209,6 +1209,7 @@ def test_the_metadata_tab_and_its_field_list_are_routed(app) -> None:
 
 
 def test_the_metadata_tab_scrolls_under_the_pointer(app) -> None:
+    """Five cards make this the tallest tab: it must move where the room is."""
     _reveal(app)
     app._show_tab("metadata")
     app.root.update()
@@ -1216,10 +1217,14 @@ def test_the_metadata_tab_scrolls_under_the_pointer(app) -> None:
     assert area is not None
     before = _make_scrollable(area.canvas)
     x, y = _point_over(app, area)
+    # The tab may already sit at the bottom of its own document, so a downward
+    # notch would be a no-op and the test would blame the router for the layout.
+    delta = 120 if before > 0.05 else -120
 
-    _wheel_on_root(app, delta=-120, x=x, y=y)
+    _wheel_on_root(app, delta=delta, x=x, y=y)
 
-    assert float(area.canvas.yview()[0]) > before
+    after = float(area.canvas.yview()[0])
+    assert after != pytest.approx(before), f"the wheel did not move the tab: {before} → {after}"
 
 
 def test_choosing_a_file_fills_the_tab(app, tmp_path: Path, dialogs) -> None:
