@@ -30,6 +30,8 @@ from phantom.core.errors import (
 from phantom.core.payload import PayloadKind
 from phantom.core.progress import INDETERMINATE_STAGES, Stage
 from phantom.i18n import I18n
+from phantom.metadata.cleaner import CleaningOutcome
+from phantom.metadata.models import MetadataReport
 from phantom.ui import clipboard as clip
 from phantom.ui import format as ui_format
 from phantom.ui import theme as T
@@ -38,6 +40,7 @@ from phantom.ui.bindings import I18nBinder
 from phantom.ui.debounce import Debouncer
 from phantom.ui.dnd import DndProvider, DropTarget
 from phantom.ui.format import layout_text, size_text, written_layout_text
+from phantom.ui.metadata_panel import MetadataPanel
 from phantom.ui.result_window import ResultWindow
 from phantom.ui.scroll import DIAGNOSTICS_ENV, ScrollRouter
 from phantom.ui.settings import AppSettings, SettingsStore
@@ -124,6 +127,7 @@ class PhantomApp:
         self._mode_by_label: dict[str, PayloadMode] = {}
         self._tab_by_label: dict[str, str] = {}
         self._drop_zones: list[Any] = []
+        self.metadata_panel: MetadataPanel | None = None
         # One application-wide router: the pointer decides which tab scrolls,
         # so nothing has to be rebound when a card or a language appears.
         self._scroll = ScrollRouter(root)
@@ -152,7 +156,7 @@ class PhantomApp:
         """Drop the application-wide wheel routing this window installed."""
         self._scroll.uninstall()
 
-    def _seat_scroll(self, scroll: Any) -> None:
+    def _seat_scroll(self, scroll: Any, *, name: str = "") -> None:
         """Register one scrollable area; the wheel itself is bound once, globally.
 
         Binding every widget of a tab looked robust and was not: the router now
@@ -162,7 +166,8 @@ class PhantomApp:
         canvas = CTkAdapter.scroll_canvas(scroll)
         if canvas is None:
             return
-        self._scroll.register(scroll, canvas, name=f"tab{len(self._scroll_frames) + 1}")
+        label = name or f"tab{len(self._scroll_frames) + 1}"
+        self._scroll.register(scroll, canvas, name=label)
         self._scroll_frames.append(scroll)
 
     def _paragraph_shortcuts(self, widget: Any) -> None:
@@ -213,6 +218,7 @@ class PhantomApp:
         self.tab_frames = {
             "embed": self._build_embed_tab(),
             "extract": self._build_extract_tab(),
+            "metadata": self._build_metadata_tab(),
             "settings": self._build_settings_tab(),
         }
         for frame in self.tab_frames.values():
@@ -647,6 +653,20 @@ class PhantomApp:
         return frame
 
     # ------------------------------------------------------------------
+    # metadata tab
+    # ------------------------------------------------------------------
+    def _build_metadata_tab(self) -> ctk.CTkFrame:
+        """The fourth tab: inspection, selective cleaning, integrity, exports.
+
+        The panel owns its five cards and the state they render; the window only
+        routes jobs to it (``metadata_inspect`` / ``metadata_clean``) and asks it
+        to repaint when the language or the busy state changes.
+        """
+        panel = MetadataPanel(self)
+        self.metadata_panel = panel
+        return panel.build()
+
+    # ------------------------------------------------------------------
     # settings tab
     # ------------------------------------------------------------------
     def _build_settings_tab(self) -> ctk.CTkFrame:
@@ -871,7 +891,12 @@ class PhantomApp:
                 break
 
     def _render_tab_labels(self) -> None:
-        mapping = {"tab_embed": "embed", "tab_extract": "extract", "tab_settings": "settings"}
+        mapping = {
+            "tab_embed": "embed",
+            "tab_extract": "extract",
+            "tab_metadata": "metadata",
+            "tab_settings": "settings",
+        }
         self._tab_by_label = {self.i18n.t(key): ident for key, ident in mapping.items()}
         self.tab_bar.configure(values=list(self._tab_by_label))
         for label, ident in self._tab_by_label.items():
@@ -886,6 +911,8 @@ class PhantomApp:
         self._refresh_embed_state()
         self._refresh_extract_state()
         self._refresh_settings_state()
+        if self.metadata_panel is not None:
+            self.metadata_panel.refresh()
         self._refresh_busy_state()
         # A new carrier (or none) changes which layout the tab promises to write.
         self._render_format_labels()
@@ -1061,6 +1088,9 @@ class PhantomApp:
         ):
             if widget is not None:
                 widget.configure(state=state)
+        if self.metadata_panel is not None:
+            for widget in self.metadata_panel.action_buttons():
+                widget.configure(state=state)
         self.cancel_button.configure(state="normal" if self._busy else "disabled")
 
     # ------------------------------------------------------------------
@@ -1113,6 +1143,8 @@ class PhantomApp:
             self.settings.theme,
             "on" if self.dnd.available else f"off ({self.dnd.reason})",
         )
+        if self.metadata_panel is not None:
+            LOGGER.info("%s", self.metadata_panel.summary_for_log())
         LOGGER.info("scroll: %s", self._scroll.describe())
         if self._scroll.diagnostics.enabled:
             LOGGER.warning(
@@ -1125,6 +1157,7 @@ class PhantomApp:
             "carrier": self._drop_carrier,
             "stego": self._drop_stego,
             "secret": self._drop_secret,
+            "metadata": self._drop_metadata,
         }
         extensions = (
             C.IMAGE_EXTENSIONS + C.AUDIO_WAV_EXTENSIONS + C.AUDIO_FLAC_EXTENSIONS
@@ -1341,6 +1374,13 @@ class PhantomApp:
         if path:
             self._set_stego(path)
 
+    def _drop_metadata(self, paths: list[str]) -> None:
+        path = self._accepted_drop(
+            paths, C.IMAGE_EXTENSIONS + C.AUDIO_WAV_EXTENSIONS + C.AUDIO_FLAC_EXTENSIONS
+        )
+        if path and self.metadata_panel is not None:
+            self.metadata_panel.load_file(path)
+
     def _drop_secret(self, paths: list[str]) -> None:
         for path in paths:
             if os.path.isfile(path):
@@ -1514,6 +1554,20 @@ class PhantomApp:
             self._on_embed_done(value)
         elif operation == "extract" and isinstance(value, ExtractOutcome):
             self._on_extract_done(value)
+        elif (
+            operation == "metadata_inspect"
+            and isinstance(value, MetadataReport)
+            and self.metadata_panel is not None
+        ):
+            self.metadata_panel.apply_report(value)
+            LOGGER.info("%s", self.metadata_panel.summary_for_log())
+        elif (
+            operation == "metadata_clean"
+            and isinstance(value, CleaningOutcome)
+            and self.metadata_panel is not None
+        ):
+            self.metadata_panel.apply_outcome(value)
+            LOGGER.info("%s", self.metadata_panel.summary_for_log())
         LOGGER.debug("operation %s finished", operation)
 
     def _on_embed_done(self, outcome: EmbedOutcome) -> None:
@@ -1940,7 +1994,8 @@ class PhantomApp:
         for sequence in ("<Control-Return>", "<Command-Return>"):
             self.root.bind(sequence, self._shortcut_primary)
         self.root.bind("<Escape>", lambda _event: self._cancel_operation())
-        for index, ident in enumerate(("embed", "extract", "settings"), start=1):
+        tabs = ("embed", "extract", "metadata", "settings")
+        for index, ident in enumerate(tabs, start=1):
             for prefix in ("Control", "Command"):
                 self.root.bind(
                     f"<{prefix}-Key-{index}>",

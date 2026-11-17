@@ -185,7 +185,7 @@ def test_closing_the_window_keeps_a_foreign_clipboard(app, monkeypatch) -> None:
 
 
 def test_window_builds_and_shows_default_language(app) -> None:
-    assert app.current_tab in ("embed", "extract", "settings")
+    assert app.current_tab in ("embed", "extract", "metadata", "settings")
     assert app.i18n.language in ("uk", "ru", "en")
     assert app.root.title()
     assert app.embed_vm is not None and app.extract_vm is not None
@@ -211,7 +211,7 @@ def test_theme_switch_persists(app) -> None:
 
 
 def test_tabs_switch(app) -> None:
-    for ident in ("extract", "settings", "embed"):
+    for ident in ("extract", "metadata", "settings", "embed"):
         app._show_tab(ident)
         assert app.current_tab == ident
 
@@ -486,8 +486,8 @@ def test_right_click_binding_is_installed(app) -> None:
 def test_the_router_took_over_the_wheel_for_every_tab(app) -> None:
     from phantom.ui.widgets import CTkAdapter
 
-    assert len(app._scroll_frames) == 3
-    assert app._scroll.area_count == 3
+    assert len(app._scroll_frames) == 5, "four tabs, plus the metadata field list"
+    assert app._scroll.area_count == 5
     assert app._scroll.installed is True
     for frame in app._scroll_frames:
         assert CTkAdapter.scroll_canvas(frame) is not None
@@ -1164,3 +1164,218 @@ def test_the_probed_carrier_repaints_the_layout_badge(app) -> None:
     assert "v3" in app.format_label.cget("text")
 
 
+# ---------------------------------------------------------------------------
+# the metadata tab
+# ---------------------------------------------------------------------------
+def _all_label_texts(widget) -> list[str]:
+    """Every ``text`` a widget tree shows, for the "no raw key leaked" checks."""
+    texts: list[str] = []
+    for current in [widget, *_descendants(widget)]:
+        try:
+            value = current.cget("text")
+        except Exception:  # noqa: BLE001, S112 - not every widget has text
+            continue
+        if isinstance(value, str):
+            texts.append(value)
+    return texts
+
+
+def _scanned(app, tmp_path: Path, dialogs):
+    """Point the tab at a real PNG and let the inspection job finish."""
+    import metadata_samples as samples
+
+    path = samples.personal_png(tmp_path / "gui-photo.png")
+    app._show_tab("metadata")
+    app.metadata_panel.load_file(str(path))
+    _pump(app)
+    return path
+
+
+def test_the_metadata_tab_is_the_fourth_tab(app) -> None:
+    assert list(app.tab_frames) == ["embed", "extract", "metadata", "settings"]
+    assert "metadata" in app._tab_by_label.values()
+    assert app.metadata_panel is not None
+    app._show_tab("metadata")
+    assert app.current_tab == "metadata"
+
+
+def test_the_metadata_tab_and_its_field_list_are_routed(app) -> None:
+    """One global router: the tab area and the nested field list, no extra binding."""
+    panel = app.metadata_panel
+    assert panel is not None
+    names = [area.name for area in app._scroll.areas]
+    assert "metadata-fields" in names
+    assert _area_for_tab(app, "metadata") is not None
+
+
+def test_the_metadata_tab_scrolls_under_the_pointer(app) -> None:
+    _reveal(app)
+    app._show_tab("metadata")
+    app.root.update()
+    area = _area_for_tab(app, "metadata")
+    assert area is not None
+    before = _make_scrollable(area.canvas)
+    x, y = _point_over(app, area)
+
+    _wheel_on_root(app, delta=-120, x=x, y=y)
+
+    assert float(area.canvas.yview()[0]) > before
+
+
+def test_choosing_a_file_fills_the_tab(app, tmp_path: Path, dialogs) -> None:
+    import metadata_samples as samples
+
+    path = samples.personal_png(tmp_path / "chosen.png")
+    dialogs.paths.append(str(path))
+    panel = app.metadata_panel
+    assert panel is not None
+
+    panel.choose_file()
+    _pump(app)
+
+    assert panel.vm.path == str(path)
+    assert panel.vm.report is not None
+    assert path.name in panel.name_label.cget("text")
+    assert "fields" in panel.summary_label.cget("text")
+    assert panel._rows, "the results card must show one row per field"
+    assert panel.vm.selection, "personal fields are preselected"
+
+
+def test_dropping_a_file_on_the_card_starts_the_scan(app, tmp_path: Path) -> None:
+    import metadata_samples as samples
+
+    path = samples.personal_wav(tmp_path / "dropped.wav")
+    panel = app.metadata_panel
+    assert panel is not None
+
+    app._drop_metadata([str(path)])
+    _pump(app)
+
+    assert panel.vm.report is not None
+    assert panel.vm.report.fmt.value == "wav"
+
+
+def test_the_selection_buttons_change_the_pre_report(app, tmp_path: Path, dialogs) -> None:
+    panel = app.metadata_panel
+    assert panel is not None
+    _scanned(app, tmp_path, dialogs)
+
+    panel.clear_selection()
+    assert panel.vm.selection == set()
+    assert "will be removed (0):" in panel.preview_text.get("1.0", "end")
+
+    panel.select_personal()
+    assert panel.vm.selection
+    assert "will be removed" in panel.preview_text.get("1.0", "end")
+
+
+def test_a_field_checkbox_registers_a_toggle(app, tmp_path: Path, dialogs) -> None:
+    panel = app.metadata_panel
+    assert panel is not None
+    _scanned(app, tmp_path, dialogs)
+    panel.clear_selection()
+    panel.refresh()
+
+    panel._on_field_toggle("png.text.tEXt.Comment")
+
+    assert "png.text.tEXt.Comment" in panel.vm.selection
+
+
+def test_saving_a_cleaned_copy_from_the_tab(app, tmp_path: Path, dialogs) -> None:
+    panel = app.metadata_panel
+    assert panel is not None
+    _scanned(app, tmp_path, dialogs)
+    output = tmp_path / "gui-clean.png"
+    panel.output_entry.delete(0, "end")
+    panel.output_entry.insert(0, str(output))
+
+    panel.save_clean()
+    _pump(app)
+
+    assert output.exists()
+    assert panel.vm.outcome is not None
+    assert panel.vm.outcome.verified is True
+    assert "verdict" in panel.final_label.cget("text").lower()
+    assert panel.vm.report is not None
+    assert panel.vm.report.find("png.text.tEXt.Comment") is None
+
+
+def test_the_integrity_card_explains_both_hashes(app, tmp_path: Path, dialogs) -> None:
+    panel = app.metadata_panel
+    assert panel is not None
+    _scanned(app, tmp_path, dialogs)
+    panel.output_entry.delete(0, "end")
+    panel.output_entry.insert(0, str(tmp_path / "hashes.png"))
+    panel.save_clean()
+    _pump(app)
+
+    shown = panel.hash_label.cget("text")
+    assert "sha256 file:" in shown
+    assert "sha256 content:" in shown
+    assert app.i18n.t("meta_hash_note") in panel.hash_note_label.cget("text")
+
+
+def test_exporting_the_report_from_the_tab(app, tmp_path: Path, dialogs) -> None:
+    panel = app.metadata_panel
+    assert panel is not None
+    _scanned(app, tmp_path, dialogs)
+    target = tmp_path / "report.txt"
+    dialogs.paths.append(str(target))
+
+    panel.export_txt()
+
+    assert target.exists()
+    assert "PHANTOM — metadata report" in target.read_text(encoding="utf-8")
+
+
+def test_copying_a_report_arms_the_clipboard_clear(app, tmp_path: Path, dialogs) -> None:
+    panel = app.metadata_panel
+    assert panel is not None
+    _scanned(app, tmp_path, dialogs)
+
+    panel.copy_report()
+
+    assert "PHANTOM — metadata report" in app.root.clipboard_get()
+    assert app._clipboard_token is not None, "a report may not stay on the clipboard"
+
+
+def test_a_signed_file_shows_a_blocked_plan_in_the_ui(app, tmp_path: Path) -> None:
+    import metadata_samples as samples
+
+    panel = app.metadata_panel
+    assert panel is not None
+    app._show_tab("metadata")
+    panel.load_file(str(samples.signed_png(tmp_path / "gui-signed.png")))
+    _pump(app)
+
+    assert panel.vm.plan() is not None
+    assert panel.vm.plan().allowed is False
+    assert app.i18n.t("meta_plan_blocked") in panel.plan_label.cget("text")
+
+
+def test_the_metadata_tab_speaks_every_language_without_leaking_keys(app) -> None:
+    panel = app.metadata_panel
+    assert panel is not None
+    for code in ("uk", "ru", "en"):
+        label = app._label_by_lang[code]
+        app._on_language_click(label)
+        app.root.update_idletasks()
+        texts = _all_label_texts(panel.frame)
+        assert texts
+        for text in texts:
+            assert not text.startswith(("meta_", "meta.", "tab_", "err.", "stage.")), (
+                f"{code}: a raw i18n key is on screen: {text!r}"
+            )
+
+
+def test_busy_state_disables_the_metadata_actions(app) -> None:
+    panel = app.metadata_panel
+    assert panel is not None
+
+    app._busy = True
+    app._refresh_busy_state()
+    assert all(button.cget("state") == "disabled" for button in panel.action_buttons())
+
+    app._busy = False
+    app._refresh_busy_state()
+    assert all(button.cget("state") == "normal" for button in panel.action_buttons())

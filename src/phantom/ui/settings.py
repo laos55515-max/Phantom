@@ -46,7 +46,8 @@ class AppSettings:
     def normalized(self) -> AppSettings:
         language = self.language if isinstance(self.language, str) else DEFAULT_LANGUAGE_CODE
         theme = self.theme if self.theme in VALID_THEMES else "System"
-        last_tab = self.last_tab if self.last_tab in ("embed", "extract", "settings") else "embed"
+        valid_tabs = ("embed", "extract", "metadata", "settings")
+        last_tab = self.last_tab if self.last_tab in valid_tabs else "embed"
         return replace(
             self,
             language=language,

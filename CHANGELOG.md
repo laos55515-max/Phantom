@@ -417,6 +417,91 @@ All notable changes to PHANTOM are recorded here. The format follows
   detectable by statistical analysis. PBKDF2 is documented as an explicitly
   selected profile, never an automatic downgrade.
 
+## [2.1.0] — metadata inspector and privacy cleaner
+
+The steganography path is untouched: same formats, same cryptography, same
+readers. 2.1.0 adds a fourth tab that answers a different question — what does
+this file carry besides the picture or the sound, and what happens if we take it
+out? The release also contains the scroll-router and progress work listed under
+`[Unreleased]` above.
+
+### Added
+
+- **`phantom.metadata`, a new package:**
+  `models` (fields, categories, counts, provenance states), `png`, `wav` and
+  `flac` (chunk and block walkers with serialisers), `inspector` (content
+  detection, hashing, reports), `cleaner` (planning, rewriting, publishing),
+  `integrity` (decoded fingerprints and comparison), `provenance` (C2PA/JUMBF
+  detection) and `report` (TXT and JSON exports). No new third-party dependency:
+  Pillow, Mutagen, NumPy, SoundFile and the standard library only.
+- **Content-based format detection.** PNG, WAV and FLAC are identified from their
+  signature bytes, never from the file extension; anything else is refused with
+  `ErrorCode.UNSUPPORTED_FORMAT` instead of being parsed by the wrong reader.
+- **A read-only inspector with six categories.** PNG (chunks, tEXt/zTXt/iTXt,
+  TIFF/EXIF including GPS, XMP, ICC, tIME, unknown chunks, per-chunk CRC), WAV
+  (RIFF, `fmt `, `data`, LIST/INFO, `bext` v0–v2 with reserved bytes and coding
+  history, iXML, ID3, unknown chunks) and FLAC (STREAMINFO, Vorbis comments,
+  PICTURE, APPLICATION, SEEKTABLE, CUESHEET, PADDING, unknown blocks) are reduced
+  to fields that carry a name, a value, a container, a category (personal,
+  descriptive, technical, rights/attribution, provenance, unknown) and an
+  editability marker.
+- **Selective cleaning with a plan shown first.** Personal fields are preselected;
+  attribution fields (EXIF `Artist`, PNG `Author`, RIFF `IART`, Vorbis `ARTIST`)
+  are offered unticked; copyright, licence, technical fields, colour profiles,
+  provenance blocks and unknown chunks are protected and never removed
+  automatically. The plan reports what will be removed, what will be kept and what
+  was requested but is protected.
+- **Mandatory post-clean verification.** Pixels, alpha and chunk CRCs for PNG;
+  every PCM sample, bit depth, sample rate, channel count, frame count and
+  duration plus a full re-decode for WAV/FLAC; the metadata is re-read to prove the
+  selected fields are gone, the protected ones are intact and the field count
+  matches the plan. Whole-file SHA-256 and decoded-content SHA-256 are reported
+  separately, and the interface explains why only the second one must not change.
+- **C2PA / content-credential detection, without pretending to validate it.** A
+  manifest or a signature block is reported as "manifest found, signature not
+  verified" (the trust list and certificate chain are not part of this build), and
+  a signed file is refused by the cleaner instead of being rewritten into a file
+  that still claims a signature it no longer satisfies.
+- **The fourth tab** (`СКРЫТЬ` · `ИЗВЛЕЧЬ` · `МЕТАДАННЫЕ` · `НАСТРОЙКИ`) with five
+  cards: file selection (button and drag & drop), analysis results (counts,
+  category filter, removable-only filter, field rows with checkboxes, warnings),
+  cleaning settings (select all editable, select personal, clear, pre-report),
+  saving (path, save cleaned copy, export TXT/JSON, copy report, reveal in the file
+  manager) and the integrity card (decode status, content comparison, both hashes,
+  removed/kept counts, verdict).
+- 85 new locale keys in all three languages (302 total, parity enforced by
+  `tests/test_i18n.py`), including `err.signed_media`, `err.metadata`,
+  `stage.scanning` and `stage.cleaning`.
+- `ErrorCode.SIGNED_MEDIA`, `ErrorCode.METADATA`, `Stage.SCANNING` and
+  `Stage.CLEANING`.
+- Tests: `tests/test_metadata_inspect.py`, `tests/test_metadata_clean.py`,
+  `tests/test_metadata_report.py`, `tests/test_metadata_view.py` and a
+  `metadata_samples` builder that generates PNG/WAV/FLAC files with known
+  metadata (no new binary fixtures), plus GUI coverage of the new tab in
+  `tests/test_gui.py`.
+
+### Changed
+
+- The window has four tabs, so the scroll router now registers five areas: three
+  tabs, the metadata tab and the metadata field list, which is nested inside it
+  and resolved by the same pointer-driven router. There is still exactly one
+  global wheel handler.
+- `Cmd/Ctrl+1…4` now select `embed`, `extract`, `metadata` and `settings`
+  (`Ctrl+3` was `settings` before); the previous tab is still restored on launch.
+- `AppSettings.normalized()` accepts `"metadata"` as a saved last tab.
+
+### Security
+
+- The cleaner refuses a file whose path resolves to the source, refuses to
+  overwrite an existing file without explicit permission, and publishes only
+  through a staged sibling that is renamed into place after verification.
+- Metadata is never executed, never interpolated into a shell command and never
+  written to diagnostic logs; the exports contain the personal values and are
+  therefore produced only on an explicit user action.
+- The documentation and the reports state plainly that removing metadata is not
+  anonymisation and that a missing manifest is not proof that a file carries no
+  traces.
+
 ## [2.0.0] — release candidate
 
 Released under the MIT license (see `LICENSE`).

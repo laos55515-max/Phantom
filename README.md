@@ -1,4 +1,4 @@
-# PHANTOM 2.0.0
+# PHANTOM 2.1.0
 
 Hide an encrypted payload inside a PNG image or a WAV/FLAC audio file, then
 extract it on another machine with the same password. The payload is encrypted
@@ -12,10 +12,13 @@ than the code actually does.
   be a silent downgrade)
 - Container: versioned, authenticated, no magic string in clear text
 - UI: CustomTkinter, three languages (Українська / Русский / English),
-  Dark / Light / System themes, drag & drop
+  Dark / Light / System themes, drag & drop, four tabs
+  (`СКРЫТЬ` · `ИЗВЛЕЧЬ` · `МЕТАДАННЫЕ` · `НАСТРОЙКИ`)
+- Metadata inspector and privacy cleaner for PNG, WAV and FLAC: what the file
+  carries, what can be removed, and a verified cleaned copy
 - No network calls, no telemetry, no cloud
 
-`phantom.__version__ == "2.0.0"`, stage: release candidate.
+`phantom.__version__ == "2.1.0"`, stage: release candidate.
 
 ## What it is, and what it is not
 
@@ -151,6 +154,64 @@ histogram intact, which is exactly what those detectors look for. The `SIZE` row
 uses the same bookkeeping as that table: header bits plus eight bits per
 ciphertext byte, against the carrier's usable bits.
 
+### Metadata: what a file carries, and what to do about it
+
+The fourth tab (`МЕТАДАННЫЕ`) reads the metadata of a PNG, WAV or FLAC file and
+offers a **selective** clean-up. All of it is local: no cloud, no API, no
+telemetry, and nothing is uploaded anywhere.
+
+Detection is by content, not by extension: a JPEG renamed to `.png` is refused
+rather than parsed by the wrong reader. Every field is listed with its name,
+value, container and one of six categories — personal, descriptive, technical,
+rights/attribution, provenance/signatures, unknown — and one of two markers:
+*editable* (the cleaner may remove it) or *protected* (it stays).
+
+- **Selected by default** are the personal fields the cleaner can remove: GPS
+  position, device make/model, serial numbers, personal dates and comments.
+- **Offered but not preselected** are attribution fields (EXIF `Artist`, PNG
+  `Author`, RIFF `IART`, Vorbis `ARTIST`): a name is personal data, but deleting
+  a credit is your decision, so the checkbox is unticked.
+- **Never removed** are copyright and licence lines, technical parameters, colour
+  profiles, provenance blocks and *unknown* chunks. An unknown chunk is reported
+  as unknown and left alone: the cleaner does not delete what it cannot explain.
+- **A signed file is refused.** When a C2PA/JUMBF manifest or a signature block is
+  present, the tab says so and blocks the clean: rewriting the container would
+  break the manifest's hard binding, and a "cleaned" file that still claims a
+  signature it no longer satisfies is worse than doing nothing. PHANTOM never
+  forges, hides or strips a signature to make a check pass.
+
+Before anything is written you get a pre-report: what will be removed, what will
+be kept, and what you asked for but is protected. The cleaned copy is always a
+**new file** — the source is never modified, and a path that resolves to the
+source is refused. Publishing is atomic: the copy is written to a staged sibling,
+verified, and only then renamed onto the destination; on any failure the staged
+file is discarded and the destination is untouched.
+
+Verification after cleaning is mandatory, not advisory:
+
+- PNG: every pixel (RGB/RGBA, alpha included), the dimensions and the chunk CRCs;
+- WAV/FLAC: every PCM sample, bit depth, sample rate, channel count, frame count
+  and duration, and a full re-decode;
+- the metadata is re-read to prove the selected fields are gone and the protected
+  ones are still there;
+- SHA-256 of the input and of the output, plus a separate SHA-256 of the *decoded
+  content*.
+
+The two hashes answer two different questions, and the integrity card says so:
+the **whole-file hash always changes**, because the metadata bytes changed; the
+**decoded-content hash must not change**, because the pixels and the samples are
+what must survive. If the decoded content differs, nothing is published.
+
+The report can be copied or exported as TXT or JSON — that export contains the
+personal values you were about to remove, which is why it only happens when you
+ask for it. Diagnostics log counts, never values.
+
+What this tab does **not** do: it does not validate a C2PA signature (there is no
+trust list and no certificate chain in this build), it does not remove data hidden
+inside pixels or audio beyond the container's metadata system, and a file with no
+detected metadata is not proof that no digital trace exists. Metadata removal is
+not anonymisation.
+
 ## Limits
 
 | Limit | Value |
@@ -220,8 +281,9 @@ app.py                     launcher
 src/phantom/core/          crypto, container, payload, files, API
 src/phantom/stego/         bits, permutation, image carriers, legacy v1 reader
 src/phantom/audio/         WAV/FLAC containers, capacity, probing
+src/phantom/metadata/      inspector, cleaner, integrity checks, reports
 src/phantom/ui/            CustomTkinter app, worker, view model, theme
-src/phantom/locales/       uk / ru / en JSON, 213 keys with parity
+src/phantom/locales/       uk / ru / en JSON, 302 keys with parity
 tests/                     safety net, fixtures, property tests
 tools/                     fixture generators, benchmarks, steganalysis
 ```

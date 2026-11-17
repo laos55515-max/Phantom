@@ -15,7 +15,7 @@ from typing import Final
 # Application identity
 # ---------------------------------------------------------------------------
 APP_NAME: Final = "Phantom"
-APP_VERSION: Final = "2.0.0"
+APP_VERSION: Final = "2.1.0"
 APP_STAGE: Final = "release-candidate"
 APP_RELEASE_LABEL: Final = f"{APP_NAME} {APP_VERSION}"
 

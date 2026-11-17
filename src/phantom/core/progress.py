@@ -23,6 +23,8 @@ class Stage(Enum):
     """Pipeline stages. The value doubles as an i18n key suffix (``stage.<v>``)."""
 
     READING = "reading"
+    SCANNING = "scanning"
+    CLEANING = "cleaning"
     COMPRESSING = "compressing"
     ESTIMATING = "estimating"
     ANALYSING = "analysing"

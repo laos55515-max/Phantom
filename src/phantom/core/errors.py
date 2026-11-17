@@ -30,6 +30,8 @@ class ErrorCode(Enum):
     AUDIO_LOSSY = "audio_lossy"
     AUDIO_FORMAT = "audio_format"
     AUDIO_SILENCE = "audio_silence"
+    SIGNED_MEDIA = "signed_media"
+    METADATA = "metadata"
     INTERNAL = "internal"
 
 
@@ -127,6 +129,18 @@ class AudioFormatError(PhantomError):
 
 class SilenceError(PhantomError):
     code = ErrorCode.AUDIO_SILENCE
+
+
+class SignedMediaError(PhantomError):
+    """A content credential is attached; rewriting the file would invalidate it."""
+
+    code = ErrorCode.SIGNED_MEDIA
+
+
+class MetadataError(PhantomError):
+    """Metadata could not be read, planned or rewritten."""
+
+    code = ErrorCode.METADATA
 
 
 class InternalError(PhantomError):

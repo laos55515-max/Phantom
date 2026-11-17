@@ -1,6 +1,6 @@
 # Security model
 
-This document describes what PHANTOM 2.0.0 protects, what it does not protect,
+This document describes what PHANTOM 2.1.0 protects, what it does not protect,
 and which numbers are constants in the source code. It is written to be checked
 against `src/phantom/core/constants.py`; `tests/test_security_claims.py` fails if
 the two drift apart.
@@ -123,6 +123,56 @@ may be re-encoded before it reaches the recipient.
 - **Traffic analysis.** The fact that two parties exchanged a file is visible to
   the channel.
 
+## Metadata cleaning (2.1.0)
+
+The fourth tab inspects and cleans the container metadata of PNG, WAV and FLAC
+files. It is a separate pipeline from steganography: it never touches the payload,
+never re-encrypts anything, and never rewrites the cryptography.
+
+What it guarantees:
+
+- the **source is only read**. The cleaned copy is a new file, written to a staged
+  sibling and renamed into place with `os.replace` after verification; a failure
+  at any point discards the staged file and leaves the destination untouched;
+- a destination that resolves to the source (`samefile`, not just string equality)
+  is refused;
+- the metadata is re-read after the rewrite, and the run fails unless the selected
+  fields are gone, the protected ones are still there and the field count is what
+  the plan said;
+- the decoded media is compared, not the bytes: PNG pixels (RGBA and alpha
+  included) and PNG chunk CRCs, or every PCM sample, bit depth, sample rate,
+  channel count, frame count and duration for WAV/FLAC. If the decoded content
+  differs, nothing is published;
+- whole-file SHA-256 and decoded-content SHA-256 are reported separately, because
+  only the second one is supposed to stay the same;
+- unknown chunks and blocks are reported as unknown and are **never** deleted
+  automatically, and copyright, licence, technical fields, colour profiles and
+  provenance blocks are never part of the default selection;
+- a file that carries a C2PA/JUMBF manifest or a signature block is **refused**:
+  rewriting the container would invalidate the manifest's hard binding. PHANTOM
+  does not forge, strip or hide a signature, and it does not validate one either —
+  there is no trust list and no certificate chain in this build, so the tab
+  reports "manifest found, signature not verified" and nothing stronger;
+- metadata is never executed, evaluated or interpolated into a command: values are
+  decoded as text, clipped for display, and written to files only on an explicit
+  export;
+- diagnostics log counts and keys, never values. The TXT and JSON exports do
+  contain the values, which is why they are only produced on an explicit action.
+
+What it does not guarantee:
+
+- **removing metadata is not anonymisation.** Data can hide outside the metadata
+  systems PHANTOM knows: pixels, audio content, thumbnails inside other blocks,
+  application-private structures it reports as unknown, or the file's existence
+  and timestamp on the filesystem;
+- a file with no detected metadata is not proof that no digital trace exists. The
+  report says so in every export;
+- the cleaned copy is only as good as the parser: a format PHANTOM does not parse
+  is refused rather than "cleaned";
+- an embedded EXIF thumbnail is preserved with the remaining EXIF, because dropping
+  it would change the file's structure; it can still contain a picture of the same
+  scene. Remove the EXIF block itself if that matters to you.
+
 ## Wiping
 
 "Shred" overwrites the file once (`WIPE_PASSES = 1`), in 1 MiB chunks, and calls
@@ -162,6 +212,12 @@ are outside our reach: a copied secret may survive there.
   and no escrow.
 
 ## Legacy versions
+
+### Version 2.1 (PHANTOM 2.1.0)
+
+Same container formats and the same cryptography as 2.0.0; 2.1.0 adds the metadata
+inspector and cleaner tab and does not change any byte on the steganography path.
+Files written by 2.0.0 are read and written identically.
 
 ### Version 2 (PHANTOM 2.0.0)
 
