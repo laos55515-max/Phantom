@@ -109,6 +109,8 @@ jobs:
           for line in failures[:40]:
               print(f"::error::failed: {line[:400]}")
           print(f"::notice::gui.log: {len(lines)} lines, {len(failures)} failing tests")
+          for line in interesting[:15]:
+              print(f"::error::first: {line[:900]}")
           for line in interesting[-10:] or lines[-10:]:
               print(f"::error::{line[:900]}")
           PY
@@ -116,6 +118,14 @@ jobs:
             echo "GUI smoke tests failed or timed out"
             exit 1
           fi
+      - name: Keep the GUI log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gui-log-${{ matrix.python-version }}
+          path: gui.log
+          if-no-files-found: ignore
+          retention-days: 7
 
   benchmark:
     name: slow benchmarks
