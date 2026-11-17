@@ -570,7 +570,15 @@ def _point_over(app, area) -> tuple[int, int]:
             continue
         if app._scroll.resolve(x, y) is area:
             return x, y
-    pytest.skip(f"no widget of area {area.describe()} resolves to it on this platform")
+    if area.frame.winfo_ismapped():
+        # The window is on screen, so some point of the area must resolve to it:
+        # either the routing is broken or the layout no longer contains anything
+        # this test can aim at.  Silence here would turn the test into a no-op.
+        pytest.fail(
+            f"the window is mapped, yet no widget of area {area.describe()} "
+            "resolves to it — routing or layout changed"
+        )
+    pytest.skip("the window is not mapped on this platform")
 
 
 def _wheel_on_root(app, *, delta: int, x: int, y: int) -> None:
