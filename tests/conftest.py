@@ -131,6 +131,34 @@ def isolated_settings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return config
 
 
+def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
+    """Name the non-daemon threads that outlived the suite, with their stacks.
+
+    A wedged GUI job keeps its worker thread alive; the interpreter then waits for
+    that thread at shutdown and CI burns the whole step limit with nothing to show
+    for it.  The stack printed here (and left in ``shutdown_stacks.txt``) says which
+    frame the thread is stuck in, which the process cannot report once it is
+    waiting to die.
+    """
+    import threading
+    import traceback
+
+    main = threading.main_thread()
+    stuck = [t for t in threading.enumerate() if t is not main and not t.daemon]
+    if not stuck:
+        return
+    stacks = sys._current_frames()
+    lines = [f"=== {len(stuck)} non-daemon thread(s) survived the run (exit {exitstatus}) ==="]
+    for thread in stuck:
+        lines.append(f"--- thread {thread.name!r} ident={thread.ident}")
+        frame = stacks.get(thread.ident or -1)
+        if frame is not None:
+            lines.extend("".join(traceback.format_stack(frame)).splitlines()[-12:])
+    text = "\n".join(lines)
+    print(text, flush=True)
+    Path("shutdown_stacks.txt").write_text(text, encoding="utf-8")
+
+
 def pytest_configure(config: pytest.Config) -> None:
     config.addinivalue_line("markers", "slow: performance tests")
     config.addinivalue_line("markers", "gui: requires a Tk display")
