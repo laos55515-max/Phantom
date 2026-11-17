@@ -6,8 +6,10 @@ into widgets and turns widget events into calls.  Two consequences worth keeping
 
 * the results list is rebuilt only when the report or the filter changes, so
   toggling a checkbox never re-creates a hundred rows;
-* the field list is its own scrollable area, registered with the same
-  application-wide router as the tabs (PR #16).  There is no second wheel handler.
+* the field list lives in the tab's own scroll area, not in a scrollable box of
+  its own: nesting a ``CTkScrollableFrame`` inside another one makes the two
+  canvases chase each other's ``<Configure>`` events, and the tab is scrolled by
+  the same application-wide router as every other tab (PR #16).
 """
 
 from __future__ import annotations
@@ -167,12 +169,13 @@ class MetadataPanel:
         )
         self.removable_check.pack(side="left", padx=(14, 0))
 
-        self.list_area = ctk.CTkScrollableFrame(
-            box, fg_color=T.CLR_CARD_ALT, corner_radius=10, height=250
-        )
+        # A plain frame, not a second scrollable area: the rows are gridded into it
+        # and the tab's own scroll area carries them.  Nesting two
+        # CTkScrollableFrames makes their canvases chase each other's <Configure>
+        # events, which is both a layout storm and a scroll bug waiting to happen.
+        self.list_area = ctk.CTkFrame(box, fg_color=T.CLR_CARD_ALT, corner_radius=10)
         self.list_area.pack(fill="x", padx=18, pady=(0, 6))
         self.list_area.grid_columnconfigure(0, weight=1)
-        self.app._seat_scroll(self.list_area, name="metadata-fields")
         self.truncated_label = hint_label(box, self.root, "", wrap=760)
         self.truncated_label.pack(fill="x", padx=18, pady=(0, 12))
         return box

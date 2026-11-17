@@ -492,8 +492,8 @@ def test_right_click_binding_is_installed(app) -> None:
 def test_the_router_took_over_the_wheel_for_every_tab(app) -> None:
     from phantom.ui.widgets import CTkAdapter
 
-    assert len(app._scroll_frames) == 5, "four tabs, plus the metadata field list"
-    assert app._scroll.area_count == 5
+    assert len(app._scroll_frames) == 4, "one scroll area per tab, the metadata tab included"
+    assert app._scroll.area_count == 4
     assert app._scroll.installed is True
     for frame in app._scroll_frames:
         assert CTkAdapter.scroll_canvas(frame) is not None
@@ -1205,13 +1205,14 @@ def test_the_metadata_tab_is_the_fourth_tab(app) -> None:
     assert app.current_tab == "metadata"
 
 
-def test_the_metadata_tab_and_its_field_list_are_routed(app) -> None:
-    """One global router: the tab area and the nested field list, no extra binding."""
+def test_the_metadata_tab_is_routed_like_every_other_tab(app) -> None:
+    """One global router, one area per tab: the field list is not a second canvas."""
     panel = app.metadata_panel
     assert panel is not None
-    names = [area.name for area in app._scroll.areas]
-    assert "metadata-fields" in names
-    assert _area_for_tab(app, "metadata") is not None
+    area = _area_for_tab(app, "metadata")
+    assert area is not None
+    assert area.frame is panel.scroll
+    assert not [item for item in app._scroll.areas if item.frame is panel.list_area]
 
 
 def test_the_metadata_tab_scrolls_under_the_pointer(app) -> None:

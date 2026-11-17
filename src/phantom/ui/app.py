@@ -156,7 +156,7 @@ class PhantomApp:
         """Drop the application-wide wheel routing this window installed."""
         self._scroll.uninstall()
 
-    def _seat_scroll(self, scroll: Any, *, name: str = "") -> None:
+    def _seat_scroll(self, scroll: Any) -> None:
         """Register one scrollable area; the wheel itself is bound once, globally.
 
         Binding every widget of a tab looked robust and was not: the router now
@@ -166,8 +166,7 @@ class PhantomApp:
         canvas = CTkAdapter.scroll_canvas(scroll)
         if canvas is None:
             return
-        label = name or f"tab{len(self._scroll_frames) + 1}"
-        self._scroll.register(scroll, canvas, name=label)
+        self._scroll.register(scroll, canvas, name=f"tab{len(self._scroll_frames) + 1}")
         self._scroll_frames.append(scroll)
 
     def _paragraph_shortcuts(self, widget: Any) -> None:
