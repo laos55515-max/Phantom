@@ -102,9 +102,15 @@ jobs:
               if re.search(r"FAILED|ERROR|Timeout|^E |assert|Error", line)
               and "PASSED" not in line
           ]
+          # Every failing test by name first: the tail of the log only shows the
+          # last few, and a cascade of failures after one wedged job hides the
+          # test that actually broke.
+          failures = [line for line in lines if line.startswith("FAILED ")]
+          for line in failures[:40]:
+              print(f"::error::failed: {line[:400]}")
+          print(f"::notice::gui.log: {len(lines)} lines, {len(failures)} failing tests")
           for line in interesting[-10:] or lines[-10:]:
               print(f"::error::{line[:900]}")
-          print(f"::notice::gui.log: {len(lines)} lines")
           PY
           if [ "${{ steps.gui.outcome }}" != "success" ]; then
             echo "GUI smoke tests failed or timed out"
