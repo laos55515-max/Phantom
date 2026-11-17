@@ -98,6 +98,12 @@ def _pump(app, seconds: float = 30.0) -> None:
         app.root.update()
         time.sleep(0.02)
     app.root.update()
+    if app.worker.busy or app._busy:
+        # Stop the wedged job before failing: a worker thread that keeps running
+        # outlives this test and steals the CPU of every test after it, which is
+        # how one stuck job used to turn into a twelve-minute timeout.
+        app.worker.cancel()
+        app.worker.shutdown(timeout=2.0)
     assert not (app.worker.busy or app._busy), (
         f"still busy after {seconds:.0f}s: worker={app.worker.busy}, "
         f"app={app._busy}, operation={app._operation!r}"

@@ -80,7 +80,10 @@ jobs:
         # a hard limit.  The log is echoed as annotations because Actions log
         # downloads are not always reachable.
         id: gui
-        timeout-minutes: 12
+        # The module now covers four tabs, the scroll router and the metadata
+        # panel's jobs; 12 minutes left no room for a slow runner, and a step
+        # timeout hides which test was slow.
+        timeout-minutes: 20
         continue-on-error: true
         run: |
           set -o pipefail
