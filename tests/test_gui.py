@@ -483,72 +483,273 @@ def test_right_click_binding_is_installed(app) -> None:
 # ---------------------------------------------------------------------------
 # scrolling
 # ---------------------------------------------------------------------------
-def test_every_tab_registered_its_scrollable_area(app) -> None:
+def test_the_router_took_over_the_wheel_for_every_tab(app) -> None:
     from phantom.ui.widgets import CTkAdapter
 
     assert len(app._scroll_frames) == 3
-    assert len(app._wheels) == 3
-    assert sum(wheel.bound_count for wheel in app._wheels) > 0
+    assert app._scroll.area_count == 3
+    assert app._scroll.installed is True
     for frame in app._scroll_frames:
         assert CTkAdapter.scroll_canvas(frame) is not None
 
 
-def test_every_widget_in_every_tab_answers_the_wheel(app) -> None:
-    """Every plain Tk widget under a scrollable frame carries the handler."""
-    from phantom.ui.scroll import is_scrollbar, is_text_area
+def test_the_router_reports_the_running_tk_and_backend(app) -> None:
+    """Diagnosis needs the facts: which Tk, which windowing system, which maths."""
+    described = app._scroll.describe()
+    environment = app._scroll.environment
 
-    checked = 0
-    missing: list[str] = []
-    for frame in app._scroll_frames:
-        stack: list[object] = [frame]
-        while stack:
-            widget = stack.pop()
-            stack.extend(widget.winfo_children())
-            if is_text_area(widget) or is_scrollbar(widget):
+    assert environment.windowing_system in {"aqua", "win32", "x11"}, described
+    assert environment.tk_version[0] >= 8, described
+    assert f"Tk {'.'.join(str(part) for part in environment.tk_version)}" in described
+    assert environment.windowing_system in described
+
+
+def _screen_centre(widget) -> tuple[int, int]:
+    """Screen coordinates of the middle of a widget, after the window is real."""
+    widget.update_idletasks()
+    return (
+        widget.winfo_rootx() + max(1, widget.winfo_width()) // 2,
+        widget.winfo_rooty() + max(1, widget.winfo_height()) // 2,
+    )
+
+
+def _reveal(app) -> None:
+    """CustomTkinter starts withdrawn: routing needs a mapped window."""
+    app.root.deiconify()
+    app.root.geometry("1000x760+0+0")
+    app.root.update()
+    app.root.update_idletasks()
+
+
+def _area_for_tab(app, ident: str):
+    """The scroll area that belongs to one tab."""
+    frame = app.tab_frames[ident]
+    for area in app._scroll.areas:
+        widget = area.frame
+        for _step in range(8):
+            if widget is frame:
+                return area
+            widget = getattr(widget, "master", None)
+            if widget is None:
+                break
+    return None
+
+
+def _make_scrollable(canvas, *, top: float = 0.25) -> float:
+    """Give the canvas a document longer than the window and set the view.
+
+    Routing is what is under test, not the height of the layout: a tab whose
+    content happens to fit would make ``yview`` immovable and the test would
+    report a routing failure for a layout reason.
+    """
+    canvas.update_idletasks()
+    width = max(1, canvas.winfo_width())
+    canvas.configure(scrollregion=(0, 0, width, 6000))
+    canvas.yview_moveto(top)
+    canvas.update_idletasks()
+    return float(canvas.yview()[0])
+
+
+def _point_over(app, area) -> tuple[int, int]:
+    """A screen point that the router itself resolves to ``area``.
+
+    The middle of a tab may be a text box, which deliberately resolves to
+    nothing; probing real widgets keeps the test about scrolling instead of about
+    the pixel layout of the current design.
+    """
+    candidates = [area.frame, *_descendants(area.frame)]
+    for widget in candidates:
+        try:
+            widget.update_idletasks()
+            if widget.winfo_width() < 3 or widget.winfo_height() < 3:
                 continue
-            try:
-                script = widget.bind("<MouseWheel>")
-            except (NotImplementedError, ValueError):
+            if not widget.winfo_ismapped():
                 continue
-            if script:
-                checked += 1
-                continue
-            # A CustomTkinter wrapper forwards bind() to the Tk widgets it is
-            # made of and answers nothing; those children are walked above.
-            if type(widget).__module__.startswith("customtkinter"):
-                continue
-            missing.append(
-                f"{widget} cls={type(widget).__name__} mod={type(widget).__module__} "
-                f"master={widget.master} master_cls={type(widget.master).__name__} "
-                f"children={len(widget.winfo_children())}"
-            )
-    assert not missing, "unbound: " + " | ".join(missing[:6])
-    assert checked >= 10, f"only {checked} widgets answered the wheel"
+            x, y = _screen_centre(widget)
+        except Exception:  # noqa: BLE001, S112 - a widget that went away mid-scan
+            continue
+        if app._scroll.resolve(x, y) is area:
+            return x, y
+    if area.frame.winfo_ismapped():
+        # The window is on screen, so some point of the area must resolve to it:
+        # either the routing is broken or the layout no longer contains anything
+        # this test can aim at.  Silence here would turn the test into a no-op.
+        pytest.fail(
+            f"the window is mapped, yet no widget of area {area.describe()} "
+            "resolves to it — routing or layout changed"
+        )
+    pytest.skip("the window is not mapped on this platform")
 
 
-def test_the_broken_global_handler_is_gone(app) -> None:
-    """``bind_all("<MouseWheel>")`` was the macOS dead end; the area carries it."""
-    assert not app.root.bind_all("<MouseWheel>")
-    assert app._scroll_frames[0].bind("<MouseWheel>")
+def _wheel_on_root(app, *, delta: int, x: int, y: int) -> None:
+    """Deliver a wheel event to the *root window*, the way Aqua does."""
+    app.root.event_generate("<MouseWheel>", delta=delta, x=x, y=y, rootx=x, rooty=y, when="now")
+    app.root.update()
 
 
-def test_wheel_steps_reach_the_canvas_of_an_area(app) -> None:
-    """The maths the bound handler runs moves the real canvas of the tab."""
-    import types
+def _touchpad_on_root(app, *, raw: int, x: int, y: int) -> None:
+    """Deliver a Tk 9 ``<TouchpadScroll>``; ``-delta`` is the packed ``%D``."""
+    app.root.event_generate("<TouchpadScroll>", delta=raw, x=x, y=y, rootx=x, rooty=y, when="now")
+    app.root.update()
 
-    from phantom.ui.scroll import scroll_canvas, wheel_steps
-    from phantom.ui.widgets import CTkAdapter
 
-    canvas = CTkAdapter.scroll_canvas(app._scroll_frames[0])
-    calls: list[tuple[int, str]] = []
-    original = canvas.yview_scroll
-    canvas.yview_scroll = lambda steps, what: (calls.append((steps, what)), original(steps, what))[1]
+def _descendants(widget) -> list:
+    found: list = []
+    stack: list = [widget]
+    while stack:
+        current = stack.pop()
+        for child in current.winfo_children():
+            found.append(child)
+            stack.append(child)
+    return found
+
+
+def test_a_wheel_event_on_the_root_scrolls_the_tab_under_the_pointer(app) -> None:
+    """The real path: event → bind_all → pointer → canvas, through the Tk loop."""
+    _reveal(app)
+    embed = _area_for_tab(app, "embed")
+    assert embed is not None
+    before = _make_scrollable(embed.canvas)
+    hidden = [area.canvas.yview() for area in app._scroll.areas if area is not embed]
+    x, y = _point_over(app, embed)
+
+    _wheel_on_root(app, delta=-120, x=x, y=y)
+
+    after = float(embed.canvas.yview()[0])
+    assert after > before, f"a scroll-down notch moved yview {before} → {after}"
+    assert [area.canvas.yview() for area in app._scroll.areas if area is not embed] == hidden
+
+
+def test_the_pointer_chooses_the_area_not_the_event_widget(app) -> None:
+    """Generated on the root, resolved by position: that is the whole design."""
+    _reveal(app)
+    embed = _area_for_tab(app, "embed")
+    extract = _area_for_tab(app, "extract")
+    assert embed is not None and extract is not None
+    app._show_tab("extract")
+    app.root.update()
+    before_extract = _make_scrollable(extract.canvas)
+    before_embed = _make_scrollable(embed.canvas)
+    x, y = _point_over(app, extract)
+
+    _wheel_on_root(app, delta=120, x=x, y=y)
+
+    assert float(extract.canvas.yview()[0]) < before_extract
+    assert float(embed.canvas.yview()[0]) == pytest.approx(before_embed), (
+        "the tab that is not under the pointer scrolled"
+    )
+
+
+def test_a_wheel_event_over_no_area_scrolls_nothing(app) -> None:
+    """A point that resolves to no area must leave every canvas where it was."""
+    _reveal(app)
+    tops = [_make_scrollable(area.canvas) for area in app._scroll.areas]
+    x, y = _screen_centre(app.tab_bar)
+    assert app._scroll.resolve(x, y) is None, "the tab bar resolved to a scroll area"
+
+    _wheel_on_root(app, delta=-120, x=x, y=y)
+
+    assert [float(area.canvas.yview()[0]) for area in app._scroll.areas] == tops
+
+
+def test_a_textbox_keeps_its_own_wheel_handling(app) -> None:
+    """The page must not scroll underneath a text area that scrolled itself."""
+    from phantom.ui.scroll import is_text_area
+
+    _reveal(app)
+    area = _area_for_tab(app, "embed")
+    assert area is not None
+    before = _make_scrollable(area.canvas)
+    boxes = [widget for widget in _descendants(area.frame) if is_text_area(widget)]
+    if not boxes:
+        pytest.skip("no text area in this tab on this platform")
+    box = boxes[0]
+    x, y = _screen_centre(box)
+    if app._scroll.resolve(x, y) is not None:
+        pytest.skip("the text area is not the widget under its own centre")
+
+    _wheel_on_root(app, delta=-120, x=x, y=y)
+
+    assert float(area.canvas.yview()[0]) == pytest.approx(before), (
+        "the page scrolled under the text box"
+    )
+
+
+def _has_touchpad_events(root) -> bool:
+    """Tk 9 has ``<TouchpadScroll>``; Tk 8.6 raises for the sequence name."""
     try:
-        event = types.SimpleNamespace(delta=120, num=None, x_root=5, y_root=5)
-        assert scroll_canvas(canvas, wheel_steps(event, platform="linux")) is True
-    finally:
-        canvas.yview_scroll = original
-    assert calls == [(-1, "units")]
+        root.bind("<TouchpadScroll>", lambda _event: None)
+    except Exception:  # noqa: BLE001 - no such event type on 8.6
+        return False
+    root.unbind("<TouchpadScroll>")
+    return True
+
+
+def test_tk_ships_the_same_decoder_we_use(app) -> None:
+    """``::tk::PreciseScrollDeltas`` and our fallback must agree, value for value."""
+    from phantom.ui.scroll import decode_touchpad_delta
+
+    if not _has_touchpad_events(app.root):
+        pytest.skip("Tk without <TouchpadScroll>: no PreciseScrollDeltas to compare")
+    for raw in (0, 5, -5, (2 << 16) | 7, (-3 << 16) | 9, (1 << 16) | 0xFFF0, -2147483648):
+        from_tk = tuple(int(part) for part in app.root.tk.call("::tk::PreciseScrollDeltas", raw))
+        assert decode_touchpad_delta(raw) == from_tk, raw
+
+
+def test_a_touchpad_event_on_the_root_scrolls_the_tab_by_pixels(app) -> None:
+    """The macOS bug itself: a packed ``<TouchpadScroll>`` must move the canvas.
+
+    Skipped on Tk 8.6, which has neither the event type nor the packing, so the
+    only place this runs for real is a Tk 9 runtime — CI with a Tk 9 build, or the
+    owner's Mac.
+    """
+    if not _has_touchpad_events(app.root):
+        pytest.skip("Tk 8.6 has no <TouchpadScroll>")
+    _reveal(app)
+    area = _area_for_tab(app, "embed")
+    assert area is not None
+    before = _make_scrollable(area.canvas, top=0.5)
+    x, y = _point_over(app, area)
+
+    # Y delta in the low 16 bits, X in the high: 40 pixels towards the end.
+    _touchpad_on_root(app, raw=40, x=x, y=y)
+
+    after = float(area.canvas.yview()[0])
+    assert after > before, f"40 px of downward gesture moved yview {before} → {after}"
+
+
+def test_a_touchpad_event_is_not_read_as_a_wheel_notch(app) -> None:
+    """A packed delta must never reach the mouse-wheel maths.
+
+    ``(-1 << 16) | 40`` is a one-pixel horizontal drift plus 40 px down.  Read as
+    a wheel delta it is 4 294 967 336 units, i.e. a jump to the far end of the
+    document, which is what a Mac trackpad used to produce.
+    """
+    if not _has_touchpad_events(app.root):
+        pytest.skip("Tk 8.6 has no <TouchpadScroll>")
+    from phantom.ui.scroll import decode_touchpad_delta
+
+    raw = ((-1 << 16) | 40) & 0xFFFFFFFF
+    assert decode_touchpad_delta(raw) == (-1, 40)
+
+    _reveal(app)
+    area = _area_for_tab(app, "embed")
+    assert area is not None
+    before = _make_scrollable(area.canvas, top=0.5)
+    x, y = _point_over(app, area)
+
+    _touchpad_on_root(app, raw=raw, x=x, y=y)
+
+    after = float(area.canvas.yview()[0])
+    assert abs(after - before) < 0.05, f"a 40 px gesture jumped yview {before} → {after}"
+
+
+def test_closing_the_window_releases_the_wheel_routing(app) -> None:
+    assert app._scroll.installed is True
+    app._release_scroll()
+
+    assert app._scroll.installed is False
+    app._release_scroll()  # idempotent
 
 
 # ---------------------------------------------------------------------------
@@ -963,10 +1164,3 @@ def test_the_probed_carrier_repaints_the_layout_badge(app) -> None:
     assert "v3" in app.format_label.cget("text")
 
 
-def test_closing_the_window_releases_every_wheel_binding(app) -> None:
-    assert app._wheels, "nothing was bound"
-    wheels = list(app._wheels)
-    app._release_wheels()
-
-    assert app._wheels == []
-    assert all(wheel.bound_count == 0 for wheel in wheels)

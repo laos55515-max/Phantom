@@ -214,6 +214,49 @@ All notable changes to PHANTOM are recorded here. The format follows
 
 ### Fixed
 
+- **The scroll wheel and the trackpad, properly this time.** The previous attempt
+  bound a handler on every widget of a tab and was wrong in three ways that only
+  show up on a real machine:
+
+  * **The event was bound on the wrong thing.** Aqua delivers a wheel event to the
+    *window under the pointer*, with `event.widget` being that window — so a
+    per-widget handler either never ran or scrolled the wrong tab. Routing is now
+    one application-level `bind_all` (the one place a global binding is the right
+    tool, and CustomTkinter's own is removed first so nothing scrolls twice),
+    which resolves the target at event time with `winfo containing` and walks up
+    from whatever is actually under the pointer. A tab that is not on screen, a
+    scrollbar and a text box all resolve to nothing; a text box keeps its own
+    wheel because its class binding has already run.
+  * **`<TouchpadScroll>` was bound but never decoded.** On Tk 9 a precise device no
+    longer produces `<MouseWheel>` on macOS *or* Windows: the two pixel deltas
+    arrive packed into `%D`, X in the high 16 bits and Y in the low 16, and must
+    go through `tk::PreciseScrollDeltas`. Read as a wheel notch the packed value is
+    up to 4 294 967 336 units, i.e. a jump to the end of the document. The two
+    event kinds are now handled separately — pixels for the touchpad
+    (`yview moveto` on the fraction of the *scroll region*, the same formula Tk's
+    own `ScrollByPixels` uses, clamped at 400 px per event so a momentum fling is
+    not one jump), notches for the wheel — and the decode prefers Tk's own proc,
+    with a bit-exact Python fallback for a Tk whose library lacks it.
+  * **One delta-per-notch for every platform.** Aqua Tk 8.6 reports the raw Cocoa
+    delta (about ±1 per notch), Aqua Tk 9 and Windows report ±120, and the old
+    fixed multiplier turned nine notches into 27 units on one and 9 on the other.
+    `scroll.WheelGeometry` derives the scale from `info patchlevel` *and*
+    `tk windowing system`: 3 units per notch on macOS, 20 on Windows, 1 on X11,
+    with a per-area accumulator so a sub-notch delta is banked instead of rounded
+    to nothing.
+
+  `PHANTOM_SCROLL_DEBUG=1` (or a path) turns on an event trace — event type and
+  serial, Tk patchlevel, windowing system, raw `%D`, the decoded deltas, the widget
+  under the pointer, the chosen area and the `yview` before and after — which is
+  what any remaining report about scrolling should be diagnosed with. The startup
+  log line names the Tk version, the backend and the maths in use.
+
+  Covered by `tests/test_scroll.py` without a display (decode parity with Tk's
+  proc, geometry per platform and Tk version, the routing precedence, the
+  accumulator, the trace) and in `tests/test_gui.py` through the real event loop:
+  a wheel event generated on the root window scrolls the tab under the pointer and
+  not its neighbours, a text box is left alone, and — on Tk 9 — a packed
+  `<TouchpadScroll>` moves the canvas by pixels instead of jumping.
 - **A failed embed no longer destroys the file that was already at the output
   path.** The self-check ("read the file back and compare") ran *after* the
   writer had replaced the destination, and a failure then deleted the output

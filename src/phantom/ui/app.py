@@ -39,7 +39,7 @@ from phantom.ui.debounce import Debouncer
 from phantom.ui.dnd import DndProvider, DropTarget
 from phantom.ui.format import layout_text, size_text, written_layout_text
 from phantom.ui.result_window import ResultWindow
-from phantom.ui.scroll import TabWheel, install_tab_wheel
+from phantom.ui.scroll import DIAGNOSTICS_ENV, ScrollRouter
 from phantom.ui.settings import AppSettings, SettingsStore
 from phantom.ui.system_theme import SystemThemeWatcher
 from phantom.ui.viewmodel import (
@@ -124,19 +124,21 @@ class PhantomApp:
         self._mode_by_label: dict[str, PayloadMode] = {}
         self._tab_by_label: dict[str, str] = {}
         self._drop_zones: list[Any] = []
-        self._wheels: list[TabWheel] = []
+        # One application-wide router: the pointer decides which tab scrolls,
+        # so nothing has to be rebound when a card or a language appears.
+        self._scroll = ScrollRouter(root)
         self._scroll_frames: list[Any] = []
         self._text_shortcuts: list[Any] = []
         self._result_window: ResultWindow | None = None
 
         self._configure_root()
         self._build()
+        self._scroll.install()
         self._apply_theme(self.settings.theme, persist=False)
         self._restore_geometry()
         self._wire_shortcuts()
         self._render_all_labels()
         self._refresh_all()
-        self._refresh_wheels()
         self._log_startup_state()
 
     # ------------------------------------------------------------------
@@ -146,26 +148,21 @@ class PhantomApp:
         return self.binder.text(key, **params)
 
     # -- scrolling ------------------------------------------------------
-    def _refresh_wheels(self) -> None:
-        """Hand the wheel to every widget of every tab, including fresh ones."""
-        for wheel in self._wheels:
-            wheel.refresh()
-
-    def _release_wheels(self) -> None:
-        """Drop every wheel binding this window created."""
-        for wheel in self._wheels:
-            wheel.uninstall()
-        self._wheels.clear()
+    def _release_scroll(self) -> None:
+        """Drop the application-wide wheel routing this window installed."""
+        self._scroll.uninstall()
 
     def _seat_scroll(self, scroll: Any) -> None:
-        """Make the whole scrollable area answer the wheel, not just its bar."""
+        """Register one scrollable area; the wheel itself is bound once, globally.
+
+        Binding every widget of a tab looked robust and was not: the router now
+        resolves the area from the pointer at event time, so a card built later
+        needs no binding and a hidden tab cannot be scrolled through.
+        """
         canvas = CTkAdapter.scroll_canvas(scroll)
         if canvas is None:
             return
-        # Bind the frame and its canvas right after creation; ``_refresh_wheels``
-        # walks the tree again once the cards inside the tab exist, because a
-        # widget that does not exist yet cannot be bound.
-        self._wheels.append(install_tab_wheel(self.root, scroll, canvas))
+        self._scroll.register(scroll, canvas, name=f"tab{len(self._scroll_frames) + 1}")
         self._scroll_frames.append(scroll)
 
     def _paragraph_shortcuts(self, widget: Any) -> None:
@@ -830,9 +827,6 @@ class PhantomApp:
         self._render_tab_labels()
         self._render_format_labels()
         self.binder.apply()
-        # A segmented button rebuilds its children whenever its values change,
-        # so the wheel has to be handed to the fresh widgets.
-        self._refresh_wheels()
 
     def _render_format_labels(self) -> None:
         """Say which layout this build writes, for the carrier that is chosen."""
@@ -1119,6 +1113,12 @@ class PhantomApp:
             self.settings.theme,
             "on" if self.dnd.available else f"off ({self.dnd.reason})",
         )
+        LOGGER.info("scroll: %s", self._scroll.describe())
+        if self._scroll.diagnostics.enabled:
+            LOGGER.warning(
+                "scroll event diagnostics are on (%s): every wheel event is logged",
+                DIAGNOSTICS_ENV,
+            )
 
     def _seat_drop_zone(self, zone: str, widget: Any) -> None:
         callbacks = {
@@ -1882,7 +1882,6 @@ class PhantomApp:
         self.theme_watcher.set_enabled(self.settings.theme == "System")
         self._schedule_theme_poll()
         self._render_theme_labels()
-        self._refresh_wheels()
         if persist:
             self._save_settings()
 
@@ -1986,7 +1985,7 @@ class PhantomApp:
         if self._result_window is not None:
             self._result_window.close()
             self._result_window = None
-        self._release_wheels()
+        self._release_scroll()
         geometry = self.root.geometry()
         if GEOMETRY_RE.match(geometry):
             self.settings.window_geometry = geometry

@@ -119,10 +119,19 @@ Text fields behave like native ones on every platform:
   bound on the inner Tk widget, so CustomTkinter's proxies cannot swallow it.
 - `PASTE` and `COPY KEY` buttons next to both password fields, for systems where
   the shortcut never reaches the application.
-- The mouse wheel and the trackpad scroll the whole tab, not just the scrollbar:
-  the event is routed from any child widget to the enclosing scrollable frame
-  (macOS deltas are inverted and never rounded to zero). A text box keeps the
-  wheel while it can still scroll itself.
+- The mouse wheel and the trackpad scroll the whole tab, not just the scrollbar,
+  and they scroll the tab **under the pointer**. One application-level router
+  resolves the target from the pointer position at event time (`winfo
+  containing`), so the event no longer has to be bound on every widget and a tab
+  that is not on screen cannot be scrolled through. The two event kinds are
+  handled separately: `<TouchpadScroll>` (Tk 9, macOS and Windows) carries the two
+  pixel deltas packed into `%D` and is decoded with `tk::PreciseScrollDeltas`,
+  while `<MouseWheel>` is a notch count whose scale is read from the running Tk
+  (Aqua 8.6 reports ±1 per notch, Aqua 9 and Windows ±120, X11 is one unit). A text
+  box keeps the wheel while it can still scroll itself. Set
+  `PHANTOM_SCROLL_DEBUG=1` (or a file path) to log every scroll event: type, Tk
+  version, backend, raw and decoded deltas, the widget under the pointer, the
+  chosen area, and the `yview` before and after.
 - The clipboard is treated as public. A copied password, key or result is cleared
   after 30 s and again when the window closes, with the platform's own tool
   (`pbcopy`, `clip`, `wl-copy`, `xclip`, `xsel`) instead of Tk alone, because Tk
