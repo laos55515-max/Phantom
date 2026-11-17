@@ -104,6 +104,20 @@ def _pump(app, seconds: float = 30.0) -> None:
         # how one stuck job used to turn into a twelve-minute timeout.
         app.worker.cancel()
         app.worker.shutdown(timeout=2.0)
+        # A wedged job survives cancel() and shutdown() -- that is what makes it
+        # wedged -- so the interpreter would wait for its non-daemon thread for
+        # ever and the CI step would burn its whole limit with no evidence.  Dump
+        # every thread to a file the workflow prints: the frame the job is stuck
+        # in is the only way to tell a slow encoder from a deadlock.
+        import faulthandler
+
+        with open("gui_stacks.txt", "a", encoding="utf-8") as dump:
+            print(
+                f"=== wedged: worker={app.worker.busy} app={app._busy} "
+                f"operation={app._operation!r} ===",
+                file=dump,
+            )
+            faulthandler.dump_traceback(file=dump, all_threads=True)
     assert not (app.worker.busy or app._busy), (
         f"still busy after {seconds:.0f}s: worker={app.worker.busy}, "
         f"app={app._busy}, operation={app._operation!r}"

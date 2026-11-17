@@ -5,3 +5,6 @@ __pycache__/
 build/
 dist/
 .DS_Store
+
+# thread dumps a wedged GUI job leaves behind (tests/test_gui.py)
+gui_stacks.txt

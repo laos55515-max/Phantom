@@ -116,8 +116,17 @@ jobs:
               print(f"::error::first: {line[:900]}")
           # The raw tail: with -v it names the test the run stopped in, which is
           # the only way to see a stall when the step is killed from outside.
-          for line in lines[-30:]:
-              print(f"::error::tail: {line[:900]}")
+          # Notices, not errors: GitHub keeps only ten error annotations per step
+          # and the tail is the part that explains a timeout.
+          for line in lines[-25:]:
+              print(f"::notice::tail: {line[:900]}")
+          # Thread dumps a wedged GUI job left behind (tests/test_gui.py).
+          stacks = pathlib.Path("gui_stacks.txt")
+          if stacks.exists():
+              dumped = stacks.read_text(errors="replace").splitlines()
+              print(f"::notice::gui_stacks.txt: {len(dumped)} lines")
+              for line in dumped[-40:]:
+                  print(f"::warning::stacks: {line[:900]}")
           for line in interesting[-5:]:
               print(f"::error::{line[:900]}")
           PY
