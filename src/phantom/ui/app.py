@@ -1470,8 +1470,21 @@ class PhantomApp:
             self._finish_operation_ui()
 
     def _drain_events(self) -> None:
+        """Handle every queued event; one bad handler must not stop the chain.
+
+        A handler that raises used to take the poll callback with it: Tk prints the
+        traceback, the ``after`` chain is never re-armed, and the window stays
+        "busy" for an operation that has already finished with no way back.  The
+        traceback is logged, the operation is finished and the footer says it
+        failed — a visible error instead of a wedged window.
+        """
         for event in self.worker.poll():
-            self._handle_worker_event(event)
+            try:
+                self._handle_worker_event(event)
+            except Exception:
+                LOGGER.exception("worker event %s could not be handled", event.kind.value)
+                self._finish_operation_ui()
+                self._set_status_key("status_error", severity="error")
 
     def _worker_has_work(self) -> bool:
         """``worker.busy``, read through a call because it changes mid-poll."""

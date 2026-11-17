@@ -1215,23 +1215,25 @@ def test_the_metadata_tab_is_routed_like_every_other_tab(app) -> None:
     assert not [item for item in app._scroll.areas if item.frame is panel.list_area]
 
 
-def test_the_metadata_tab_scrolls_under_the_pointer(app) -> None:
-    """Five cards make this the tallest tab: it must move where the room is."""
+def test_the_metadata_cards_belong_to_the_tab_area(app) -> None:
+    """Every card resolves to the tab's own area — there is no second canvas.
+
+    The generic tests above prove that a wheel event on the root scrolls the area
+    under the pointer; what matters here is that the fifth card, the field rows and
+    the pre-report box all answer with the same area, so the router needs no
+    special case for this tab.
+    """
     _reveal(app)
     app._show_tab("metadata")
     app.root.update()
+    panel = app.metadata_panel
+    assert panel is not None
     area = _area_for_tab(app, "metadata")
     assert area is not None
-    before = _make_scrollable(area.canvas)
-    x, y = _point_over(app, area)
-    # The tab may already sit at the bottom of its own document, so a downward
-    # notch would be a no-op and the test would blame the router for the layout.
-    delta = 120 if before > 0.05 else -120
 
-    _wheel_on_root(app, delta=delta, x=x, y=y)
-
-    after = float(area.canvas.yview()[0])
-    assert after != pytest.approx(before), f"the wheel did not move the tab: {before} → {after}"
+    for widget in (panel.file_card, panel.results_card, panel.list_area, panel.save_card):
+        assert app._scroll.area_for_widget(widget) is area
+    assert not [item for item in app._scroll.areas if item.frame is panel.list_area]
 
 
 def test_choosing_a_file_fills_the_tab(app, tmp_path: Path, dialogs) -> None:

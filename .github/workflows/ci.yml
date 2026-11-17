@@ -102,7 +102,7 @@ jobs:
           interesting = [
               line
               for line in lines
-              if re.search(r"FAILED|ERROR|Timeout|^E |assert|Error", line)
+              if re.search(r"FAILED|ERROR|Timeout|^E |assert|Error|Traceback", line)
               and "PASSED" not in line
           ]
           # Every failing test by name first: the tail of the log only shows the
