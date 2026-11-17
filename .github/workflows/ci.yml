@@ -114,7 +114,11 @@ jobs:
           print(f"::notice::gui.log: {len(lines)} lines, {len(failures)} failing tests")
           for line in interesting[:15]:
               print(f"::error::first: {line[:900]}")
-          for line in interesting[-10:] or lines[-10:]:
+          # The raw tail: with -v it names the test the run stopped in, which is
+          # the only way to see a stall when the step is killed from outside.
+          for line in lines[-30:]:
+              print(f"::error::tail: {line[:900]}")
+          for line in interesting[-5:]:
               print(f"::error::{line[:900]}")
           PY
           if [ "${{ steps.gui.outcome }}" != "success" ]; then
