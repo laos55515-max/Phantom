@@ -482,13 +482,31 @@ out? The release also contains the scroll-router and progress work listed under
 
 ### Changed
 
-- The window has four tabs, so the scroll router now registers five areas: three
-  tabs, the metadata tab and the metadata field list, which is nested inside it
-  and resolved by the same pointer-driven router. There is still exactly one
-  global wheel handler.
+- The window has four tabs, so the scroll router registers one area per tab,
+  `metadata` included, and still exactly one global wheel handler. The metadata
+  field rows live in the tab that carries them: a `CTkScrollableFrame` inside
+  another one makes the two canvases chase each other's `<Configure>` events,
+  which is a layout storm and a scroll bug waiting to happen on the platform the
+  router was written for.
 - `Cmd/Ctrl+1…4` now select `embed`, `extract`, `metadata` and `settings`
   (`Ctrl+3` was `settings` before); the previous tab is still restored on launch.
 - `AppSettings.normalized()` accepts `"metadata"` as a saved last tab.
+
+### Fixed
+
+- **A long job can no longer freeze the window on a slow machine.** A worker
+  thread allocates, so it can start a cyclic garbage collection, and a collection
+  runs finalizers — `tkinter.font.Font.__del__` calls into Tcl, which is not
+  thread-safe. When the finalizer landed on the worker, Tk waited for a main loop
+  that was waiting for the job, and the operation never finished. The collector is
+  now paused for the length of a job and every finalizer runs on the thread that
+  owns Tk (`_pause_collection_for_job`/`_resume_collection_after_job`, pinned by a
+  GUI test).
+- **One handler that raises no longer wedges the interface.** Worker events are
+  dispatched from an `after()` callback; the traceback used to take the callback
+  with it, so the chain was never re-armed and the window stayed "busy" for an
+  operation that had already ended. The event loop now logs the traceback, finishes
+  the operation and paints an error instead.
 
 ### Security
 
