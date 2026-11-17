@@ -1250,6 +1250,31 @@ def test_the_metadata_cards_belong_to_the_tab_area(app) -> None:
     assert not [item for item in app._scroll.areas if item.frame is panel.list_area]
 
 
+def test_the_collector_never_runs_on_the_worker_thread(app) -> None:
+    """A finalizer on the worker thread can call Tcl, which is not thread-safe.
+
+    That is how the embed test used to wedge on a loaded runner: the worker
+    imported numpy, the collector reclaimed a Tk font, and ``Font.__del__`` waited
+    for a main loop that was waiting for the job.  The collector is paused while a
+    job runs, so no finalizer can land on the worker.
+    """
+    import gc
+    import threading
+
+    release = threading.Event()
+    assert gc.isenabled()
+    assert app._start_job(
+        "estimate", lambda report, cancel: release.wait(10) and None, "status_ready", silent=True
+    )
+    try:
+        assert app.worker.busy
+        assert not gc.isenabled(), "the collector is still armed while a job runs"
+    finally:
+        release.set()
+        _pump(app)
+    assert gc.isenabled(), "the collector must come back when the job ends"
+
+
 def test_choosing_a_file_fills_the_tab(app, tmp_path: Path, dialogs) -> None:
     import metadata_samples as samples
 

@@ -8,6 +8,7 @@ and forwards user intent.  All work that can block runs in
 from __future__ import annotations
 
 import contextlib
+import gc
 import logging
 import os
 import re
@@ -103,6 +104,7 @@ class PhantomApp:
         self.theme_watcher = SystemThemeWatcher()
         self.debouncer = Debouncer(self.root.after, self.root.after_cancel)
 
+        self._gc_paused = False
         self._poll_token: str | None = None
         self._anim_token: str | None = None
         self._theme_token: str | None = None
@@ -1430,8 +1432,10 @@ class PhantomApp:
         self._reset_progress()
         if not silent:
             self._set_status_key(status_key, severity="info")
+        self._pause_collection_for_job()
         started = self.worker.start(name, job)
         if not started:
+            self._resume_collection_after_job()
             self._busy = False
             self._operation = ""
             self._refresh_busy_state()
@@ -1440,6 +1444,32 @@ class PhantomApp:
         self._ensure_stage_tick()
         self._ensure_polling()
         return True
+
+    def _pause_collection_for_job(self) -> None:
+        """Keep the cyclic collector on this thread for the length of a job.
+
+        A collection can run ``__del__`` on any object it reclaims, and
+        ``tkinter.font.Font.__del__`` calls into Tcl.  Tcl is not thread-safe: a
+        finalizer that lands on the worker thread makes Tk wait for a main loop
+        that is itself waiting for the job, and the window freezes with the
+        worker still "busy" — the intermittent embed stall that only ever showed
+        up on a loaded CI runner, stuck inside ``tkinter/font.py`` on the worker.
+        Collecting before the job and after it puts every finalizer back on the
+        main thread; the job itself allocates only short-lived buffers, which
+        refcounting frees without the collector.
+        """
+        if self._gc_paused:
+            return
+        gc.collect()
+        gc.disable()
+        self._gc_paused = True
+
+    def _resume_collection_after_job(self) -> None:
+        if not self._gc_paused:
+            return
+        self._gc_paused = False
+        gc.enable()
+        gc.collect()
 
     def _ensure_polling(self) -> None:
         if self._poll_token is None:
@@ -1622,6 +1652,7 @@ class PhantomApp:
 
     def _finish_operation_ui(self) -> None:
         self._busy = False
+        self._resume_collection_after_job()
         self._operation = ""
         self._stop_stage_tick()
         self._operation_started = 0.0
@@ -2042,6 +2073,9 @@ class PhantomApp:
                 return
             self.worker.cancel()
             self.worker.shutdown(timeout=3.0)
+        # The window is going away; leave the interpreter with a working collector
+        # even if the last job never reported back.
+        self._resume_collection_after_job()
         if self._poll_token is not None:
             self.root.after_cancel(self._poll_token)
             self._poll_token = None
