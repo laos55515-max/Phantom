@@ -118,9 +118,17 @@ def _pump(app, seconds: float = 30.0) -> None:
                 file=dump,
             )
             faulthandler.dump_traceback(file=dump, all_threads=True)
+    import gc
+
+    # The poll chain is what clears _busy; say whether it is still armed, because
+    # a worker that has finished with _busy stuck true means the chain died and
+    # the assertion message is the only place CI will ever show that.
+    pending = [str(item) for item in app.root.tk.call("after", "info")]
+    armed = app._poll_token is not None and str(app._poll_token) in pending
     assert not (app.worker.busy or app._busy), (
         f"still busy after {seconds:.0f}s: worker={app.worker.busy}, "
-        f"app={app._busy}, operation={app._operation!r}"
+        f"app={app._busy}, operation={app._operation!r}, gc={gc.isenabled()}, "
+        f"poll_token={app._poll_token!r}, armed={armed}, afters={len(pending)}"
     )
 
 
