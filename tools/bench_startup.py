@@ -125,13 +125,15 @@ def profile(ctk: Any, counters: Counters, *, limit: int = 8) -> None:
         profiler.disable()
 
     entries = []
-    for (filename, lineno, name), value in profiler.getstats():
-        entries.append((value.tt, value.callcount, filename, lineno, name))
+    for entry in profiler.getstats():
+        filename, lineno, name = entry.code
+        entries.append((entry.totaltime, entry.inlinetime, entry.callcount, filename, lineno, name))
     entries.sort(key=lambda item: item[0], reverse=True)
-    for total_seconds, calls, filename, lineno, name in entries[:limit]:
+    for cumulative, inline, calls, filename, lineno, name in entries[:limit]:
         where = f"{Path(filename).name}:{lineno}"
         print(
-            f"PROFILE: {total_seconds * 1000:8.1f}ms calls={calls:<5} {name} @ {where}",
+            f"PROFILE: cum={cumulative * 1000:8.1f}ms self={inline * 1000:8.1f}ms "
+            f"calls={calls:<6} {name} @ {where}",
             flush=True,
         )
 

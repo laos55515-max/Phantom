@@ -153,7 +153,7 @@ jobs:
           set +e
           : > /tmp/startup.txt
           echo "=== this branch" | tee -a /tmp/startup.txt
-          xvfb-run -a -s "-screen 0 1280x1024x24" python tools/bench_startup.py --profile >>/tmp/startup.txt 2>&1
+          xvfb-run -a -s "-screen 0 1280x1024x24" python tools/bench_startup.py --profile --stages >>/tmp/startup.txt 2>&1
           echo "bench(this)=$?" | tee -a /tmp/startup.txt
           if [ -n "${{ github.base_ref }}" ]; then
             echo "=== base (${{ github.base_ref }})" | tee -a /tmp/startup.txt
