@@ -170,7 +170,11 @@ def main(argv: list[str]) -> int:
     )
     if wants_profile:
         # Last, so a bug here can never cost the numbers above.
-        profile(ctk, counters)
+        print("PROFILE: begin", flush=True)
+        try:
+            profile(ctk, counters)
+        except Exception as exc:  # noqa: BLE001 - a benchmark reports, never raises
+            print(f"PROFILE: error={type(exc).__name__}: {exc}", flush=True)
     return 0
 
 

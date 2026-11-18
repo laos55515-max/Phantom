@@ -169,16 +169,13 @@ jobs:
               echo "bench(base)=$?" | tee -a /tmp/startup.txt
             fi
           fi
-          grep -E "^STARTUP: (median|run)" /tmp/startup.txt | head -3 | while read -r line; do
-            echo "::notice::$line"
-          done
-          grep -E "^PROFILE:" /tmp/startup.txt | head -6 | while read -r line; do
-            echo "::notice::$line"
-          done
+          # One annotation per group: GitHub keeps ten per step and drops the
+          # rest silently, so the whole measurement travels in three.
+          echo "::notice::medians: $(grep -E '^STARTUP: median' /tmp/startup.txt | tr '\n' '|')"
+          echo "::notice::stages: $(grep -E '^STARTUP: (stage|summary)' /tmp/startup.txt | head -14 | tr '\n' '|')"
+          echo "::notice::profile: $(grep -E '^PROFILE:' /tmp/startup.txt | head -8 | tr '\n' '|')"
           if ! grep -q "^STARTUP: median" /tmp/startup.txt; then
-            tail -4 /tmp/startup.txt | while read -r line; do
-              echo "::warning::bench: $line"
-            done
+            echo "::warning::bench: $(tail -4 /tmp/startup.txt | tr '\n' '|')"
           fi
 
       - name: Keep the GUI log
