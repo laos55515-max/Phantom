@@ -31,7 +31,11 @@ from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT / "src") not in sys.path:
+try:
+    # An explicit PYTHONPATH wins: that is how the same script measures another
+    # checkout (this branch against its base) without being edited.
+    import phantom  # noqa: F401
+except ImportError:
     sys.path.insert(0, str(ROOT / "src"))
 
 RUNS = 3
