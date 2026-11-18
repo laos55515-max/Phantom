@@ -42,9 +42,16 @@ from phantom.ui.debounce import Debouncer
 from phantom.ui.dnd import DndProvider, DropTarget
 from phantom.ui.format import layout_text, size_text, written_layout_text
 from phantom.ui.metadata_panel import MetadataPanel
+from phantom.ui.responsive import (
+    FlowRow,
+    Responsive,
+    fit_checkbox_on_change,
+    fit_switch_on_change,
+)
 from phantom.ui.result_window import ResultWindow
 from phantom.ui.scroll import DIAGNOSTICS_ENV, ScrollRouter
 from phantom.ui.settings import AppSettings, SettingsStore
+from phantom.ui.startup import StartupTrace
 from phantom.ui.system_theme import SystemThemeWatcher
 from phantom.ui.viewmodel import (
     CoreBackend,
@@ -88,10 +95,17 @@ class PhantomApp:
         settings_store: SettingsStore | None = None,
         dnd: DndProvider | None = None,
         i18n: I18n | None = None,
+        trace: StartupTrace | None = None,
     ) -> None:
         self.root = root
+        #: Per-stage timings; silent unless ``PHANTOM_STARTUP_DEBUG=1``.
+        self.trace = trace if trace is not None else StartupTrace()
+        #: Measured button widths and wrap widths for the whole window.
+        self.responsive = Responsive()
+        self.trace.mark("init:begin")
         self.store = settings_store or SettingsStore()
         self.settings: AppSettings = self.store.load()
+        self.trace.mark("init:settings")
         self.i18n = i18n or I18n(self.settings.language)
         self.settings.language = self.i18n.language
         self.binder = I18nBinder(self.i18n)
@@ -105,6 +119,9 @@ class PhantomApp:
         self.debouncer = Debouncer(self.root.after, self.root.after_cancel)
 
         self._gc_paused = False
+        #: Whether the collector was on *before* the first pause: an interpreter
+        #: started with ``gc.disable()`` must still have it disabled afterwards.
+        self._gc_was_enabled = True
         self._poll_token: str | None = None
         self._anim_token: str | None = None
         self._theme_token: str | None = None
@@ -136,16 +153,27 @@ class PhantomApp:
         self._scroll_frames: list[Any] = []
         self._text_shortcuts: list[Any] = []
         self._result_window: ResultWindow | None = None
+        self._last_window_width = 0
 
+        self.trace.mark("init:services")
         self._configure_root()
-        self._build()
+        with self.trace.stage("build:chrome"):
+            self._build()
         self._scroll.install()
         self._apply_theme(self.settings.theme, persist=False)
-        self._restore_geometry()
         self._wire_shortcuts()
-        self._render_all_labels()
-        self._refresh_all()
-        self._log_startup_state()
+        with self.trace.stage("render:labels"):
+            self._render_all_labels()
+        with self.trace.stage("render:state"):
+            self._refresh_all(initial=True)
+        # Widths and wrap widths are derived from what the cards really became:
+        # this is the one pass that needs every widget to exist.
+        with self.trace.stage("layout:adopt"):
+            self.responsive.adopt(self.root)
+        # Anything that is useful but not needed for the first frame waits for
+        # the event loop, so the window is on screen before it happens.
+        self.root.after_idle(self._after_first_frame)
+        self.trace.mark("init:done")
 
     # ------------------------------------------------------------------
     # construction helpers
@@ -185,6 +213,14 @@ class PhantomApp:
             "menu_select_all": self._t("menu_select_all"),
         }
 
+    def file_manager_name(self) -> str:
+        """What this system calls the program "reveal in folder" opens."""
+        if T.IS_MACOS:
+            return self._t("filemanager.finder")
+        if os.name == "nt":
+            return self._t("filemanager.explorer")
+        return self._t("filemanager.generic")
+
     def _security_params(self) -> dict[str, object]:
         profile = C.default_kdf_profile()
         return {
@@ -200,10 +236,18 @@ class PhantomApp:
         self.root.title(self._t("window_title"))
         self.root.geometry(f"{WINDOW_SIZE[0]}x{WINDOW_SIZE[1]}")
         self.root.minsize(*MIN_SIZE)
+        # Restore the saved geometry *before* the widgets exist: resizing a
+        # fully built window forces a second layout pass over every card, which
+        # is most of the "empty window for a second" the owner saw.
+        self._restore_geometry()
+        self.trace.mark("root:configured")
         self.root.configure(fg_color=T.CLR_BG)
         self.root.grid_columnconfigure(0, weight=1)
         self.root.grid_rowconfigure(2, weight=1)
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+        # A child's <Configure> reaches the toplevel's bind tags too, so the
+        # handler filters on the event's widget before doing anything.
+        self.root.bind("<Configure>", self._on_window_resize, add="+")
 
     def _build(self) -> None:
         self._build_header()
@@ -216,12 +260,17 @@ class PhantomApp:
         self.frames.grid(row=0, column=0, sticky="nsew")
         self.frames.grid_columnconfigure(0, weight=1)
         self.frames.grid_rowconfigure(0, weight=1)
-        self.tab_frames = {
-            "embed": self._build_embed_tab(),
-            "extract": self._build_extract_tab(),
-            "metadata": self._build_metadata_tab(),
-            "settings": self._build_settings_tab(),
-        }
+        self.tab_frames = {}
+        for name, builder in (
+            ("embed", self._build_embed_tab),
+            ("extract", self._build_extract_tab),
+            ("metadata", self._build_metadata_tab),
+            ("settings", self._build_settings_tab),
+        ):
+            self.tab_frames[name] = builder()
+            # One mark per tab: the report can then say which tab was the expensive
+            # one instead of "the window took two seconds".
+            self.trace.mark(f"build:tab:{name}")
         for frame in self.tab_frames.values():
             frame.grid(row=0, column=0, sticky="nsew")
         self._build_footer()
@@ -382,18 +431,24 @@ class PhantomApp:
         )
         self.show_embed_pwd.pack(side="left", padx=(10, 0))
 
-        actions = ctk.CTkFrame(password_card, fg_color="transparent")
-        actions.pack(fill="x", padx=18, pady=(10, 4))
-        self.generate_button = secondary_button(actions, self.root, "", self._generate_password)
-        self.generate_button.pack(side="left")
-        self.paste_pwd_button = secondary_button(actions, self.root, "", self._paste_password)
-        self.paste_pwd_button.pack(side="left", padx=(10, 0))
-        self.copy_pwd_button = secondary_button(actions, self.root, "", self._copy_password)
-        self.copy_pwd_button.pack(side="left", padx=(10, 0))
+        # A flow row, not three packed buttons: Russian and Ukrainian captions are
+        # wider than English ones and the row has to re-wrap instead of running
+        # off the card when the window is not maximised (D15).
+        actions = self.embed_password_actions = FlowRow(password_card)
+        actions.pack(fill="x", padx=18, pady=(10, 2))
+        self.generate_button = actions.add(
+            secondary_button(actions, self.root, "", self._generate_password)
+        )
+        self.paste_pwd_button = actions.add(
+            secondary_button(actions, self.root, "", self._paste_password)
+        )
+        self.copy_pwd_button = actions.add(
+            secondary_button(actions, self.root, "", self._copy_password)
+        )
         self.binder.bind(self.paste_pwd_button, "btn_paste")
         self.binder.bind(self.copy_pwd_button, "btn_copy_pwd")
-        self.clipboard_hint = hint_label(actions, self.root, "", wrap=520)
-        self.clipboard_hint.pack(side="left", padx=(12, 0), fill="x", expand=True)
+        self.clipboard_hint = hint_label(password_card, self.root, "", wrap=520)
+        self.clipboard_hint.pack(fill="x", padx=18, pady=(4, 0))
         self.password_hint = hint_label(password_card, self.root, "", wrap=620)
         self.password_hint.pack(fill="x", padx=18, pady=(4, 12))
 
@@ -463,6 +518,7 @@ class PhantomApp:
         self.wipe_checkbox = ctk.CTkCheckBox(
             output_card,
             text="",
+            width=100,
             font=sans_font(self.root, T.FONT_SIZE_BODY),
             command=self._on_wipe_toggle,
             checkbox_width=20,
@@ -475,6 +531,7 @@ class PhantomApp:
         self.verify_checkbox = ctk.CTkCheckBox(
             output_card,
             text="",
+            width=100,
             font=sans_font(self.root, T.FONT_SIZE_BODY),
             command=self._on_verify_toggle,
             checkbox_width=20,
@@ -545,16 +602,14 @@ class PhantomApp:
             ),
         )
         self.show_extract_pwd.pack(side="left", padx=(10, 0))
-        extract_actions = ctk.CTkFrame(stego_card, fg_color="transparent")
+        extract_actions = self.extract_password_actions = FlowRow(stego_card)
         extract_actions.pack(fill="x", padx=18, pady=(8, 4))
-        self.paste_extract_button = secondary_button(
-            extract_actions, self.root, "", self._paste_password
+        self.paste_extract_button = extract_actions.add(
+            secondary_button(extract_actions, self.root, "", self._paste_password)
         )
-        self.paste_extract_button.pack(side="left")
-        self.copy_extract_button = secondary_button(
-            extract_actions, self.root, "", self._copy_password
+        self.copy_extract_button = extract_actions.add(
+            secondary_button(extract_actions, self.root, "", self._copy_password)
         )
-        self.copy_extract_button.pack(side="left", padx=(10, 0))
         self.binder.bind(self.paste_extract_button, "btn_paste")
         self.binder.bind(self.copy_extract_button, "btn_copy_pwd")
         self.stego_notice = hint_label(stego_card, self.root, "", wrap=620)
@@ -580,37 +635,38 @@ class PhantomApp:
         self._paragraph_shortcuts(self.result_text)
         self.result_file_label = value_label(result_card, self.root, "")
         self.result_file_label.pack(fill="x", padx=18)
-        buttons_row = ctk.CTkFrame(result_card, fg_color="transparent")
+        # Seven buttons: packed side by side they needed ~1150 logical pixels and
+        # the window is 980 wide at its smallest, so the last ones were cut off.
+        # The flow row keeps them in reading order and moves the overflow down.
+        buttons_row = self.extract_buttons_row = FlowRow(result_card)
         buttons_row.pack(fill="x", padx=18, pady=(8, 4))
-        self.copy_button = secondary_button(buttons_row, self.root, "", self._copy_result)
-        self.copy_button.pack(side="left")
-        self.save_button = secondary_button(
-            buttons_row, self.root, "", self._save_result_file
+        self.copy_button = buttons_row.add(
+            secondary_button(buttons_row, self.root, "", self._copy_result)
         )
-        self.save_button.pack(side="left", padx=(10, 0))
-        self.save_as_button = secondary_button(
-            buttons_row, self.root, "", self._save_result_file_as
+        self.save_button = buttons_row.add(
+            secondary_button(buttons_row, self.root, "", self._save_result_file)
         )
-        self.save_as_button.pack(side="left", padx=(10, 0))
-        self.expand_button = secondary_button(
-            buttons_row, self.root, "", self._expand_result
+        self.save_as_button = buttons_row.add(
+            secondary_button(buttons_row, self.root, "", self._save_result_file_as)
         )
-        self.expand_button.pack(side="left", padx=(10, 0))
-        self.clear_result_button = secondary_button(
-            buttons_row, self.root, "", self._clear_extract
+        self.expand_button = buttons_row.add(
+            secondary_button(buttons_row, self.root, "", self._expand_result)
         )
-        self.clear_result_button.pack(side="left", padx=(10, 0))
-        self.copy_path_button = secondary_button(
-            buttons_row, self.root, "", self._copy_result_path
+        self.clear_result_button = buttons_row.add(
+            secondary_button(buttons_row, self.root, "", self._clear_extract)
         )
-        self.copy_path_button.pack(side="left", padx=(10, 0))
-        self.reveal_button = secondary_button(
-            buttons_row, self.root, "", self._reveal_result
+        self.copy_path_button = buttons_row.add(
+            secondary_button(buttons_row, self.root, "", self._copy_result_path)
         )
-        self.reveal_button.pack(side="left", padx=(10, 0))
+        self.reveal_button = buttons_row.add(
+            secondary_button(buttons_row, self.root, "", self._reveal_result)
+        )
         self.binder.bind(self.expand_button, "btn_expand")
         self.binder.bind(self.copy_path_button, "btn_copy_path")
-        self.binder.bind(self.reveal_button, "btn_reveal")
+        # The caption names the file manager this system actually opens.
+        self.binder.bind_dynamic(
+            self.reveal_button, "btn_reveal", lambda: {"file_manager": self.file_manager_name()}
+        )
         self.binder.bind(self.copy_button, "btn_copy")
         self.binder.bind(self.save_button, "btn_save")
         self.binder.bind(self.save_as_button, "btn_save_as")
@@ -731,6 +787,7 @@ class PhantomApp:
         )
         self.animations_switch.pack(fill="x", padx=18, pady=(0, 6))
         self.binder.bind(self.animations_switch, "settings_reduce_motion")
+        fit_switch_on_change(self.animations_switch)
         self.verify_switch = ctk.CTkSwitch(
             options_card,
             text="",
@@ -742,6 +799,7 @@ class PhantomApp:
         )
         self.verify_switch.pack(fill="x", padx=18, pady=(0, 6))
         self.binder.bind(self.verify_switch, "audit_verified", attribute="text")
+        fit_switch_on_change(self.verify_switch)
         self.reset_button = secondary_button(
             options_card, self.root, "", self._on_reset_settings
         )
@@ -822,6 +880,10 @@ class PhantomApp:
         self.binder.bind(self.output_button, "btn_browse_output")
         self.binder.bind(self.wipe_checkbox, "chk_secure_delete")
         self.binder.bind(self.verify_checkbox, "chk_verify")
+        # A checkbox draws its caption inside its own width: measure it, in the
+        # current language, instead of leaving the default 100 px.
+        fit_checkbox_on_change(self.wipe_checkbox)
+        fit_checkbox_on_change(self.verify_checkbox)
         self.binder.bind(self.show_embed_pwd, "chk_show_password")
         self.binder.bind(self.show_extract_pwd, "chk_show_password")
         self.binder.bind_dynamic(
@@ -848,6 +910,20 @@ class PhantomApp:
         self._render_tab_labels()
         self._render_format_labels()
         self.binder.apply()
+        # Captions changed, so their measured widths did too: re-wrap the rows
+        # and the paragraphs before the next frame is drawn.
+        self.responsive.refit_flows()
+        self.responsive.rewrap()
+
+    def _on_window_resize(self, event: Any) -> None:
+        """One place that reacts to the window size, debounced to real changes."""
+        if getattr(event, "widget", None) is not self.root:
+            return
+        width = int(getattr(event, "width", 0) or 0)
+        if abs(width - self._last_window_width) < 4:
+            return
+        self._last_window_width = width
+        self.responsive.refit_flows()
 
     def _render_format_labels(self) -> None:
         """Say which layout this build writes, for the carrier that is chosen."""
@@ -905,14 +981,26 @@ class PhantomApp:
                 self.tab_bar.set(label)
                 break
 
+    def _after_first_frame(self) -> None:
+        """Work that must not delay the window: logging, theme polling, log lines."""
+        self.trace.mark("first_frame")
+        try:
+            self._log_startup_state()
+        except Exception as exc:  # noqa: BLE001 - never let housekeeping kill the UI
+            LOGGER.debug("post-startup work skipped: %s", exc)
+        self.trace.mark("after_idle")
+        self.trace.log_summary()
+
     # ------------------------------------------------------------------
     # state refresh
     # ------------------------------------------------------------------
-    def _refresh_all(self) -> None:
+    def _refresh_all(self, *, initial: bool = False) -> None:
         self._refresh_embed_state()
         self._refresh_extract_state()
         self._refresh_settings_state()
-        if self.metadata_panel is not None:
+        # The panel repaints itself at the end of its own build; doing it again
+        # in the same tick was a second full render of five cards for nothing.
+        if self.metadata_panel is not None and not initial:
             self.metadata_panel.refresh()
         self._refresh_busy_state()
         # A new carrier (or none) changes which layout the tab promises to write.
@@ -1090,8 +1178,16 @@ class PhantomApp:
             if widget is not None:
                 widget.configure(state=state)
         if self.metadata_panel is not None:
-            for widget in self.metadata_panel.action_buttons():
+            # When the job ends, "save" is decided by the selection and the plan,
+            # not by the busy flag: a disabled save button has to say why.
+            buttons = (
+                self.metadata_panel.action_buttons()
+                if state == "disabled"
+                else self.metadata_panel.editable_action_buttons()
+            )
+            for widget in buttons:
                 widget.configure(state=state)
+            self.metadata_panel._render_save_state()
         self.cancel_button.configure(state="normal" if self._busy else "disabled")
 
     # ------------------------------------------------------------------
@@ -1460,14 +1556,30 @@ class PhantomApp:
         """
         if self._gc_paused:
             return
+        self._gc_was_enabled = gc.isenabled()
+        if not self._gc_was_enabled:
+            # Someone else (a profiler, a test, the embedding application) turned
+            # the collector off.  Own the pause anyway, so the resume stays a
+            # no-op instead of switching on something we did not switch off.
+            LOGGER.debug("collector was already disabled; leaving it that way")
+            self._gc_paused = True
+            return
         gc.collect()
         gc.disable()
         self._gc_paused = True
 
     def _resume_collection_after_job(self) -> None:
+        """Undo exactly one pause; never re-enable a collector we did not disable."""
         if not self._gc_paused:
             return
+        if self.worker.busy:
+            # Another job owns the pause now: enabling here would let a finalizer
+            # run on a worker thread, which is the freeze this exists to prevent.
+            LOGGER.debug("collector stays paused: a job is still running")
+            return
         self._gc_paused = False
+        if not self._gc_was_enabled:
+            return
         gc.enable()
         gc.collect()
 
@@ -1477,6 +1589,22 @@ class PhantomApp:
 
     def _poll(self) -> None:
         self._poll_token = None
+        try:
+            self._poll_once()
+        except Exception:
+            LOGGER.exception("worker poll failed")
+            self._finish_operation_ui_safely()
+            if self.worker.busy:
+                self._ensure_polling()
+
+    def _finish_operation_ui_safely(self) -> None:
+        """Finish the UI bookkeeping, even if a widget has already been destroyed."""
+        try:
+            self._finish_operation_ui()
+        except Exception:  # noqa: BLE001 - window closing mid-job
+            LOGGER.debug("cannot repaint the footer; the window is going away")
+
+    def _poll_once(self) -> None:
         self._drain_events()
         if self.worker.watchdog_expired():
             self._handle_watchdog()
@@ -1849,7 +1977,7 @@ class PhantomApp:
             "result_window_title": self._t("result_window_title"),
             "btn_copy_text": self._t("btn_copy_text"),
             "btn_copy_path": self._t("btn_copy_path"),
-            "btn_reveal": self._t("btn_reveal"),
+            "btn_reveal": self._t("btn_reveal", file_manager=self.file_manager_name()),
             "btn_close": self._t("btn_close"),
             "menu_paste": self._t("menu_paste"),
             "menu_copy": self._t("menu_copy"),
@@ -2108,15 +2236,38 @@ def build_root() -> tuple[ctk.CTk, DndProvider]:
     return root, provider
 
 
-def main() -> int:
+def main(trace: StartupTrace | None = None) -> int:
+    """Create the window and run it; ``trace`` is only passed by ``launch``."""
     logging.basicConfig(
         level=os.environ.get("PHANTOM_LOG_LEVEL", "INFO").upper(),
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
+    trace = trace if trace is not None else StartupTrace()
     ctk.set_default_color_theme("blue")
-    root, provider = build_root()
-    app = PhantomApp(root, dnd=provider)
+    with trace.stage("root"):
+        root, provider = build_root()
+    app = PhantomApp(root, dnd=provider, trace=trace)
+    # "ready" is the moment the window is really on screen: everything before it
+    # is what the user sees as a frozen, empty frame.
+    mapped: dict[str, bool] = {"done": False}
+
+    def on_map(_event: object | None = None) -> None:
+        if mapped["done"]:
+            return
+        mapped["done"] = True
+        trace.mark("ready")
+        trace.log_summary()
+
+    root.bind("<Map>", on_map, add="+")
     app.refresh_window()
+    try:
+        # Painting once before the loop is what makes the first frame the *first*
+        # thing the user sees, instead of an empty window that fills in later.
+        root.update_idletasks()
+    except Exception as exc:  # noqa: BLE001 - a headless Tk must not stop the launch
+        LOGGER.debug("first layout pass skipped: %s", exc)
+    trace.mark("first_frame")
+    trace.mark("mainloop")
     root.mainloop()
     return 0
 

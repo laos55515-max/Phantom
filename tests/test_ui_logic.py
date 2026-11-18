@@ -248,6 +248,9 @@ def test_ui_modules_import_tk_only_where_documented() -> None:
         "system_theme.py",
         "result_window.py",  # the expanded result window is pure Tk
         "metadata_panel.py",  # the fourth tab's cards; its logic lives in metadata_view.py
+        # measured button widths, wrapping rows and wrap widths: widgets, not logic
+        # (the arithmetic half lives in ``flow_rows``, which imports nothing).
+        "responsive.py",
         "__init__.py",
     }
     for path in (SRC / "ui").glob("*.py"):

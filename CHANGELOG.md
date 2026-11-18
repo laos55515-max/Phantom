@@ -8,6 +8,45 @@ All notable changes to PHANTOM are recorded here. The format follows
 
 ### Added
 
+- **The window fits its own text at every size and in every language.**
+  CustomTkinter keeps the width a button was created with, so
+  «ВЫБРАТЬ ФАЙЛ (PNG / WAV / FLAC)» was clipped on both sides in a windowed
+  window. Nothing resizes the minimum window or shrinks a font: every caption is
+  measured in its own font, `width=` became a minimum instead of a cap, a row of
+  buttons wraps onto a second line when it does not fit, and `wraplength` follows
+  the card. The GUI suite measures every captioned widget against its own text at
+  980×720, 1140×900, 1280×800, 1440×900 and after each language switch.
+- **Start-up is measured and shorter.** `PHANTOM_STARTUP_DEBUG=1` prints per-stage
+  timings (import, Tk root, each tab, the render passes, the first frame, the
+  moment the window is on screen) and a summary line. Three costs went away: the
+  system font list was enumerated once per widget (now once per window, with the
+  fonts cached), the saved geometry was applied *after* building all four tabs
+  (now before, so the window is laid out once), and the metadata panel was
+  rendered twice in the same tick (now once). Housekeeping that the first frame
+  does not need runs on the first idle callback.
+- **Scroll chaining.** A multi-line text box keeps the wheel while it can still
+  move the way the gesture asks; an empty box, one whose content is fully visible
+  or one at its last line hands the same event to the page, so scrolling no longer
+  stops over a text field. One gesture is answered once, even though the router is
+  now also bound on the text widgets themselves (Tk's class binding could
+  otherwise consume the event before the global handler saw it).
+- **The metadata tab explains itself**: the plan of the next operation and the
+  result of the previous one are separate cards; the save button is disabled (with
+  the reason) when nothing is selected or the clean is blocked; a reset button
+  clears the file and the results; the verdict is coloured and shows the field
+  count before and after; the full SHA-256 values can be copied; protected rows are
+  dimmed with their reason; «Очистка не требуется» replaces an empty plan; the
+  reveal button names the system's file manager (Finder / Проводник); and the TXT
+  report, like every status line, follows the window language while the JSON export
+  stays English and versioned.
+
+### Changed
+
+- The collector is restored to the state it was found in: a job no longer enables
+  a collector that was already disabled, a resume is refused while another job
+  owns the pause, and a failing poll callback is logged and re-armed instead of
+  wedging the window.
+
 - **Long operations now say what they are doing.** With v5 as the default a 24 MP
   photo takes about half a minute to embed, and the interface used to show a
   progress bar frozen at 0 % for the first stretch of it — indistinguishable from

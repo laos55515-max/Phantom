@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 import tkinter as tk
 import tkinter.font as tkfont
+import weakref
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Final
@@ -21,6 +22,27 @@ from phantom.ui import theme as T
 from phantom.ui.clipboard import ClipboardActions, TextBuffer, paste
 
 LOGGER: Final = logging.getLogger("phantom.widgets")
+
+#: ``tkfont.families(root)`` costs a full enumeration of the system's fonts —
+#: milliseconds on macOS, where a machine carries hundreds of them — and it used
+#: to run once per widget, because every ``sans_font()``/``mono_font()`` call
+#: looked the family up again.  One answer per Tk root is enough.
+_FAMILIES: Final[weakref.WeakKeyDictionary[Any, frozenset[str]]] = (
+    weakref.WeakKeyDictionary()
+)
+
+#: ``CTkFont`` objects are immutable once created and shared by many widgets of
+#: the same root, so one object per ``(family, size, weight)`` is enough.  This
+#: is what keeps a language switch and a repaint from rebuilding ~100 fonts.
+_FONTS: Final[weakref.WeakKeyDictionary[Any, dict[tuple[str, int, str], Any]]] = (
+    weakref.WeakKeyDictionary()
+)
+
+
+def reset_font_cache() -> None:
+    """Forget cached families and fonts (tests build several roots)."""
+    _FAMILIES.clear()
+    _FONTS.clear()
 
 
 class CTkAdapter:
@@ -48,31 +70,67 @@ class CTkAdapter:
         return inner
 
     @staticmethod
-    def family(root: Any, candidates: Sequence[str], fallback: str) -> str:
+    def families(root: Any) -> frozenset[str]:
+        """Every font family Tk knows, enumerated once per root."""
+        cached = _FAMILIES.get(root)
+        if cached is not None:
+            return cached
         try:
-            available = set(tkfont.families(root))
+            available = frozenset(tkfont.families(root))
         except Exception as exc:  # noqa: BLE001 - pragma: no cover, Tk dependent
             LOGGER.warning("cannot list font families: %s", exc)
-            return fallback
+            return frozenset()
+        _FAMILIES[root] = available
+        return available
+
+    @staticmethod
+    def family(root: Any, candidates: Sequence[str], fallback: str) -> str:
+        available = CTkAdapter.families(root)
         for candidate in candidates:
             if candidate in available:
                 return candidate
         return fallback
 
+    @staticmethod
+    def font(
+        root: Any,
+        candidates: Sequence[str],
+        fallback: str,
+        size: int,
+        weight: str = "normal",
+    ) -> Any:
+        """A cached ``CTkFont`` for this root, family, size and weight."""
+        family = CTkAdapter.family(root, candidates, fallback)
+        key = (family, int(size), str(weight))
+        cache = _FONTS.setdefault(root, {})
+        font = cache.get(key)
+        if font is None:
+            font = ctk.CTkFont(family=family, size=size, weight=weight)
+            cache[key] = font
+        return font
+
 
 def display_font(root: Any, size: int, *, weight: str = "normal") -> ctk.CTkFont:
-    family = CTkAdapter.family(root, T.FONT_DISPLAY, T.FONT_DISPLAY[1])
-    return ctk.CTkFont(family=family, size=size, weight=weight)
+    return CTkAdapter.font(root, T.FONT_DISPLAY, T.FONT_DISPLAY[1], size, weight)
 
 
 def sans_font(root: Any, size: int, *, weight: str = "normal") -> ctk.CTkFont:
-    family = CTkAdapter.family(root, T.FONT_SANS, T.FONT_SANS[1])
-    return ctk.CTkFont(family=family, size=size, weight=weight)
+    return CTkAdapter.font(root, T.FONT_SANS, T.FONT_SANS[1], size, weight)
 
 
 def mono_font(root: Any, size: int, *, weight: str = "normal") -> ctk.CTkFont:
-    family = CTkAdapter.family(root, T.FONT_MONO, T.FONT_MONO[1])
-    return ctk.CTkFont(family=family, size=size, weight=weight)
+    return CTkAdapter.font(root, T.FONT_MONO, T.FONT_MONO[1], size, weight)
+
+
+def fit_button_on_change(button: Any, *, font: Any = None, minimum: int = 0) -> Any:
+    """Measure the caption now and after every translated change of it.
+
+    Imported lazily: :mod:`phantom.ui.responsive` measures text through this
+    module, so a module-level import in either direction would be a cycle.
+    """
+    from phantom.ui.responsive import fit_button_on_change as fit  # noqa: PLC0415
+
+    return fit(button, font=font, minimum=minimum)
 
 
 def card(master: Any, **kwargs: Any) -> ctk.CTkFrame:
@@ -98,7 +156,13 @@ def card_title(master: Any, root: Any, text: str = "") -> ctk.CTkLabel:
 
 
 def hint_label(master: Any, root: Any, text: str = "", *, wrap: int = 520) -> ctk.CTkLabel:
-    return ctk.CTkLabel(
+    """A dim paragraph; ``wrap`` is only the first guess.
+
+    The real ``wraplength`` follows the width of the card (see
+    :class:`phantom.ui.responsive.Responsive`): a fixed 520 or 760 was right for
+    one window size and wrong for every other.
+    """
+    label = ctk.CTkLabel(
         master,
         text=text,
         font=sans_font(root, T.FONT_SIZE_HINT),
@@ -107,10 +171,13 @@ def hint_label(master: Any, root: Any, text: str = "", *, wrap: int = 520) -> ct
         justify="left",
         wraplength=wrap,
     )
+    label._phantom_autowrap = wrap
+    return label
 
 
 def value_label(master: Any, root: Any, text: str = "", *, mono: bool = False) -> ctk.CTkLabel:
-    return ctk.CTkLabel(
+    """A value line (path, hash, count): wraps instead of being cut off."""
+    label = ctk.CTkLabel(
         master,
         text=text,
         font=(mono_font if mono else sans_font)(
@@ -119,33 +186,46 @@ def value_label(master: Any, root: Any, text: str = "", *, mono: bool = False) -
         text_color=T.CLR_TEXT,
         anchor="w",
         justify="left",
+        wraplength=760,
     )
+    label._phantom_autowrap = 760
+    return label
 
 
 def primary_button(master: Any, root: Any, text: str, command: Any, **kwargs: Any) -> ctk.CTkButton:
+    """The accent button, wide enough for its caption in every language.
+
+    ``width`` in ``kwargs`` becomes a *minimum*: the measured width wins, so a
+    button never has to clip its own text (see :mod:`phantom.ui.responsive`).
+    """
+    minimum = int(kwargs.get("width", 0) or 0)
+    font = sans_font(root, T.FONT_SIZE_BODY, weight="bold")
     options: dict[str, Any] = {
         "text": text,
         "command": command,
         "height": 46,
         "corner_radius": 12,
-        "font": sans_font(root, T.FONT_SIZE_BODY, weight="bold"),
+        "font": font,
         "fg_color": T.CLR_ACCENT,
         "hover_color": T.CLR_ACCENT_HOVER,
         "text_color": T.CLR_ON_ACCENT,
     }
     options.update(kwargs)
-    return ctk.CTkButton(master, **options)
+    button = ctk.CTkButton(master, **options)
+    return fit_button_on_change(button, font=font, minimum=minimum)
 
 
 def secondary_button(
     master: Any, root: Any, text: str, command: Any, **kwargs: Any
 ) -> ctk.CTkButton:
+    minimum = int(kwargs.get("width", 0) or 0)
+    font = sans_font(root, T.FONT_SIZE_HINT)
     options: dict[str, Any] = {
         "text": text,
         "command": command,
         "height": 38,
         "corner_radius": 10,
-        "font": sans_font(root, T.FONT_SIZE_HINT),
+        "font": font,
         "fg_color": T.CLR_CARD_ALT,
         "hover_color": T.CLR_ACCENT_DIM,
         "text_color": T.CLR_TEXT,
@@ -153,7 +233,8 @@ def secondary_button(
         "border_color": T.CLR_BORDER,
     }
     options.update(kwargs)
-    return ctk.CTkButton(master, **options)
+    button = ctk.CTkButton(master, **options)
+    return fit_button_on_change(button, font=font, minimum=minimum)
 
 
 def separator(master: Any, *, height: int = 1) -> ctk.CTkFrame:

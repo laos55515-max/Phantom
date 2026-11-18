@@ -250,10 +250,11 @@ class MetadataViewModel:
         return job
 
     # -- exports -------------------------------------------------------
-    def inspection_text(self) -> str:
+    def inspection_text(self, texts: meta_report.Texts | None = None) -> str:
+        """The user's text report in the current language (JSON stays English)."""
         if self.report is None:
             return ""
-        return meta_report.inspection_text(self.report)
+        return meta_report.inspection_text(self.report, texts)
 
     def json_text(self) -> str:
         if self.report is None:
@@ -261,16 +262,49 @@ class MetadataViewModel:
         decision = self.plan()
         return meta_report.report_json(self.report, decision, self.outcome)
 
-    def summary_line(self) -> str:
+    def summary_line(self, texts: meta_report.Texts | None = None) -> str:
         if self.report is None:
             return ""
-        return meta_report.summary_line(self.report)
+        return meta_report.summary_line(self.report, texts)
 
-    def cleaning_text(self) -> str:
+    def cleaning_text(self, texts: meta_report.Texts | None = None) -> str:
         decision = self.plan()
         if decision is None:
             return ""
-        return meta_report.cleaning_text(decision, self.outcome)
+        return meta_report.cleaning_text(decision, self.outcome, texts)
+
+    # -- counts the panel shows -----------------------------------------
+    def personal_removable(self) -> int:
+        """How many personal fields the cleaner would preselect (0 = nothing to do)."""
+        report = self.report
+        if report is None:
+            return 0
+        return len(meta_cleaner.default_selection(report))
+
+    def removable_total(self) -> int:
+        report = self.report
+        return 0 if report is None else len(report.removable_keys)
+
+    def save_allowed(self) -> bool:
+        """Whether the save button may do anything: something selected, nothing blocked."""
+        if self.report is None or not self.selection:
+            return False
+        decision = self.plan()
+        return decision is not None and decision.allowed
+
+    def hash_block(self) -> str:
+        """The full SHA-256 values, for the clipboard (never truncated)."""
+        outcome = self.outcome
+        if outcome is None:
+            return ""
+        right = outcome.comparison.right
+        lines = [
+            f"sha256 (whole file, source): {outcome.source_sha256}",
+            f"sha256 (whole file, output): {outcome.output_sha256}",
+            "sha256 (decoded content): "
+            + (right.content_sha256 if right is not None else "not checked"),
+        ]
+        return "\n".join(lines)
 
     def apply_outcome(self, outcome: meta_cleaner.CleaningOutcome) -> None:
         self.outcome = outcome

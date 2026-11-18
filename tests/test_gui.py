@@ -1073,8 +1073,11 @@ def test_a_failed_job_clears_the_progress_bar_and_frees_the_window(
     assert app.stage_label.cget("text") == app.i18n.t("lbl_progress_idle")
     assert str(app.cancel_button.cget("state")) == "disabled"
     assert app.metadata_panel is not None
-    for button in app.metadata_panel.action_buttons():
+    for button in app.metadata_panel.editable_action_buttons():
         assert str(button.cget("state")) == "normal", "the tab is usable again"
+    # Saving is the one button whose state is decided by the selection, not by the
+    # busy flag: with no file loaded there is nothing to save, and the button says so.
+    assert str(app.metadata_panel.save_button.cget("state")) == "disabled"
     assert len(shown) == 1, "the failure is reported once"
     assert "GPSVersionID" in shown[0], "the dialog names the field by label"
     assert "0x" not in shown[0], "not by tag number"
@@ -1481,4 +1484,543 @@ def test_busy_state_disables_the_metadata_actions(app) -> None:
 
     app._busy = False
     app._refresh_busy_state()
-    assert all(button.cget("state") == "normal" for button in panel.action_buttons())
+    assert all(
+        button.cget("state") == "normal" for button in panel.editable_action_buttons()
+    )
+    assert panel.save_button.cget("state") == "disabled", "nothing is selected to save"
+
+
+# ---------------------------------------------------------------------------
+# 2.1.0: the window must fit its own text at every size, in every language
+# ---------------------------------------------------------------------------
+def _button_like(widget) -> bool:
+    """A widget that draws its caption inside a width it was given."""
+    try:
+        widget.cget("text")
+        widget.cget("width")
+    except Exception:  # noqa: BLE001 - not a captioned widget
+        return False
+    return type(widget).__name__.startswith("CTk") and type(widget).__name__ not in (
+        "CTkLabel",
+        "CTkEntry",
+        "CTkTextbox",
+        "CTkFrame",
+        "CTkScrollableFrame",
+        "CTkProgressBar",
+    )
+
+
+def _captioned(widget) -> list:
+    found = []
+    stack = [widget]
+    while stack:
+        current = stack.pop()
+        if _button_like(current):
+            found.append(current)
+        stack.extend(getattr(current, "winfo_children", lambda: [])())
+    return found
+
+
+def _clipped(widget) -> str | None:
+    """``text`` when the widget is narrower than its own caption, else ``None``."""
+    from phantom.ui import responsive
+
+    text = str(widget.cget("text") or "")
+    if not text:
+        return None
+    font = widget.cget("font")
+    pixels = font.measure(text) if hasattr(font, "measure") else 0
+    scaling = responsive.widget_scaling(widget) or 1.0
+    needed = int(widget.cget("width")) * scaling
+    if pixels > needed:
+        return f"{type(widget).__name__}({text!r}): needs {pixels}px, has {needed}px"
+    return None
+
+
+@pytest.mark.parametrize("size", ["980x720", "1140x900", "1280x800", "1440x900"])
+def test_no_captioned_widget_clips_its_text_at_any_supported_size(app, size: str) -> None:
+    """The owner's defect: a button narrower than «ВЫБРАТЬ ФАЙЛ (PNG / WAV / FLAC)»."""
+    app.root.deiconify()
+    app.root.geometry(size)
+    app.root.update()
+    app.root.update_idletasks()
+
+    problems = []
+    for ident in ("embed", "extract", "metadata", "settings"):
+        app._show_tab(ident)
+        app.root.update()
+        for widget in _captioned(app.tab_frames[ident]):
+            issue = _clipped(widget)
+            if issue:
+                problems.append(f"{ident}/{size}: {issue}")
+
+    assert not problems, "\n".join(problems)
+
+
+@pytest.mark.parametrize("code", ["ru", "uk", "en"])
+def test_a_language_switch_re_measures_every_caption(app, code: str) -> None:
+    """Russian and Ukrainian captions are wider; the buttons must follow."""
+    app.root.deiconify()
+    app.root.geometry("980x720")
+    app._on_language_click(app._label_by_lang[code])
+    app.root.update()
+
+    problems = []
+    for ident in ("embed", "extract", "metadata", "settings"):
+        app._show_tab(ident)
+        app.root.update()
+        for widget in _captioned(app.tab_frames[ident]):
+            issue = _clipped(widget)
+            if issue:
+                problems.append(f"{ident}/{code}: {issue}")
+
+    assert not problems, "\n".join(problems)
+
+
+def test_every_button_of_a_crowded_row_stays_inside_its_card(app) -> None:
+    """Seven buttons in one card: none of them may be pushed past its edge."""
+    app.root.deiconify()
+    app._show_tab("extract")
+    app.root.geometry("980x720")
+    app.root.update()
+    app.root.update_idletasks()
+    row = app.extract_buttons_row
+    card = row.master  # the card the row lives in, not the whole tab
+    left = card.winfo_rootx()
+    right = left + card.winfo_width()
+
+    outside = []
+    for button in row.items:
+        if not button.winfo_ismapped():
+            continue
+        start = button.winfo_rootx()
+        end = start + button.winfo_width()
+        if start < left - 2 or end > right + 2:
+            outside.append(f"{button.cget('text')!r}: {start}..{end} outside {left}..{right}")
+
+    assert not outside, "\n".join(outside)
+    assert row.rows() >= 1
+
+
+def test_a_narrow_row_wraps_and_a_wide_one_does_not(app) -> None:
+    """The wrapping rule, driven by the width the frame is really given."""
+    app.root.deiconify()
+    app._show_tab("extract")
+    app.root.update()
+    row = app.extract_buttons_row
+
+    narrow = row.reflow(available=320)
+    wide = row.reflow(available=4000)
+
+    assert len({line for line, _column in narrow}) == len(row.items), (
+        "one button per line when the row is narrower than any button"
+    )
+    assert len({line for line, _column in wide}) == 1, "the wide row did not fit on one line"
+
+
+def test_shrinking_and_growing_the_window_does_not_break_the_layout(app) -> None:
+    """Both directions, twice: a wrapped row must go back to one line."""
+    app.root.deiconify()
+    app._show_tab("extract")
+
+    for size in ("980x720", "1440x900", "980x720", "1280x800"):
+        app.root.geometry(size)
+        app.root.update()
+        app.root.update_idletasks()
+        problems = [_clipped(widget) for widget in _captioned(app.tab_frames["extract"])]
+        assert not [problem for problem in problems if problem], size
+
+    assert app.root.winfo_width() > 500
+
+
+def test_a_growing_paragraph_re_wraps_with_the_card(app) -> None:
+    """``wraplength`` follows the card, instead of a number from another window."""
+    app.root.deiconify()
+    app._show_tab("settings")
+    app.root.geometry("980x720")
+    app.root.update()
+    app.root.update_idletasks()
+    narrow = int(app.limitations_label.cget("wraplength"))
+
+    app.root.geometry("1440x900")
+    app.root.update()
+    app.root.update_idletasks()
+    wide = int(app.limitations_label.cget("wraplength"))
+
+    assert wide > narrow, f"wraplength stayed {narrow} while the card grew"
+
+
+def test_the_window_starts_at_its_saved_geometry_not_a_default(app, tmp_path: Path) -> None:
+    """Geometry is restored before the widgets are built, not after them."""
+    import customtkinter as ctk
+
+    from phantom.ui.app import PhantomApp
+    from phantom.ui.dnd import DndProvider
+    from phantom.ui.settings import SettingsStore
+
+    store = SettingsStore(path=tmp_path / "geometry" / "settings.json")
+    saved = store.load()
+    saved.window_geometry = "1000x700+40+30"
+    store.save(saved)
+
+    root = ctk.CTk()
+    try:
+        instance = PhantomApp(
+            root,
+            settings_store=SettingsStore(path=tmp_path / "geometry" / "settings.json"),
+            dnd=DndProvider(),
+        )
+        root.update_idletasks()
+        assert instance.root.geometry().startswith("1000x700")
+    finally:
+        root.destroy()
+
+
+# ---------------------------------------------------------------------------
+# 2.1.0: scrolling over text hands the gesture to the page only when it must
+# ---------------------------------------------------------------------------
+def _embed_textbox(app):
+    from phantom.ui.scroll import is_text_area
+
+    boxes = [widget for widget in _descendants(app.tab_frames["embed"]) if is_text_area(widget)]
+    return boxes[0] if boxes else None
+
+
+def _wheel_on_widget(app, widget, *, delta: int) -> None:
+    """Deliver a wheel event to the widget under the pointer, as Tk does.
+
+    ``_wheel_on_root`` covers the Aqua path where the window receives the event;
+    a text widget is reached through its own bind tags, which is exactly where our
+    handler sits in front of Tk's class binding.
+    """
+    from phantom.ui.widgets import inner_text_widget
+
+    target = inner_text_widget(widget)
+    x, y = _screen_centre(target)
+    target.event_generate(
+        "<MouseWheel>", delta=delta, x=2, y=2, rootx=x, rooty=y, when="now"
+    )
+    app.root.update()
+
+
+def _text_view(box) -> tuple[float, float]:
+    from phantom.ui.scroll import text_view
+
+    view = text_view(box)
+    return (-1.0, -1.0) if view is None else view
+
+
+def test_the_page_scrolls_over_an_empty_text_box(app) -> None:
+    """The reported defect: two fingers over an empty text field did nothing."""
+    _reveal(app)
+    area = _area_for_tab(app, "embed")
+    assert area is not None
+    box = _embed_textbox(app)
+    if box is None:
+        pytest.skip("this Tk build has no text area in the embed tab")
+    app.embed_text.delete("1.0", "end")
+    app.root.update()
+    before = _make_scrollable(area.canvas)
+    assert _text_view(box) == (0.0, 1.0), "the text box is supposed to be empty here"
+
+    _wheel_on_widget(app, box, delta=-120)
+
+    assert float(area.canvas.yview()[0]) > before, "an empty text area still blocked the page"
+
+
+def test_a_text_box_with_its_own_room_keeps_the_gesture(app) -> None:
+    """Rule 2 and rule 5: the text moves, the page does not, and only once."""
+    _reveal(app)
+    area = _area_for_tab(app, "embed")
+    assert area is not None
+    box = _embed_textbox(app)
+    if box is None:
+        pytest.skip("this Tk build has no text area in the embed tab")
+    app.embed_text.delete("1.0", "end")
+    app.embed_text.insert("1.0", "\n".join(f"line {index}" for index in range(400)))
+    app.root.update()
+    before_page = _make_scrollable(area.canvas, top=0.5)
+    first, _last = _text_view(box)
+    assert first == pytest.approx(0.0)
+
+    _wheel_on_widget(app, box, delta=-120)
+
+    assert _text_view(box)[0] > first, "the text did not scroll itself"
+    assert float(area.canvas.yview()[0]) == pytest.approx(before_page), (
+        "the page scrolled underneath a text box that scrolled itself"
+    )
+
+
+def test_at_the_end_of_the_text_the_page_takes_over(app) -> None:
+    """Rule 4: the last line hands the gesture down to the page."""
+    _reveal(app)
+    area = _area_for_tab(app, "embed")
+    assert area is not None
+    box = _embed_textbox(app)
+    if box is None:
+        pytest.skip("this Tk build has no text area in the embed tab")
+    app.embed_text.delete("1.0", "end")
+    app.embed_text.insert("1.0", "\n".join(f"line {index}" for index in range(400)))
+    app.root.update()
+    from phantom.ui.widgets import inner_text_widget
+
+    inner = inner_text_widget(app.embed_text)
+    inner.yview_moveto(1.0)
+    app.root.update()
+    before_page = _make_scrollable(area.canvas, top=0.3)
+
+    _wheel_on_widget(app, box, delta=-120)
+
+    assert float(area.canvas.yview()[0]) > before_page, "the page stayed frozen at the last line"
+
+
+def test_a_card_wheel_still_scrolls_the_tab(app) -> None:
+    """Rule 1, unchanged: cards, labels and empty space scroll the tab."""
+    _reveal(app)
+    area = _area_for_tab(app, "metadata")
+    assert area is not None
+    app._show_tab("metadata")
+    app.root.update()
+    before = _make_scrollable(area.canvas)
+    x, y = _point_over(app, area)
+
+    _wheel_on_root(app, delta=-120, x=x, y=y)
+
+    assert float(area.canvas.yview()[0]) > before
+
+
+def test_the_router_watches_the_text_widgets_it_binds(app) -> None:
+    """A native class binding must not be able to swallow the gesture."""
+    assert app._scroll.watched_count > 0, "no text widget was bound directly"
+    for target in app._scroll._watched:
+        assert target is not None
+
+
+# ---------------------------------------------------------------------------
+# 2.1.0: the metadata tab explains itself
+# ---------------------------------------------------------------------------
+def test_saving_is_disabled_until_something_is_selected(app, tmp_path: Path) -> None:
+    _scanned(app, tmp_path, None)
+    panel = app.metadata_panel
+    assert panel is not None
+
+    panel.clear_selection()
+    assert str(panel.save_button.cget("state")) == "disabled"
+    assert panel.save_hint.cget("text") == app.i18n.t("meta_save_disabled_hint")
+
+    panel.select_personal()
+    assert str(panel.save_button.cget("state")) == "normal"
+
+
+def test_a_blocked_file_cannot_be_saved_and_says_why(app, tmp_path: Path) -> None:
+    import metadata_samples as samples
+
+    path = samples.signed_png(tmp_path / "blocked.png")
+    app._show_tab("metadata")
+    panel = app.metadata_panel
+    assert panel is not None
+    panel.load_file(str(path))
+    _pump(app)
+
+    assert panel.vm.plan() is not None and panel.vm.plan().allowed is False
+    assert str(panel.save_button.cget("state")) == "disabled"
+    assert panel.save_hint.cget("text") == app.i18n.t("meta_save_blocked_hint")
+
+
+def test_reset_clears_the_file_and_the_result_but_not_the_disk(app, tmp_path: Path) -> None:
+    path = _scanned(app, tmp_path, None)
+    panel = app.metadata_panel
+    assert panel is not None
+    assert panel.vm.report is not None
+
+    panel.reset()
+
+    assert panel.vm.path == "" and panel.vm.report is None and panel.vm.outcome is None
+    assert panel.name_label.cget("text") == app.i18n.t("meta_no_file")
+    assert panel._rows == []
+    assert path.exists(), "resetting the tab must never touch the file"
+
+
+def test_the_verdict_is_coloured_and_counts_fields_before_and_after(app, tmp_path: Path) -> None:
+    from phantom.ui import theme as T
+
+    _scanned(app, tmp_path, None)
+    panel = app.metadata_panel
+    assert panel is not None
+    panel.output_entry.delete(0, "end")
+    panel.output_entry.insert(0, str(tmp_path / "verdict-clean.png"))
+    panel.save_clean()
+    _pump(app)
+
+    assert panel.vm.outcome is not None
+    verdict = panel.final_label.cget("text")
+    assert verdict == app.i18n.t("meta_verdict_ok")
+    assert str(panel.final_label.cget("text_color")) == str(T.CLR_GREEN)
+    counts = panel.counts_label.cget("text")
+    assert "→" in counts and "·" in counts
+
+
+def test_the_full_hashes_can_be_copied(app, tmp_path: Path) -> None:
+    _scanned(app, tmp_path, None)
+    panel = app.metadata_panel
+    assert panel is not None
+    panel.output_entry.delete(0, "end")
+    panel.output_entry.insert(0, str(tmp_path / "copied.png"))
+    panel.save_clean()
+    _pump(app)
+    outcome = panel.vm.outcome
+    assert outcome is not None
+
+    panel.copy_hashes()
+
+    pasted = app.root.clipboard_get()
+    assert outcome.source_sha256 in pasted
+    assert outcome.output_sha256 in pasted
+    assert len(outcome.source_sha256) == 64, "the copy must not be truncated"
+
+
+def test_the_reveal_button_names_the_file_manager_of_this_system(app) -> None:
+    panel = app.metadata_panel
+    assert panel is not None
+    caption = panel.reveal_button.cget("text")
+    assert app.file_manager_name() in caption
+    assert "{" not in caption
+
+
+def test_the_plan_and_the_previous_result_are_separate_captions(app) -> None:
+    panel = app.metadata_panel
+    assert panel is not None
+    assert panel.plan_caption.cget("text") == app.i18n.t("meta_plan_caption")
+    assert panel.result_caption.cget("text") == app.i18n.t("meta_result_caption")
+
+
+def test_a_manifest_is_reported_as_a_manifest_not_as_authenticity(app, tmp_path: Path) -> None:
+    """Content Credentials: detected ≠ confirmed, and the tab has to say so."""
+    import metadata_samples as samples
+
+    path = samples.signed_png(tmp_path / "credential.png")
+    app._show_tab("metadata")
+    panel = app.metadata_panel
+    assert panel is not None
+    panel.load_file(str(path))
+    _pump(app)
+
+    text = panel.provenance_label.cget("text")
+    assert text == app.i18n.t("meta_provenance_unverified")
+    assert "not verified" in text or "не проверена" in text or "не перевірено" in text
+
+
+# ---------------------------------------------------------------------------
+# 2.1.0: start-up and collector bookkeeping
+# ---------------------------------------------------------------------------
+def test_the_launch_records_its_stages(app) -> None:
+    """The trace exists even when the switch is off; it costs nothing to keep."""
+    marks = [name for name, _ms, _delta in app.trace.marks]
+    for expected in ("init:begin", "root:configured", "build:chrome", "init:done"):
+        assert expected in marks, f"{expected} was not timed: {marks}"
+
+
+def test_the_first_frame_hook_marks_the_window_ready(app) -> None:
+    app.root.update()
+    app._after_first_frame()
+
+    assert app.trace.at("first_frame") is not None
+    assert app.trace.at("after_idle") is not None
+
+
+def test_the_collector_is_restored_to_the_state_it_was_found_in(app) -> None:
+    """A collector that was already off must stay off; one that was on must return."""
+    import gc
+    import threading
+
+    release = threading.Event()
+    assert gc.isenabled()
+    started = app._start_job(
+        "estimate", lambda report, cancel: release.wait(10) and None, "status_ready", silent=True
+    )
+    assert started
+    try:
+        assert app._gc_paused is True
+        assert gc.isenabled() is False
+    finally:
+        release.set()
+        _pump(app)
+
+    assert app._gc_paused is False
+    assert gc.isenabled() is True
+
+    gc.disable()
+    try:
+        release.clear()
+        assert app._start_job(
+            "estimate",
+            lambda report, cancel: release.wait(10) and None,
+            "status_ready",
+            silent=True,
+        )
+        release.set()
+        _pump(app)
+        assert gc.isenabled() is False, "the collector was switched on behind our back"
+    finally:
+        gc.enable()
+
+
+def test_a_polling_failure_does_not_kill_the_poll_chain(app, monkeypatch) -> None:
+    """An exception in a handler must leave the window usable, not wedged."""
+    release = threading.Event()
+    assert app._start_job(
+        "estimate", lambda report, cancel: release.wait(10) and None, "status_ready", silent=True
+    )
+    real_drain = app._drain_events
+    calls = {"count": 0}
+
+    def drain_once_badly() -> None:
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise RuntimeError("a handler raised")
+        real_drain()
+
+    monkeypatch.setattr(app, "_drain_events", drain_once_badly)
+    try:
+        app._poll()
+        assert app._busy is False, "the failure did not end the operation"
+        assert app._poll_token is not None, "the poll chain was not re-armed for the live job"
+        release.set()
+        _pump(app)
+    finally:
+        release.set()
+
+
+def test_a_whole_window_builds_its_fonts_once(app, tmp_path: Path) -> None:
+    """The start-up cost that made the beachball: one font object per widget.
+
+    Every ``sans_font()``/``mono_font()``/``display_font()`` call used to
+    enumerate the system's font families and build a new ``CTkFont``.  With ~120
+    widgets that is ~120 enumerations; the cache turns it into one per root and a
+    handful of font objects.
+    """
+    import customtkinter as ctk
+
+    from phantom.ui import widgets as W
+    from phantom.ui.app import PhantomApp
+    from phantom.ui.dnd import DndProvider
+    from phantom.ui.settings import SettingsStore
+
+    W.reset_font_cache()
+    root = ctk.CTk()
+    root.withdraw()
+    try:
+        PhantomApp(
+            root,
+            settings_store=SettingsStore(path=tmp_path / "fonts" / "settings.json"),
+            dnd=DndProvider(),
+        )
+        root.update_idletasks()
+
+        families = W._FAMILIES[root]
+        fonts = W._FONTS[root]
+    finally:
+        root.destroy()
+
+    assert len(families) > 0, "the font list was never read"
+    assert len(fonts) <= 14, f"{len(fonts)} font objects for one window: {sorted(fonts)}"

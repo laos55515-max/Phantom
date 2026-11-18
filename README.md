@@ -130,10 +130,16 @@ Text fields behave like native ones on every platform:
   handled separately: `<TouchpadScroll>` (Tk 9, macOS and Windows) carries the two
   pixel deltas packed into `%D` and is decoded with `tk::PreciseScrollDeltas`,
   while `<MouseWheel>` is a notch count whose scale is read from the running Tk
-  (Aqua 8.6 reports ±1 per notch, Aqua 9 and Windows ±120, X11 is one unit). A text
-  box keeps the wheel while it can still scroll itself. Set
-  `PHANTOM_SCROLL_DEBUG=1` (or a file path) to log every scroll event: type, Tk
-  version, backend, raw and decoded deltas, the widget under the pointer, the
+  (Aqua 8.6 reports ±1 per notch, Aqua 9 and Windows ±120, X11 is one unit).
+
+  A text box keeps the wheel only while it can still move the way the gesture
+  asks: an empty box, one whose whole content is visible, or one already at its
+  last line hands the same event to the page underneath, so scrolling never stops
+  under a text field. One gesture is answered once — the router is bound on the
+  text widgets as well as globally and ignores an event it has already handled —
+  and the pointer over a scrollbar, a list, a scale or a hidden tab is left alone.
+  Set `PHANTOM_SCROLL_DEBUG=1` (or a file path) to log every scroll event: type,
+  Tk version, backend, raw and decoded deltas, the widget under the pointer, the
   chosen area, and the `yview` before and after.
 - The clipboard is treated as public. A copied password, key or result is cleared
   after 30 s and again when the window closes, with the platform's own tool
@@ -143,6 +149,25 @@ Text fields behave like native ones on every platform:
 - `EXPAND` opens the result in a window at 80 % of the screen with the text
   selectable and read-only, plus `COPY TEXT`, `COPY PATH`, `SHOW IN FINDER`
   (macOS `open -R`, Windows `explorer /select,`, Linux `xdg-open`) and `CLOSE`.
+
+### Window size, start-up and language
+
+Nothing in the window is sized by a constant that was guessed for one screen. A
+button is measured in its own font, in the current language, and given that width
+(with an explicit `width=` acting as a minimum, never as a cap); a row of buttons
+flows onto a second line instead of running off the card; a paragraph's
+`wraplength` follows the card it sits in. The supported sizes — 980×720 (the
+minimum), 1140×900, 1280×800, 1440×900 and maximised — all show every caption in
+`en`, `ru` and `uk`, and the GUI suite asserts it by measuring each caption
+against its widget after a resize and after a language switch.
+
+Start-up is measured, not guessed: `PHANTOM_STARTUP_DEBUG=1` prints one line per
+stage (import, Tk root, each tab, the render passes, the first frame, the moment
+the window is on screen) plus a summary, and the window does the work that is not
+needed for the first frame (logging, the OS-theme watcher) after the first idle
+callback. The font list of the system is read once per window instead of once per
+widget, and the saved geometry is applied before the cards are built, so the
+window is laid out once at its real size instead of twice.
 
 Capacity warnings: above 70 % of the carrier the bit plane becomes
 statistically noticeable; above 90 % the app warns that the change is large.
@@ -210,9 +235,24 @@ the **whole-file hash always changes**, because the metadata bytes changed; the
 **decoded-content hash must not change**, because the pixels and the samples are
 what must survive. If the decoded content differs, nothing is published.
 
+How the tab reads, top to bottom: the file (with **reset file and results**), what
+it carries (a field list with one field per two lines — caption above, wrapped
+value below — and protected rows dimmed with the reason they stay), the **plan of
+the next operation**, where to save, and the **result of the previous operation**.
+The plan and the result are separate cards, so a stale result can never look like
+a fresh plan. The save button is disabled while nothing is selected or while the
+clean is blocked, with the reason under it; when a file carries nothing personal
+the tab says «Nothing to clean» and explains which other fields are still
+removable; the verdict of the last check is coloured, shows the field count before
+and after, and the full SHA-256 values can be copied, not only the 16-character
+teaser. A content credential is reported as *manifest detected* or *manifest
+detected, signature not verified* — never as confirmed authenticity.
+
 The report can be copied or exported as TXT or JSON — that export contains the
 personal values you were about to remove, which is why it only happens when you
-ask for it. Diagnostics log counts, never values.
+ask for it. The TXT report and every status line follow the language of the window
+(`en`/`ru`/`uk`, including the disclaimer); the JSON export stays English and
+versioned, because a machine reads it. Diagnostics log counts, never values.
 
 What this tab does **not** do: it does not validate a C2PA signature (there is no
 trust list and no certificate chain in this build), it does not remove data hidden
