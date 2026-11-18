@@ -145,34 +145,41 @@ jobs:
           fi
       - name: Start-up numbers
         # The window's own budget, measured the same way before and after this
-        # branch: three full builds, median reported.  Annotations, because
-        # Actions log downloads are not always reachable.
+        # branch: three full builds, median reported, plus a profile of one build.
+        # Annotations, because Actions log downloads are not always reachable.
         if: matrix.python-version == '3.11'
         continue-on-error: true
         run: |
-          set -o pipefail
-          run_bench() {
-            xvfb-run -a -s "-screen 0 1280x1024x24" python tools/bench_startup.py --profile 2>&1 | tee -a /tmp/startup.txt
-          }
+          set +e
           : > /tmp/startup.txt
           echo "=== this branch" | tee -a /tmp/startup.txt
-          run_bench
+          xvfb-run -a -s "-screen 0 1280x1024x24" python tools/bench_startup.py --profile >>/tmp/startup.txt 2>&1
+          echo "bench(this)=$?" | tee -a /tmp/startup.txt
           if [ -n "${{ github.base_ref }}" ]; then
             echo "=== base (${{ github.base_ref }})" | tee -a /tmp/startup.txt
-            git fetch --depth 1 origin "${{ github.base_ref }}" || true
-            base=$(git rev-parse FETCH_HEAD 2>/dev/null || echo "")
+            git fetch --depth 1 origin "${{ github.base_ref }}" >>/tmp/startup.txt 2>&1
+            echo "fetch=$?" | tee -a /tmp/startup.txt
+            base=$(git rev-parse FETCH_HEAD 2>/dev/null)
+            rm -rf /tmp/phantom-base && mkdir -p /tmp/phantom-base
             if [ -n "$base" ]; then
-              rm -rf /tmp/phantom-base && mkdir -p /tmp/phantom-base
               git archive "$base" | tar -x -C /tmp/phantom-base
-              PYTHONPATH=/tmp/phantom-base/src run_bench
+              echo "archive=$? base=$base" | tee -a /tmp/startup.txt
+              PYTHONPATH=/tmp/phantom-base/src xvfb-run -a -s "-screen 0 1280x1024x24" \
+                python tools/bench_startup.py >>/tmp/startup.txt 2>&1
+              echo "bench(base)=$?" | tee -a /tmp/startup.txt
             fi
           fi
-          grep -E "^STARTUP: (median|run)" /tmp/startup.txt | head -2 | while read -r line; do
+          grep -E "^STARTUP: (median|run)" /tmp/startup.txt | head -3 | while read -r line; do
             echo "::notice::$line"
           done
-          grep -E "^(===|PROFILE:)" /tmp/startup.txt | head -8 | while read -r line; do
+          grep -E "^PROFILE:" /tmp/startup.txt | head -6 | while read -r line; do
             echo "::notice::$line"
           done
+          if ! grep -q "^STARTUP: median" /tmp/startup.txt; then
+            tail -4 /tmp/startup.txt | while read -r line; do
+              echo "::warning::bench: $line"
+            done
+          fi
 
       - name: Keep the GUI log
         if: always()
