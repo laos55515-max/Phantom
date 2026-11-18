@@ -115,9 +115,15 @@ jobs:
           # step and silently drops the rest, so the budget is spent in order of
           # usefulness: failing tests, then the thread dump of a hang, then the
           # log tail.
-          for line in failures[:5]:
+          # One annotation carries every failure, because GitHub keeps ten error
+          # annotations per step and silently drops the rest: a run with thirteen
+          # failures used to report only the first five names.
+          if failures:
+              joined = " || ".join(line[7:][:300] for line in failures)
+              print(f"::error::failing: {joined[:65000]}")
+          for line in failures[:3]:
               print(f"::error::failed: {line[:400]}")
-          for line in interesting[:5]:
+          for line in interesting[:3]:
               print(f"::error::first: {line[:900]}")
           frames = [
               line

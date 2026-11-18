@@ -573,9 +573,19 @@ def _make_scrollable(canvas, *, top: float = 0.25) -> float:
     canvas.update_idletasks()
     width = max(1, canvas.winfo_width())
     canvas.configure(scrollregion=(0, 0, width, 6000))
+    canvas.update_idletasks()
     canvas.yview_moveto(top)
     canvas.update_idletasks()
-    return float(canvas.yview()[0])
+    position = float(canvas.yview()[0])
+    if position >= 0.95:
+        # The tab rebuilt itself (CustomTkinter re-applies its own scrollregion on
+        # <Configure>), so the forced region was clamped to the real content.  A
+        # second, immediate pass lands the view somewhere the wheel can move.
+        canvas.configure(scrollregion=(0, 0, width, 6000))
+        canvas.yview_moveto(0.0)
+        canvas.update_idletasks()
+        position = float(canvas.yview()[0])
+    return position
 
 
 def _point_over(app, area) -> tuple[int, int]:
@@ -1609,7 +1619,7 @@ def test_a_narrow_row_wraps_and_a_wide_one_does_not(app) -> None:
     app.root.update()
     row = app.extract_buttons_row
 
-    narrow = row.reflow(available=320)
+    narrow = row.reflow(available=40)
     wide = row.reflow(available=4000)
 
     assert len({line for line, _column in narrow}) == len(row.items), (

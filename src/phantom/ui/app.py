@@ -423,13 +423,15 @@ class PhantomApp:
         self.embed_pwd.pack(side="left", fill="x", expand=True)
         self._paragraph_shortcuts(self.embed_pwd)
         self.embed_pwd.bind("<KeyRelease>", self._on_password_changed)
+        # The caption comes from the locale ("Show password"), so the box is
+        # measured once it has one: a fixed 22 px width cut the label to "Sh…".
         self.show_embed_pwd: ctk.CTkCheckBox = ctk.CTkCheckBox(
             pwd_row,
             text="",
-            width=22,
             command=lambda: self._toggle_password_visibility(self.embed_pwd, self.show_embed_pwd),
         )
         self.show_embed_pwd.pack(side="left", padx=(10, 0))
+        fit_checkbox_on_change(self.show_embed_pwd)
 
         # A flow row, not three packed buttons: Russian and Ukrainian captions are
         # wider than English ones and the row has to re-wrap instead of running
@@ -596,12 +598,12 @@ class PhantomApp:
         self.show_extract_pwd: ctk.CTkCheckBox = ctk.CTkCheckBox(
             pwd_row,
             text="",
-            width=22,
             command=lambda: self._toggle_password_visibility(
                 self.extract_pwd, self.show_extract_pwd
             ),
         )
         self.show_extract_pwd.pack(side="left", padx=(10, 0))
+        fit_checkbox_on_change(self.show_extract_pwd)
         extract_actions = self.extract_password_actions = FlowRow(stego_card)
         extract_actions.pack(fill="x", padx=18, pady=(8, 4))
         self.paste_extract_button = extract_actions.add(
