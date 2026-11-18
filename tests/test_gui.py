@@ -563,12 +563,14 @@ def _area_for_tab(app, ident: str):
     return None
 
 
-def _make_scrollable(canvas, *, top: float = 0.25) -> float:
+def _make_scrollable(canvas, *, top: float = 0.1) -> float:
     """Give the canvas a document longer than the window and set the view.
 
     Routing is what is under test, not the height of the layout: a tab whose
     content happens to fit would make ``yview`` immovable and the test would
-    report a routing failure for a layout reason.
+    report a routing failure for a layout reason.  CustomTkinter re-applies its
+    own ``scrollregion`` on ``<Configure>``, which can clamp a forced view to the
+    bottom, so the position is checked and pushed back to the top if it is pinned.
     """
     canvas.update_idletasks()
     width = max(1, canvas.winfo_width())
@@ -576,16 +578,13 @@ def _make_scrollable(canvas, *, top: float = 0.25) -> float:
     canvas.update_idletasks()
     canvas.yview_moveto(top)
     canvas.update_idletasks()
-    position = float(canvas.yview()[0])
-    if position >= 0.95:
-        # The tab rebuilt itself (CustomTkinter re-applies its own scrollregion on
-        # <Configure>), so the forced region was clamped to the real content.  A
-        # second, immediate pass lands the view somewhere the wheel can move.
-        canvas.configure(scrollregion=(0, 0, width, 6000))
+    first, last = (float(value) for value in canvas.yview())
+    if first >= last - 0.02:
         canvas.yview_moveto(0.0)
         canvas.update_idletasks()
-        position = float(canvas.yview()[0])
-    return position
+        first, last = (float(value) for value in canvas.yview())
+    assert first < last - 0.02, f"this tab cannot scroll: yview={(first, last)}"
+    return first
 
 
 def _point_over(app, area) -> tuple[int, int]:
@@ -1503,21 +1502,39 @@ def test_busy_state_disables_the_metadata_actions(app) -> None:
 # ---------------------------------------------------------------------------
 # 2.1.0: the window must fit its own text at every size, in every language
 # ---------------------------------------------------------------------------
+#: Widgets CustomTkinter builds for itself and lays out on its own: a segmented
+#: button is made of ``CTkButton`` children whose width is 0 because the geometry
+#: manager stretches them, so they say nothing about a clipped caption.
+_INTERNAL_PARENTS = ("CTkSegmentedButton", "CTkOptionMenu", "CTkComboBox", "CTkScrollbar")
+
+
 def _button_like(widget) -> bool:
-    """A widget that draws its caption inside a width it was given."""
+    """A widget that draws its caption inside a width *we* gave it."""
     try:
         widget.cget("text")
         widget.cget("width")
     except Exception:  # noqa: BLE001 - not a captioned widget
         return False
-    return type(widget).__name__.startswith("CTk") and type(widget).__name__ not in (
+    if not type(widget).__name__.startswith("CTk"):
+        return False
+    if type(widget).__name__ in (
         "CTkLabel",
         "CTkEntry",
         "CTkTextbox",
         "CTkFrame",
         "CTkScrollableFrame",
         "CTkProgressBar",
-    )
+    ):
+        return False
+    parent = getattr(widget, "master", None)
+    if type(parent).__name__ in _INTERNAL_PARENTS:
+        return False
+    # A width of 0 means the geometry manager owns the size; no caption is cut
+    # by it, and every widget we size ourselves has a width.
+    try:
+        return int(float(widget.cget("width"))) > 0
+    except (TypeError, ValueError):
+        return False
 
 
 def _captioned(widget) -> list:
@@ -1670,7 +1687,7 @@ def test_the_window_starts_at_its_saved_geometry_not_a_default(app, tmp_path: Pa
 
     store = SettingsStore(path=tmp_path / "geometry" / "settings.json")
     saved = store.load()
-    saved.window_geometry = "1000x700+40+30"
+    saved.window_geometry = "1040x780+40+30"
     store.save(saved)
 
     root = ctk.CTk()
@@ -1681,7 +1698,7 @@ def test_the_window_starts_at_its_saved_geometry_not_a_default(app, tmp_path: Pa
             dnd=DndProvider(),
         )
         root.update_idletasks()
-        assert instance.root.geometry().startswith("1000x700")
+        assert instance.root.geometry().startswith("1040x780")
     finally:
         root.destroy()
 
@@ -1735,7 +1752,10 @@ def test_the_page_scrolls_over_an_empty_text_box(app) -> None:
 
     _wheel_on_widget(app, box, delta=-120)
 
-    assert float(area.canvas.yview()[0]) > before, "an empty text area still blocked the page"
+    assert float(area.canvas.yview()[0]) > before, (
+        f"an empty text area still blocked the page: yview={area.canvas.yview()}, "
+        f"scrollregion={area.canvas.cget('scrollregion')}, was {before}"
+    )
 
 
 def test_a_text_box_with_its_own_room_keeps_the_gesture(app) -> None:
