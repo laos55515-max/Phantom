@@ -1810,7 +1810,10 @@ def test_at_the_end_of_the_text_the_page_takes_over(app) -> None:
     inner = inner_text_widget(app.embed_text)
     inner.yview_moveto(1.0)
     app.root.update()
-    before_page = _make_scrollable(area.canvas, top=0.3)
+    # Keep the page at the top: scrolling it first moves the text box out from
+    # under the point we are about to compute, and the router would then be asked
+    # about the window itself.
+    before_page = _make_scrollable(area.canvas, top=0.0)
     x, y = _screen_centre(inner)
     resolved = app._scroll.resolve(x, y, direction=1)
 
