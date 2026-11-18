@@ -28,6 +28,7 @@ from typing import Final
 
 from phantom.core import files as fsutil
 from phantom.core.errors import (
+    MetadataConflictError,
     MetadataError,
     PhantomError,
     SignedMediaError,
@@ -142,6 +143,13 @@ def plan(report: MetadataReport, selection: frozenset[str]) -> CleaningPlan:
     keep: list[MetadataField] = []
     blocked: list[MetadataField] = []
     for item in report.sorted_fields():
+        if item.derived:
+            # A view of other fields (the decimal position, the properties of an
+            # XMP packet).  It is not an entry: it cannot be selected, it is not
+            # counted, and it is not something the rewrite has to keep — removing
+            # the fields it is made of removes it, which used to read as "a
+            # protected field disappeared".
+            continue
         if item.key in selection:
             if item.removable:
                 remove.append(item)
@@ -270,7 +278,7 @@ def _confirm_removal(decision: CleaningPlan, after: MetadataReport) -> None:
     """Prove the rewrite did exactly what the plan said, and nothing else."""
     # Pairs, not keys: removing one of two same-named chunks renumbers the other,
     # so only a field with both the same name and the same value is the same field.
-    remaining = {(item.key, item.value) for item in after.fields}
+    remaining = {(item.key, item.value) for item in after.fields if not item.derived}
     still_there = [
         item.key for item in decision.remove if (item.key, item.value) in remaining
     ]
@@ -280,22 +288,26 @@ def _confirm_removal(decision: CleaningPlan, after: MetadataReport) -> None:
             detail=", ".join(sorted(still_there)[:6]),
         )
     lost = [
-        item.key
+        item
         for item in decision.keep
         if _stable_key(item.key) and (item.key, item.value) not in remaining
     ]
     if lost:
-        raise MetadataError(
-            "a protected field disappeared in the rewrite",
-            detail=", ".join(sorted(lost)[:6]),
-        )
+        # Its own code and its own sentence: "metadata error: png.gps.0x0000" told
+        # the user nothing about what happened to the file, and this is a bug in
+        # the policy, not something they did wrong.
+        raise MetadataConflictError(
+            "the rewrite dropped a field the plan promised to keep",
+            detail=", ".join(sorted(item.key for item in lost)[:6]),
+        ).with_params(fields=", ".join(item.label for item in lost[:4]))
     # Every kept field must still be there and nothing else: renumbering may
     # change keys, but it never changes how many fields a correct rewrite leaves.
     expected = len(decision.keep)
-    if len(after.fields) != expected:
+    found = len([item for item in after.fields if not item.derived])
+    if found != expected:
         raise MetadataError(
             "the rewrite produced a different number of fields",
-            detail=f"expected {expected}, found {len(after.fields)}",
+            detail=f"expected {expected}, found {found}",
         )
 
 

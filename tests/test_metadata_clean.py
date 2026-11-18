@@ -15,6 +15,8 @@ from PIL import Image
 
 import metadata_samples as samples
 from phantom.core.errors import (
+    ErrorCode,
+    MetadataConflictError,
     MetadataError,
     OperationCancelled,
     PhantomError,
@@ -51,7 +53,8 @@ def test_default_selection_is_personal_and_removable_only(tmp_path: Path) -> Non
 
     selection = cleaner.default_selection(found)
 
-    assert "png.gps.coordinates" in selection
+    assert "png.gps.0x0002" in selection  # GPSLatitude
+    assert "png.gps.0x0004" in selection  # GPSLongitude
     assert "png.exif.0xa431" in selection
     assert "png.text.tEXt.Comment" in selection
     assert "png.text.tEXt.Copyright" not in selection
@@ -113,7 +116,8 @@ def test_cleaning_a_png_removes_personal_fields_and_keeps_the_rest(
 
     after = inspector.inspect_path(str(output))
     keys = {item.key for item in after.fields}
-    assert "png.gps.coordinates" not in keys
+    assert "png.gps.coordinates" not in keys, "the view goes with the tags behind it"
+    assert "png.exif.0x0131" in keys, "Software is technical and stays"
     assert "png.exif.0xa431" not in keys
     assert "png.text.tEXt.Comment" not in keys
     for kept in ("png.text.tEXt.Title", "png.text.tEXt.Copyright", "png.chunk.prVt"):
@@ -400,10 +404,15 @@ def test_a_rewrite_that_drops_a_protected_field_is_never_published(
 
     monkeypatch.setattr(png_module, "rewrite_png", overzealous)
 
-    with pytest.raises(MetadataError):
+    with pytest.raises(MetadataConflictError) as caught:
         cleaner.clean(str(source), str(output), frozenset({"png.text.tEXt.Comment"}))
 
-    assert not output.exists()
+    # Its own error code, its own sentence, and the field named the way the user
+    # saw it — "metadata error: png.exif.0x8298" told them nothing.
+    assert caught.value.code is ErrorCode.METADATA_CONFLICT
+    assert caught.value.params.get("fields"), "the message names the field by label"
+    assert "0x" not in str(caught.value.params["fields"])
+    assert not output.exists(), "nothing is published when the guard fires"
 
 
 def test_the_output_extension_follows_the_real_format(tmp_path: Path) -> None:

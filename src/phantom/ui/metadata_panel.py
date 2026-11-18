@@ -454,7 +454,12 @@ class MetadataPanel:
         return row
 
     def _row_title(self, item: MetadataField) -> str:
-        marker = self.t("meta_removable") if item.removable else self.t("meta_protected")
+        if item.derived:
+            # Readable, but not a field of its own: the position is the GPS tags
+            # above it, the properties are the XMP packet below them.
+            marker = self.t("meta_derived")
+        else:
+            marker = self.t("meta_removable") if item.removable else self.t("meta_protected")
         return f"{item.label} · {self.t(item.category.i18n_key)} · {marker}"
 
     @staticmethod

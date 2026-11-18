@@ -43,8 +43,13 @@ def test_the_json_report_is_valid_versioned_and_complete(tmp_path: Path) -> None
     assert payload["tool"] == "PHANTOM metadata inspector"
     assert payload["disclaimer"] == meta_report.REPORT_DISCLAIMER
     assert payload["report"]["format"] == "png"
-    assert payload["report"]["counts"]["total"] == len(found.fields)
-    assert len(payload["report"]["fields"]) == len(found.fields)
+    counted = [item for item in found.fields if not item.derived]
+    assert payload["report"]["counts"]["total"] == len(counted)
+    assert len(payload["report"]["fields"]) == len(found.fields), "views are exported too"
+    assert payload["report"]["fields"] != []
+    assert any(item["derived"] for item in payload["report"]["fields"]), (
+        "a derived view says so in the JSON"
+    )
     assert payload["report"]["provenance"]["state"] == "none"
     assert "plan" not in payload
 
@@ -106,9 +111,23 @@ def test_the_summary_line_carries_counts_but_no_values(tmp_path: Path) -> None:
     line = meta_report.summary_line(found)
 
     assert "PNG" in line
-    assert f"{len(found.fields)} fields" in line
+    assert f"{found.counts.total} fields" in line
     assert "Ada Lovelace" not in line
     assert "50.45" not in line
+
+
+def test_the_text_report_says_which_rows_are_derived(tmp_path: Path) -> None:
+    """18 rows and "17 fields" is confusing unless the report explains itself."""
+    found = _report(tmp_path)
+    derived = [item for item in found.fields if item.derived]
+
+    text = meta_report.inspection_text(found)
+
+    assert derived, "the fixture has a derived view"
+    assert f"derived views: {len(derived)}" in text
+    assert "not counted" in text
+    for item in derived:
+        assert item.key not in {field.key for field in found.fields if not field.derived}
 
 
 def test_the_exports_never_promise_anonymity(tmp_path: Path) -> None:

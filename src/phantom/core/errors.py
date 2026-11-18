@@ -32,6 +32,7 @@ class ErrorCode(Enum):
     AUDIO_SILENCE = "audio_silence"
     SIGNED_MEDIA = "signed_media"
     METADATA = "metadata"
+    METADATA_CONFLICT = "metadata_conflict"
     INTERNAL = "internal"
 
 
@@ -141,6 +142,18 @@ class MetadataError(PhantomError):
     """Metadata could not be read, planned or rewritten."""
 
     code = ErrorCode.METADATA
+
+
+class MetadataConflictError(PhantomError):
+    """The rewrite would have dropped a field the plan promised to keep.
+
+    Raised by the last check before publishing, so it is a bug in the cleaning
+    policy rather than something the user did: the sentence it produces says so,
+    names the field by label instead of by tag number, and states that the file
+    was left alone.
+    """
+
+    code = ErrorCode.METADATA_CONFLICT
 
 
 class InternalError(PhantomError):

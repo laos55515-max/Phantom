@@ -123,6 +123,37 @@ def personal_png(
     )
 
 
+def rich_exif_png(path: Path, *, comment: str = "shot at home, wifi hunter2") -> Path:
+    """A PNG carrying the whole camera dossier a phone photo comes with.
+
+    The tags are the ones a real failure was reported with: GPS position and its
+    two reference tags, the GPS version tag, both dates, make, model, owner, body
+    serial, orientation, software, artist and copyright — plus one tag no table
+    knows, because "unknown" must survive a clean as well as "protected".
+    """
+    exif = Image.Exif()
+    exif[0x010F] = "PhantomCam"  # Make
+    exif[0x0110] = "PhantomCam One"  # Model
+    exif[0x0112] = 6  # Orientation (rotated: technical)
+    exif[0x0131] = "phantom-software 1.0"  # Software (technical)
+    exif[0x013B] = "Ada Lovelace"  # Artist (attribution: offered, unticked)
+    exif[0x0132] = "2024:05:06 07:08:09"  # DateTime
+    exif[0x8298] = "(c) 2024 Ada Lovelace"  # Copyright (rights: protected)
+    exif[0x9003] = "2024:05:06 07:08:09"  # DateTimeOriginal (Exif IFD)
+    exif[0xA430] = "Ada Lovelace"  # CameraOwnerName (Exif IFD)
+    exif[0xA431] = "SN-0001-42"  # BodySerialNumber (Exif IFD)
+    exif[0xC7A1] = "undocumented vendor blob"  # no name in any table
+    from fractions import Fraction
+
+    gps = exif.get_ifd(0x8825)
+    gps[0x0000] = b"\x02\x03\x00\x00"  # GPSVersionID (technical: protected)
+    gps[0x0001] = "N"  # GPSLatitudeRef
+    gps[0x0002] = (Fraction(50), Fraction(27), Fraction(0))  # 50°27'0"
+    gps[0x0003] = "E"  # GPSLongitudeRef
+    gps[0x0004] = (Fraction(30), Fraction(31), Fraction(0))  # 30°31'0"
+    return png_file(path, text={"Comment": comment}, exif=exif)
+
+
 def signed_png(path: Path) -> Path:
     """A PNG that carries a JUMBF box with a C2PA signature claim."""
     blob = (
@@ -133,6 +164,40 @@ def signed_png(path: Path) -> Path:
         + b"urn:uuid:12345678-1234-1234-1234-123456789abc"
     )
     return png_file(path, text={"Comment": "signed original"}, extra=((b"caBX", blob),))
+
+
+#: The XMP namespaces the tests write properties in.
+XMP_NAMESPACES: Final = {
+    "dc": "http://purl.org/dc/elements/1.1/",
+    "photoshop": "http://ns.adobe.com/photoshop/1.0/",
+    "xmp": "http://ns.adobe.com/xap/1.0/",
+}
+
+
+def xmp_packet(properties: dict[str, str]) -> str:
+    """A plain RDF/XML XMP packet, one element per property.
+
+    ``{"dc:title": "Holiday"}`` becomes ``<dc:title>Holiday</dc:title>`` inside an
+    ``rdf:Description`` that declares the namespaces the prefixes need.
+    """
+    used = sorted({name.split(":")[0] for name in properties} & set(XMP_NAMESPACES))
+    declarations = " ".join(
+        f'xmlns:{prefix}="{XMP_NAMESPACES[prefix]}"' for prefix in used
+    )
+    body = "".join(f"<{name}>{value}</{name}>" for name, value in properties.items())
+    return (
+        '<?xpacket begin="" id="W5M0MpCehiHzreSzNTczkc9d"?>'
+        '<x:xmpmeta xmlns:x="adobe:ns:meta/">'
+        '<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">'
+        f'<rdf:Description rdf:about="" {declarations}>{body}</rdf:Description>'
+        "</rdf:RDF></x:xmpmeta>"
+        '<?xpacket end="w"?>'
+    )
+
+
+def xmp_png(path: Path, properties: dict[str, str]) -> Path:
+    """A PNG whose only metadata is an XMP packet."""
+    return png_file(path, text={"XML:com.adobe.xmp": xmp_packet(properties)})
 
 
 # ---------------------------------------------------------------------------

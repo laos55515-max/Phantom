@@ -507,6 +507,43 @@ out? The release also contains the scroll-router and progress work listed under
   with it, so the chain was never re-armed and the window stayed "busy" for an
   operation that had already ended. The event loop now logs the traceback, finishes
   the operation and paints an error instead.
+- **Cleaning an EXIF/GPS dossier no longer fails with a tag number.** Reported from
+  a real macOS run: a PNG with a position, two dates, make, model, owner and body
+  serial numbers ended with `Ошибка обработки метаданных: png.gps.0x0000` and no
+  cleaned copy. The pre-report offered the derived *GPS coordinates* row as one
+  removable field and translated it into every GPS tag, `GPSVersionID` included;
+  the last check before publishing then refused, correctly, to write a file that had
+  lost a field the plan promised to keep. Three things were wrong and are fixed:
+  * the position is now a **derived view** — shown, but not an entry: it is not
+    selectable, it is not counted (so one position no longer looks like six
+    personal fields) and removing the four tags behind it removes it, which is no
+    longer read as "a protected field disappeared";
+  * `removal_from_keys` maps one key to one tag and nothing else: no selection can
+    widen into tags the user did not tick;
+  * every field the plan offers is now a field the rewrite can actually do — a
+    property test removes each removable key of the files in the suite, one at a
+    time, and asserts that nothing protected was lost.
+- **Structured blocks that are removed as a whole are no longer offered when they
+  carry something protected.** An XMP packet with a title or a rights line in it is
+  reported as protected, with the reason, instead of being offered and then failing
+  (the packet also deleted `dc:rights` along with the city). Its properties are
+  derived views, so they are not counted twice either. `png.xmp` — the only key a
+  user can tick — was never mapped by the rewriter at all (the parser required three
+  dot-separated parts), so removing an XMP packet did nothing; it now works.
+- **A failed or cancelled operation empties the progress bar.** It used to keep the
+  fraction the job had reached, which reads as "still running" when nothing is.
+- **The policy guard has its own error and its own sentence.** `ErrorCode.METADATA_CONFLICT`
+  / `MetadataConflictError` (uk/ru/en) names the field by label instead of by tag
+  number, says the source was not modified and that no cleaned copy was created, and
+  states that it is a bug in the cleaning policy rather than something the user did.
+  The guard itself is unchanged: nothing is published when it fires.
+- Tests: `tests/test_metadata_exif_gps.py` (18 tests) builds the dossier that failed
+  — `GPSVersionID`, both coordinate pairs and their references, both dates, make,
+  model, owner, body serial, orientation, software, artist, copyright and one tag no
+  table knows — and checks detection, the preselection, the plan against the written
+  result, the survival of every protected tag, pixel identity, chunk CRCs, the
+  untouched source, that a failing guard publishes nothing, partial GPS selections,
+  unknown tags, cleaning twice, and the same property for WAV and FLAC.
 
 ### Security
 

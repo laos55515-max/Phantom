@@ -557,6 +557,9 @@ def _exif_fields(tiff: _Tiff) -> tuple[list[MetadataField], list[str]]:
     latitude = _gps_pair(tiff, 0x0002, 0x0001, order)
     longitude = _gps_pair(tiff, 0x0004, 0x0003, order)
     if latitude and longitude:
+        # A view, not a field: the position is the four tags above, and offering
+        # it as a separate removable entry was what let one tick schedule the
+        # removal of GPSVersionID as well and made the whole clean fail.
         fields.append(
             MetadataField(
                 key="png.gps.coordinates",
@@ -564,8 +567,9 @@ def _exif_fields(tiff: _Tiff) -> tuple[list[MetadataField], list[str]]:
                 value=f"{latitude}, {longitude}",
                 category=MetadataCategory.PERSONAL,
                 container="eXIf/GPS",
-                removable=True,
-                reason="removing the GPS IFD removes this",
+                removable=False,
+                reason="derived from the GPS tags above; removing them removes this",
+                derived=True,
             )
         )
     return fields, warnings
@@ -820,8 +824,9 @@ def _xmp_fields(text: str) -> list[MetadataField]:
                 category=category,
                 container="iTXt/XMP",
                 removable=False,
-                reason="XMP is rewritten as a whole packet, not property by property",
+                reason="a property of the packet below, not an entry of its own",
                 size=len(value),
+                derived=True,
             )
         )
     return fields
@@ -835,6 +840,7 @@ def inspect_png(data: bytes) -> Section:
     manifests: list[tuple[str, bytes]] = []
     signatures: list[str] = []
     xmp_seen = False
+    xmp_properties: list[MetadataField] = []
     xmp_personal = False
 
     kinds = [chunk.kind for chunk in chunks]
@@ -855,7 +861,7 @@ def inspect_png(data: bytes) -> Section:
             if keyword == XMP_KEYWORD:
                 xmp_seen = True
                 properties = _xmp_fields(text)
-                xmp_personal = any(item.sensitive for item in properties)
+                xmp_properties.extend(properties)
                 fields.extend(properties)
                 continue
             lowered = keyword.lower()
@@ -887,6 +893,26 @@ def inspect_png(data: bytes) -> Section:
             signatures.append(chunk.kind)
             manifests.append((chunk.kind, chunk.data))
     if xmp_seen:
+        # XMP is rewritten as a whole packet, so ticking it takes every property
+        # with it.  That is only allowed when the packet holds nothing the policy
+        # protects: a packet with dc:title or dc:rights in it is reported as
+        # protected instead of being offered and then failing (or, worse,
+        # silently deleting the copyright line along with the city).
+        xmp_personal = any(item.sensitive for item in xmp_properties)
+        protected_properties = sorted(
+            item.label for item in xmp_properties if not item.sensitive
+        )
+        packet_removable = xmp_personal and not protected_properties
+        if packet_removable:
+            reason = ""
+        elif protected_properties:
+            reason = (
+                "the packet also carries protected properties ("
+                + ", ".join(protected_properties[:4])
+                + ") and XMP is removed as a whole packet"
+            )
+        else:
+            reason = "no personal property recognised"
         fields.append(
             MetadataField(
                 key="png.xmp",
@@ -900,8 +926,8 @@ def inspect_png(data: bytes) -> Section:
                     MetadataCategory.PERSONAL if xmp_personal else MetadataCategory.PROVENANCE
                 ),
                 container="iTXt/XMP",
-                removable=xmp_personal,
-                reason="" if xmp_personal else "no personal property recognised",
+                removable=packet_removable,
+                reason=reason,
                 size=0,
             )
         )
@@ -946,21 +972,28 @@ def removal_from_keys(keys: frozenset[str]) -> PngRemoval:
         if not key.startswith("png."):
             continue
         parts = key.split(".")
-        if len(parts) < 3:
+        if len(parts) < 2:
             continue
         group = parts[1]
+        if group == "xmp":
+            # ``png.xmp`` is the packet itself; its properties are views of it.
+            # The check used to require three parts, so the packet key — the only
+            # one a user can tick — was silently dropped from the request.
+            drop_xmp = True
+            continue
+        if len(parts) < 3:
+            continue
         if group == "text" and len(parts) >= 4:
             keywords.add(".".join(parts[3:]))
         elif group == "exif" and parts[2].startswith("0x"):
             exif_tags.add(int(parts[2], 16))
         elif group == "gps" and parts[2].startswith("0x"):
+            # One key, one tag.  The derived position view is not a key the plan
+            # can offer, and nothing here may widen a selection: that is how
+            # GPSVersionID used to be scheduled for removal behind the user's back.
             gps_tags.add(int(parts[2], 16))
-        elif group == "gps" and parts[2] == "coordinates":
-            gps_tags.update(_GPS_TAGS)
         elif group == "chunk" and len(parts) >= 3:
             chunk_kinds.add(parts[2])
-        elif group == "xmp":
-            drop_xmp = True
     return PngRemoval(
         keywords=frozenset(keywords),
         exif_tags=frozenset(exif_tags),

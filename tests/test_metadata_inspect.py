@@ -76,7 +76,12 @@ def test_png_reports_gps_serial_dates_and_comments(tmp_path: Path) -> None:
     assert float(latitude) == pytest.approx(50.45, abs=0.01)
     assert float(longitude) == pytest.approx(30.52, abs=0.01)
     assert coordinates.category is MetadataCategory.PERSONAL
-    assert coordinates.removable is True
+    assert coordinates.removable is False, (
+        "the position is a view of the four GPS tags: offering it as its own "
+        "removable field is what let one tick schedule GPSVersionID for removal"
+    )
+    assert coordinates.derived is True
+    assert "png.exif.0x0131" in keys, "Software is technical and stays"
 
 
 def test_png_text_keywords_are_classified_and_only_personal_is_offered(
@@ -128,9 +133,11 @@ def test_every_field_says_what_it_is_and_whether_it_can_go(tmp_path: Path) -> No
 def test_counts_match_the_fields(tmp_path: Path) -> None:
     found = _report(samples.personal_png(tmp_path / "counts.png"))
     counts = found.counts
-    assert counts.total == len(found.fields)
-    assert counts.personal == len([f for f in found.fields if f.sensitive])
-    assert counts.removable == len([f for f in found.fields if f.removable])
+    counted = [item for item in found.fields if not item.derived]
+    assert counts.total == len(counted), "derived views are not entries of their own"
+    assert len(counted) < len(found.fields), "the fixture has a derived view to exclude"
+    assert counts.personal == len([item for item in counted if item.sensitive])
+    assert counts.removable == len([item for item in counted if item.removable])
     assert sum(counts.of(category) for category in MetadataCategory) == counts.total
 
 

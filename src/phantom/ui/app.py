@@ -1514,6 +1514,7 @@ class PhantomApp:
             except Exception:
                 LOGGER.exception("worker event %s could not be handled", event.kind.value)
                 self._finish_operation_ui()
+                self._reset_progress()
                 self._set_status_key("status_error", severity="error")
 
     def _worker_has_work(self) -> bool:
@@ -1542,10 +1543,14 @@ class PhantomApp:
             return
         if event.kind is WorkerEventType.CANCELLED:
             self._finish_operation_ui()
+            # The bar used to keep whatever fraction the cancelled job reached,
+            # which reads as "still running" when nothing is running any more.
+            self._reset_progress()
             self._set_status_key("status_cancelled", severity="warn")
             return
         if event.kind is WorkerEventType.ERROR and event.error is not None:
             self._finish_operation_ui()
+            self._reset_progress()
             self._show_error(event.error)
 
     def _on_progress(self, event: WorkerEvent) -> None:

@@ -103,7 +103,7 @@ def test_installing_a_report_preselects_the_safe_personal_fields(tmp_path: Path)
     view.apply_report(inspector.inspect_path(str(path)))
 
     assert view.ready is True
-    assert "png.gps.coordinates" in view.selection
+    assert "png.gps.0x0002" in view.selection
     assert "png.text.tEXt.Copyright" not in view.selection
     assert "png.text.tEXt.Author" not in view.selection, "attribution is offered unticked"
 
@@ -207,8 +207,9 @@ def test_the_plan_summary_counts_removed_kept_and_blocked(tmp_path: Path) -> Non
 
     summary = view.plan_summary()
 
+    entries = [item for item in report.fields if not item.derived]
     assert summary["remove"] == 1
-    assert summary["kept"] == len(report.fields) - 1
+    assert summary["kept"] == len(entries) - 1, "a derived view is neither removed nor kept"
     assert summary["blocked"] == 0
     assert summary["personal"] == report.counts.personal
 

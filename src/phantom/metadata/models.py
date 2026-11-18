@@ -99,6 +99,14 @@ class MetadataField:
     reason: str = ""
     size: int = 0
     truncated: bool = False
+    #: A view computed from other fields rather than read from the container
+    #: (the decimal GPS position, the XMP properties of a packet).  It is shown so
+    #: the user can read the file at a glance, but it is not an entry of its own:
+    #: it is not counted, it is never removed by itself, and the cleaner does not
+    #: expect it to survive a rewrite — removing the fields it is made of removes
+    #: it.  Without that distinction a view and the fields behind it are counted
+    #: twice, and every removal of the fields behind it looks like a lost field.
+    derived: bool = False
 
     @property
     def sensitive(self) -> bool:
@@ -117,6 +125,7 @@ class MetadataField:
             "category": self.category.value,
             "container": self.container,
             "removable": self.removable,
+            "derived": self.derived,
             "reason": self.reason,
             "size": self.size,
             "truncated": self.truncated,
@@ -216,14 +225,23 @@ class MetadataCounts:
 
 
 def count_fields(fields: tuple[MetadataField, ...]) -> MetadataCounts:
-    """Count fields per category, once, so the UI and the report cannot disagree."""
+    """Count fields per category, once, so the UI and the report cannot disagree.
+
+    Derived views are left out: they are a second way of reading fields that are
+    already counted, and adding them would make a file with one GPS position look
+    like it carried six personal fields.
+    """
     totals = dict.fromkeys(CATEGORY_ORDER, 0)
     removable = 0
+    counted = 0
     for item in fields:
+        if item.derived:
+            continue
+        counted += 1
         totals[item.category.value] += 1
         removable += 1 if item.removable else 0
     return MetadataCounts(
-        total=len(fields),
+        total=counted,
         personal=totals["personal"],
         descriptive=totals["descriptive"],
         technical=totals["technical"],

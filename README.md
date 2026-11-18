@@ -163,14 +163,22 @@ telemetry, and nothing is uploaded anywhere.
 Detection is by content, not by extension: a JPEG renamed to `.png` is refused
 rather than parsed by the wrong reader. Every field is listed with its name,
 value, container and one of six categories — personal, descriptive, technical,
-rights/attribution, provenance/signatures, unknown — and one of two markers:
-*editable* (the cleaner may remove it) or *protected* (it stays).
+rights/attribution, provenance/signatures, unknown — and one of three markers:
+*editable* (the cleaner may remove it), *protected* (it stays) or *derived* (a value
+computed from other fields: the decimal GPS position, the properties of an XMP
+packet). A derived row is there so you can read the file at a glance; it is not an
+entry of its own, it is not counted twice, and removing the fields behind it removes
+it.
 
 - **Selected by default** are the personal fields the cleaner can remove: GPS
   position, device make/model, serial numbers, personal dates and comments.
 - **Offered but not preselected** are attribution fields (EXIF `Artist`, PNG
   `Author`, RIFF `IART`, Vorbis `ARTIST`): a name is personal data, but deleting
   a credit is your decision, so the checkbox is unticked.
+- **Removed as a whole block or not at all**: an XMP packet, an iXML chunk, an
+  embedded picture. If the block also carries something the policy protects — a
+  title, a rights line — it is reported as *protected*, with the reason, instead of
+  being offered and then failing halfway.
 - **Never removed** are copyright and licence lines, technical parameters, colour
   profiles, provenance blocks and *unknown* chunks. An unknown chunk is reported
   as unknown and left alone: the cleaner does not delete what it cannot explain.

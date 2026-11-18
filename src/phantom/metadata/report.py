@@ -44,6 +44,12 @@ def inspection_text(report: MetadataReport) -> str:
             "technical={technical} rights={rights} provenance={provenance} unknown={unknown}"
         ).format(**_counts(report)),
     ]
+    derived = [item for item in report.fields if item.derived]
+    if derived:
+        lines.append(
+            f"derived views: {len(derived)} (shown below, not counted: they are "
+            "computed from the fields they are named after)"
+        )
     if report.checksum_ok is not None:
         lines.append(f"container checksums: {'valid' if report.checksum_ok else 'BROKEN'}")
     technical = report.technical

@@ -1038,6 +1038,32 @@ def test_the_counter_stops_and_resets_when_the_operation_ends(app) -> None:
     )
 
 
+def test_a_failed_job_clears_the_progress_bar_and_frees_the_window(app) -> None:
+    """After an error the bar must be empty and every control usable again."""
+    from phantom.core.errors import MetadataConflictError
+    from phantom.ui.worker import WorkerEvent, WorkerEventType
+
+    app._busy = True
+    app._operation = "metadata_clean"
+    app.progress_bar.set(0.75)  # a job that had reached three of four stages
+    assert float(app.progress_bar.get()) == pytest.approx(0.75)
+
+    error = MetadataConflictError("lost a field").with_params(fields="GPSVersionID")
+    app._handle_worker_event(WorkerEvent(WorkerEventType.ERROR, error=error))
+
+    assert app._busy is False
+    assert app._operation == ""
+    assert float(app.progress_bar.get()) == 0.0, (
+        "the bar used to keep the fraction the failed job reached, which reads as "
+        "'still running' when nothing is running any more"
+    )
+    assert app.stage_label.cget("text") == app.i18n.t("lbl_progress_idle")
+    assert str(app.cancel_button.cget("state")) == "disabled"
+    assert app.metadata_panel is not None
+    for button in app.metadata_panel.action_buttons():
+        assert str(button.cget("state")) == "normal", "the tab is usable again"
+
+
 def test_the_stage_line_survives_a_language_switch(app) -> None:
     """Switching language mid-embed must re-render the live line, not the idle one."""
     from phantom.core.progress import Stage
