@@ -126,7 +126,12 @@ def profile(ctk: Any, counters: Counters, *, limit: int = 8) -> None:
 
     entries = []
     for entry in profiler.getstats():
-        filename, lineno, name = entry.code
+        # ``entry.code`` is a code object (a (file, line, name) tuple in some
+        # builds), so ask for the parts instead of unpacking it.
+        code = entry.code
+        filename = getattr(code, "co_filename", None) or code[0]
+        lineno = getattr(code, "co_firstlineno", None) or code[1]
+        name = getattr(code, "co_name", None) or code[2]
         entries.append((entry.totaltime, entry.inlinetime, entry.callcount, filename, lineno, name))
     entries.sort(key=lambda item: item[0], reverse=True)
     for cumulative, inline, calls, filename, lineno, name in entries[:limit]:

@@ -186,3 +186,22 @@ def test_a_widget_without_a_width_is_neither_measured_nor_broken() -> None:
     widget = NoWidth()
     assert responsive.apply_width(widget, 120) == 120
     assert widget.options["width"] == 120
+
+
+# ---------------------------------------------------------------------------
+# the resize that is not worth making
+# ---------------------------------------------------------------------------
+def test_a_width_that_is_already_wide_enough_is_left_alone_while_building():
+    """Resizing redraws a widget, and before the window is shown that buys nothing."""
+    assert responsive.width_to_apply(140, 96, shown=False) == 140
+    assert responsive.width_to_apply(140, 140, shown=False) == 140
+
+
+def test_a_caption_wider_than_the_widget_still_widens_it_while_building():
+    assert responsive.width_to_apply(140, 320, shown=False) == 320
+
+
+def test_a_widget_on_screen_is_measured_exactly():
+    """After the first frame the width follows the caption, both ways."""
+    assert responsive.width_to_apply(320, 96, shown=True) == 96
+    assert responsive.width_to_apply(96, 320, shown=True) == 320

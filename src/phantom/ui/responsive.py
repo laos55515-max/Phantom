@@ -41,6 +41,7 @@ from phantom.ui.flow import (
     flow_rows,
     measure_text,
     row_count,
+    width_to_apply,
 )
 
 __all__ = [
@@ -68,6 +69,7 @@ __all__ = [
     "flow_rows",
     "row_count",
     "widget_scaling",
+    "width_to_apply",
 ]
 
 LOGGER: Final = logging.getLogger("phantom.responsive")
@@ -86,9 +88,31 @@ def widget_scaling(widget: Any) -> float:
     return value if value > 0 else 1.0
 
 
+def _shown(widget: Any) -> bool:
+    """Whether the window has already placed this widget on screen."""
+    try:
+        return bool(widget.winfo_ismapped())
+    except Exception:  # noqa: BLE001 - a widget without a window is not shown
+        return False
+
+
 def _set_width(widget: Any, width: int) -> int:
-    """``flow.apply_width``: one place that knows how a CTk width is set."""
-    return apply_width(widget, width)
+    """``flow.apply_width``, plus the rule that keeps start-up cheap.
+
+    Resizing a CustomTkinter widget redraws it.  Before the window is on screen
+    that redraw buys nothing: the widget has never been painted, and a width it
+    already has is still wide enough to show its caption.  So during the build the
+    width CustomTkinter was given (140 for a button, 100 for a checkbox) acts as a
+    floor and only a longer caption widens the widget — one redraw per *long*
+    caption instead of one per widget, which was the difference between a 300 ms
+    and a 500 ms first frame.  A widget already on screen is measured exactly,
+    which is what a language switch needs.
+    """
+    try:
+        current = int(widget.cget("width"))
+    except Exception:  # noqa: BLE001 - no width: apply_width reports it
+        return apply_width(widget, width)
+    return apply_width(widget, width_to_apply(current, width, shown=_shown(widget)))
 
 
 def _widget_font(widget: Any) -> Any:

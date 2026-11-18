@@ -106,6 +106,20 @@ def fitted_width(
     return max(int(minimum), logical + 2 * pad + extra)
 
 
+def width_to_apply(current: int, needed: int, *, shown: bool) -> int:
+    """The width to set on a widget: a floor before it is shown, exact after.
+
+    Resizing a CustomTkinter widget redraws it.  During the build nothing has been
+    painted yet, so the width the widget already has is still wide enough whenever
+    it covers the caption; only a longer caption widens it.  Once the window is on
+    screen the measurement is applied exactly, which is what a language switch
+    needs.  Keeping the rule here means it is tested without a display.
+    """
+    if not shown and current >= needed:
+        return current
+    return needed
+
+
 def apply_width(widget: Any, width: int) -> int:
     """Set the widget's logical width unless it is already right; returns it."""
     try:
