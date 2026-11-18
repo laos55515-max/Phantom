@@ -42,6 +42,15 @@ All notable changes to PHANTOM are recorded here. The format follows
 
 ### Changed
 
+- **Start-up work that nobody sees.** CustomTkinter's scrollbar flushes the whole
+  window on every draw, and the build draws about a hundred of them — each flush
+  paying for everything laid out before it. The build and the first render now run
+  with that flush off and end with one, which is the same answer for every
+  scrollbar at once. Sizing a caption no longer redraws a widget that is not on
+  screen yet: during the build the width a widget already has is a floor, and only
+  a longer caption widens it. `tools/bench_startup.py` measures the result (median
+  of three full builds, with `--profile` and `--stages` for the detail), and the CI
+  GUI job runs it for this branch and for its base and reports both.
 - The collector is restored to the state it was found in: a job no longer enables
   a collector that was already disabled, a resume is refused while another job
   owns the pause, and a failing poll callback is logged and re-armed instead of

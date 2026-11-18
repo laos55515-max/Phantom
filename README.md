@@ -161,7 +161,10 @@ minimum), 1140×900, 1280×800, 1440×900 and maximised — all show every capti
 `en`, `ru` and `uk`, and the GUI suite asserts it by measuring each caption
 against its widget after a resize and after a language switch.
 
-Start-up is measured, not guessed: `PHANTOM_STARTUP_DEBUG=1` prints one line per
+Start-up is measured, not guessed: `python tools/bench_startup.py` builds the whole
+window three times and reports the median build time, the first frame, how often the
+system font list was read and how many font objects were created (`--stages` and
+`--profile` say where the time goes); `PHANTOM_STARTUP_DEBUG=1` prints one line per
 stage (import, Tk root, each tab, the render passes, the first frame, the moment
 the window is on screen) plus a summary, and the window does the work that is not
 needed for the first frame (logging, the OS-theme watcher) after the first idle
