@@ -1763,7 +1763,7 @@ def test_the_page_scrolls_over_an_empty_text_box(app) -> None:
     before = _make_scrollable(area.canvas)
     assert _text_view(box) == (0.0, 1.0), "the text box is supposed to be empty here"
 
-    _wheel_on_widget(app, box, delta=-120)
+    _wheel_on_widget(app, app.embed_text, delta=-120)
 
     assert float(area.canvas.yview()[0]) > before, (
         f"an empty text area still blocked the page: yview={area.canvas.yview()}, "
@@ -1811,10 +1811,17 @@ def test_at_the_end_of_the_text_the_page_takes_over(app) -> None:
     inner.yview_moveto(1.0)
     app.root.update()
     before_page = _make_scrollable(area.canvas, top=0.3)
+    x, y = _screen_centre(inner)
+    resolved = app._scroll.resolve(x, y, direction=1)
 
-    _wheel_on_widget(app, box, delta=-120)
+    _wheel_on_widget(app, app.embed_text, delta=-120)
 
-    assert float(area.canvas.yview()[0]) > before_page, "the page stayed frozen at the last line"
+    assert float(area.canvas.yview()[0]) > before_page, (
+        "the page stayed frozen at the last line: "
+        f"text={_text_view(box)}, resolved={getattr(resolved, 'describe', lambda: None)()}, "
+        f"widget={app._scroll.widget_at(x, y)!r}, area={area.describe()}, "
+        f"page={area.canvas.yview()}"
+    )
 
 
 def test_a_card_wheel_still_scrolls_the_tab(app) -> None:
