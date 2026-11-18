@@ -298,6 +298,56 @@ def test_an_outcome_updates_the_view(tmp_path: Path) -> None:
     assert view.output_path == outcome.output
 
 
+def test_an_outcome_reseeds_the_selection_from_the_new_report(tmp_path: Path) -> None:
+    """The selection named the file that was read; the result is a different one."""
+    view, _path = _loaded(tmp_path, "reseed.png")
+    view.clear_selection()
+    view.toggle("png.text.tEXt.Comment")
+    view.output_path = str(tmp_path / "reseed-out.png")
+    outcome = view.make_clean_job()(lambda *_args: None, threading.Event())
+
+    view.apply_outcome(outcome)
+
+    assert view.selection == set(cleaner.default_selection(outcome.report_after))
+    assert "png.text.tEXt.Comment" not in view.selection, "the removed field is gone"
+    # Whatever is enabled is exactly what the plan would execute on the new report.
+    decision = view.plan()
+    assert view.save_allowed() is (decision is not None and bool(decision.remove))
+
+
+def test_saving_is_refused_for_a_selection_that_would_remove_nothing(tmp_path: Path) -> None:
+    """A packet that also carries rights is not removable: the button follows the plan."""
+    path = samples.xmp_png(
+        tmp_path / "rights.png",
+        {"dc:rights": "(c) 2024 Ada", "photoshop:City": "Lubny"},
+    )
+    view = MetadataViewModel()
+    view.set_path(str(path))
+    view.apply_report(inspector.inspect_path(str(path)))
+    assert view.selection == set()
+
+    # A selection can be set by hand, by a stale report or by a future caller;
+    # the button must not offer an operation the cleaner would then refuse.
+    view.selection = {"png.xmp"}
+
+    assert view.plan() is not None and view.plan().blocked
+    assert view.save_allowed() is False
+
+
+def test_personal_data_the_cleaner_may_not_touch_is_counted(tmp_path: Path) -> None:
+    path = samples.xmp_png(
+        tmp_path / "locked.png",
+        {"dc:rights": "(c) 2024 Ada", "photoshop:City": "Lubny"},
+    )
+    view = MetadataViewModel()
+    view.set_path(str(path))
+    view.apply_report(inspector.inspect_path(str(path)))
+
+    assert view.personal_removable() == 0
+    assert view.protected_personal() == 1, "the city is personal, and it is locked"
+    assert view.save_allowed() is False
+
+
 # ---------------------------------------------------------------------------
 # exports
 # ---------------------------------------------------------------------------

@@ -281,16 +281,40 @@ class MetadataViewModel:
             return 0
         return len(meta_cleaner.default_selection(report))
 
+    def protected_personal(self) -> int:
+        """Personal fields the cleaner may not remove: they live in a kept block.
+
+        A packet with a copyright line in it, a signed block, an unreadable block:
+        the data is there, it just cannot be taken out whole.  The plan card says
+        so instead of claiming that there is nothing to clean.
+        """
+        report = self.report
+        if report is None:
+            return 0
+        return sum(
+            1
+            for item in report.fields
+            if item.sensitive and not item.removable and not item.derived
+        )
+
     def removable_total(self) -> int:
         report = self.report
         return 0 if report is None else len(report.removable_keys)
 
     def save_allowed(self) -> bool:
-        """Whether the save button may do anything: something selected, nothing blocked."""
+        """Whether the save button may do anything, and whether it would do it.
+
+        A selection that survives from a previous report, or one that only names
+        fields the policy keeps, used to leave the button enabled; pressing it then
+        failed with "no removable field was selected".  The button now follows the
+        plan it would execute.
+        """
         if self.report is None or not self.selection:
             return False
         decision = self.plan()
-        return decision is not None and decision.allowed
+        if decision is None or not decision.allowed:
+            return False
+        return bool(decision.remove)
 
     def hash_block(self) -> str:
         """The full SHA-256 values, for the clipboard (never truncated)."""
@@ -310,6 +334,10 @@ class MetadataViewModel:
         self.outcome = outcome
         self.report = outcome.report_after
         self.output_path = outcome.output
+        # The selection belonged to the file that was read before the clean; the
+        # report now describes the cleaned copy, so it starts from its own default
+        # instead of naming fields that no longer exist.
+        self.selection = set(meta_cleaner.default_selection(outcome.report_after))
 
     def with_filter(
         self, *, category: MetadataCategory | None = None, only_removable: bool | None = None

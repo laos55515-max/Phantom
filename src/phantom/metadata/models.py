@@ -96,7 +96,15 @@ class MetadataField:
     category: MetadataCategory
     container: str
     removable: bool = False
+    #: The English sentence the interface falls back to, and the log uses.
     reason: str = ""
+    #: Locale key of the same sentence, when the reader produced a structured
+    #: reason: the panel and the report then show it in the user's language
+    #: instead of that English sentence in the middle of a Ukrainian card.
+    reason_key: str = ""
+    #: Values for the placeholders of :attr:`reason_key`, e.g. the names of the
+    #: protected properties that block the removal.
+    reason_params: tuple[tuple[str, str], ...] = ()
     size: int = 0
     truncated: bool = False
     #: A view computed from other fields rather than read from the container
@@ -127,6 +135,7 @@ class MetadataField:
             "removable": self.removable,
             "derived": self.derived,
             "reason": self.reason,
+            "reason_key": self.reason_key,
             "size": self.size,
             "truncated": self.truncated,
         }

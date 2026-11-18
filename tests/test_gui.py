@@ -1880,6 +1880,30 @@ def test_a_blocked_file_cannot_be_saved_and_says_why(app, tmp_path: Path) -> Non
     assert panel.save_hint.cget("text") == app.i18n.t("meta_save_blocked_hint")
 
 
+def test_personal_data_inside_a_protected_packet_is_reported_as_locked(
+    app, tmp_path: Path
+) -> None:
+    """«Очистка не требуется» was a lie when the city sat in a packet with rights."""
+    import metadata_samples as samples
+
+    path = samples.xmp_png(
+        tmp_path / "locked.png",
+        {"dc:rights": "(c) 2024 Ada", "photoshop:City": "Lubny"},
+    )
+    app._show_tab("metadata")
+    panel = app.metadata_panel
+    assert panel is not None
+    panel.load_file(str(path))
+    _pump(app)
+
+    assert panel.vm is not None and panel.vm.personal_removable() == 0
+    assert panel.vm.protected_personal() == 1
+    text = panel.plan_label.cget("text")
+    assert app.i18n.t("meta_cleanup_blocked_personal", count=1) in text
+    assert app.i18n.t("meta_cleanup_not_needed") not in text
+    assert str(panel.save_button.cget("state")) == "disabled"
+
+
 def test_reset_clears_the_file_and_the_result_but_not_the_disk(app, tmp_path: Path) -> None:
     path = _scanned(app, tmp_path, None)
     panel = app.metadata_panel

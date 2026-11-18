@@ -27,6 +27,7 @@ import customtkinter as ctk
 
 from phantom.core import files as fsutil
 from phantom.core.errors import PhantomError
+from phantom.metadata import report as meta_report
 from phantom.metadata.cleaner import CleaningOutcome
 from phantom.metadata.models import (
     CATEGORY_ORDER,
@@ -570,12 +571,14 @@ class MetadataPanel:
             marker = self.t("meta_removable") if item.removable else self.t("meta_protected")
         return f"{item.label} · {self.t(item.category.i18n_key)} · {marker}"
 
-    @staticmethod
-    def _row_value(item: MetadataField) -> str:
+    def _row_value(self, item: MetadataField) -> str:
         text = item.value if len(item.value) <= 200 else item.value[:197] + CLIP_MARK
         text = text.replace("\n", " ")
-        if not item.removable and item.reason:
-            return f"{text} — {item.reason}"
+        # A reader that knows its reason as a locale key gets it translated here:
+        # an English sentence in the middle of a Ukrainian card reads like a bug.
+        reason = meta_report.field_reason(item, self.app.i18n)
+        if not item.removable and reason:
+            return f"{text} — {reason}"
         return text or "—"
 
     def _clear_rows(self) -> None:
@@ -597,13 +600,19 @@ class MetadataPanel:
         elif self.vm.personal_removable() == 0:
             # "Nothing to clean" is an answer, not an empty card: say why, and say
             # what else is on offer when the file has removable descriptive fields.
+            locked = self.vm.protected_personal()
             removable = self.vm.removable_total()
-            text = (
-                self.t("meta_cleanup_optional", count=removable)
-                if removable
-                else self.t("meta_nothing_removable_hint")
-            )
-            text = f"{self.t('meta_cleanup_not_needed')} {text}"
+            if locked:
+                # Personal data is in the file, but it sits in a block PHANTOM may
+                # not touch.  Saying "no cleaning is needed" there was a lie.
+                text = self.t("meta_cleanup_blocked_personal", count=locked)
+            else:
+                text = (
+                    self.t("meta_cleanup_optional", count=removable)
+                    if removable
+                    else self.t("meta_nothing_removable_hint")
+                )
+                text = f"{self.t('meta_cleanup_not_needed')} {text}"
         else:
             text = self.t(
                 "meta_plan_summary",
@@ -630,6 +639,8 @@ class MetadataPanel:
             hint = self.t("meta_save_blocked_hint")
         elif not self.vm.selection:
             hint = self.t("meta_save_disabled_hint")
+        elif decision is not None and not decision.remove:
+            hint = self.t("meta_save_nothing_removable_hint")
         else:
             hint = ""
         self.save_hint.configure(text=hint)

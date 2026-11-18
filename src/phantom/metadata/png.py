@@ -20,6 +20,7 @@ import zlib
 from dataclasses import dataclass, field
 from typing import Final
 
+from phantom.metadata import xmp as xmp_reader
 from phantom.metadata.models import (
     MAX_DISPLAY_VALUE,
     ContainerChunk,
@@ -153,26 +154,6 @@ _GPS_TAGS: Final[dict[int, tuple[str, MetadataCategory]]] = {
     0x0011: ("GPSImgDirection", MetadataCategory.PERSONAL),
     0x001D: ("GPSDateStamp", MetadataCategory.PERSONAL),
 }
-
-#: XMP properties the reader pulls out of the packet, with their classification.
-_XMP_PROPERTIES: Final[tuple[tuple[str, str, MetadataCategory], ...]] = (
-    ("dc:title", "XMP dc:title", MetadataCategory.DESCRIPTIVE),
-    ("dc:description", "XMP dc:description", MetadataCategory.DESCRIPTIVE),
-    ("dc:creator", "XMP dc:creator", MetadataCategory.RIGHTS),
-    ("dc:rights", "XMP dc:rights", MetadataCategory.RIGHTS),
-    ("xmp:CreatorTool", "XMP xmp:CreatorTool", MetadataCategory.TECHNICAL),
-    ("xmp:CreateDate", "XMP xmp:CreateDate", MetadataCategory.PERSONAL),
-    ("xmp:ModifyDate", "XMP xmp:ModifyDate", MetadataCategory.PERSONAL),
-    ("photoshop:DateCreated", "XMP photoshop:DateCreated", MetadataCategory.PERSONAL),
-    ("photoshop:City", "XMP photoshop:City", MetadataCategory.PERSONAL),
-    ("photoshop:Country", "XMP photoshop:Country", MetadataCategory.PERSONAL),
-    ("photoshop:State", "XMP photoshop:State", MetadataCategory.PERSONAL),
-    ("Iptc4xmpCore:Location", "XMP Iptc4xmpCore:Location", MetadataCategory.PERSONAL),
-    ("exif:GPSLatitude", "XMP exif:GPSLatitude", MetadataCategory.PERSONAL),
-    ("exif:GPSLongitude", "XMP exif:GPSLongitude", MetadataCategory.PERSONAL),
-)
-
-_REASON_PERSONAL_BLOCK = "personal data inside a structured packet"
 
 
 @dataclass(frozen=True, slots=True)
@@ -796,40 +777,73 @@ def _chunk_fields(chunks: list[PngChunk]) -> list[MetadataField]:
     return fields
 
 
-def _xmp_fields(text: str) -> list[MetadataField]:
-    """Pull the few XMP properties that matter out of the packet, without a parser.
+def _xmp_fields(analysis: xmp_reader.XmpAnalysis) -> list[MetadataField]:
+    """One read-only view per property the packet actually carries.
 
-    XMP is RDF/XML: parsing it with a real parser buys nothing here (we display a
-    handful of properties and never rewrite them), while a regex over a truncated
-    value cannot be tricked into fetching anything.
+    Every property is listed — including one in a namespace this build has never
+    heard of, and including a copyright line written as an *attribute* of
+    ``rdf:Description`` — because a user who is about to delete the packet has to
+    be able to see what is inside it.  The views are not entries: the packet is,
+    and it is the only thing the cleaner can select.
     """
     fields: list[MetadataField] = []
-    for name, label, category in _XMP_PROPERTIES:
-        marker = f"{name}>"
-        index = text.find(marker)
-        if index < 0:
-            continue
-        tail = text[index + len(marker) :]
-        end = tail.find("<")
-        if end < 0:
-            continue
-        value = tail[:end].strip()
-        if not value:
-            continue
+    used: set[str] = set()
+    for item in analysis.properties:
+        key = f"png.xmp.{item.qualified}"
+        serial = 2
+        while key in used:
+            # A property may appear in two packets, or twice in one; the display
+            # keys must stay unique even though the packet is one entry.
+            key = f"png.xmp.{item.qualified}.{serial}"
+            serial += 1
+        used.add(key)
         fields.append(
             MetadataField(
-                key=f"png.xmp.{name}",
-                label=label,
-                value=value[:MAX_DISPLAY_VALUE],
-                category=category,
+                key=key,
+                label=item.label(),
+                value=item.value[:MAX_DISPLAY_VALUE],
+                category=item.category,
                 container="iTXt/XMP",
                 removable=False,
                 reason="a property of the packet below, not an entry of its own",
-                size=len(value),
+                size=len(item.value),
+                truncated=len(item.value) > MAX_DISPLAY_VALUE,
                 derived=True,
             )
         )
     return fields
+
+
+def _xmp_packet_field(analysis: xmp_reader.XmpAnalysis) -> MetadataField:
+    """The packet itself: the one entry the cleaner may be allowed to remove.
+
+    ``removable`` is the policy of :mod:`phantom.metadata.xmp`, not a guess made
+    from the text: the packet goes only when it was read completely and holds
+    nothing but personal properties.
+    """
+    if not analysis.ok:
+        head = "present, unreadable — kept"
+    elif analysis.removable:
+        head = "contains personal properties"
+    elif analysis.personal:
+        head = "contains personal properties and properties the policy keeps"
+    else:
+        head = "present, no personal properties recognised"
+    value = head if analysis.packet_count < 2 else f"{analysis.packet_count} packets; {head}"
+    return MetadataField(
+        key="png.xmp",
+        label="XMP packet",
+        value=value,
+        category=(
+            MetadataCategory.PERSONAL if analysis.personal else MetadataCategory.PROVENANCE
+        ),
+        container="iTXt/XMP",
+        removable=analysis.removable,
+        reason=analysis.reason,
+        reason_key=analysis.reason_key,
+        reason_params=analysis.reason_params,
+        size=0,
+    )
 
 
 def inspect_png(data: bytes) -> Section:
@@ -839,9 +853,7 @@ def inspect_png(data: bytes) -> Section:
     fields: list[MetadataField] = []
     manifests: list[tuple[str, bytes]] = []
     signatures: list[str] = []
-    xmp_seen = False
-    xmp_properties: list[MetadataField] = []
-    xmp_personal = False
+    xmp_packets: list[str] = []
 
     kinds = [chunk.kind for chunk in chunks]
     if not kinds or kinds[0] != "IHDR":
@@ -859,10 +871,10 @@ def inspect_png(data: bytes) -> Section:
             if not keyword:
                 continue
             if keyword == XMP_KEYWORD:
-                xmp_seen = True
-                properties = _xmp_fields(text)
-                xmp_properties.extend(properties)
-                fields.extend(properties)
+                # Collected, not interpreted here: every packet of the file is
+                # read by one analyser at the end, so a packet that cannot be
+                # read protects the ones that can.
+                xmp_packets.append(text)
                 continue
             lowered = keyword.lower()
             category = _TEXT_KEYWORDS.get(lowered, MetadataCategory.UNKNOWN)
@@ -892,45 +904,16 @@ def inspect_png(data: bytes) -> Section:
         elif chunk.kind in SIGNATURE_CHUNKS:
             signatures.append(chunk.kind)
             manifests.append((chunk.kind, chunk.data))
-    if xmp_seen:
+    if xmp_packets:
         # XMP is rewritten as a whole packet, so ticking it takes every property
         # with it.  That is only allowed when the packet holds nothing the policy
-        # protects: a packet with dc:title or dc:rights in it is reported as
-        # protected instead of being offered and then failing (or, worse,
-        # silently deleting the copyright line along with the city).
-        xmp_personal = any(item.sensitive for item in xmp_properties)
-        protected_properties = sorted(
-            item.label for item in xmp_properties if not item.sensitive
-        )
-        packet_removable = xmp_personal and not protected_properties
-        if packet_removable:
-            reason = ""
-        elif protected_properties:
-            reason = (
-                "the packet also carries protected properties ("
-                + ", ".join(protected_properties[:4])
-                + ") and XMP is removed as a whole packet"
-            )
-        else:
-            reason = "no personal property recognised"
-        fields.append(
-            MetadataField(
-                key="png.xmp",
-                label="XMP packet",
-                value=(
-                    "contains personal properties"
-                    if xmp_personal
-                    else "present, no personal properties recognised"
-                ),
-                category=(
-                    MetadataCategory.PERSONAL if xmp_personal else MetadataCategory.PROVENANCE
-                ),
-                container="iTXt/XMP",
-                removable=packet_removable,
-                reason=reason,
-                size=0,
-            )
-        )
+        # protects — and "the policy protects" now includes a property written as
+        # an attribute, one inside a Bag/Seq/Alt, one in an unknown namespace, and
+        # a packet the reader cannot vouch for at all.  Anything less is how the
+        # copyright line used to be deleted along with the city.
+        analysis = xmp_reader.analyse(*xmp_packets)
+        fields.extend(_xmp_fields(analysis))
+        fields.append(_xmp_packet_field(analysis))
     fields.extend(_chunk_fields(chunks))
 
     section_chunks = tuple(
@@ -976,10 +959,12 @@ def removal_from_keys(keys: frozenset[str]) -> PngRemoval:
             continue
         group = parts[1]
         if group == "xmp":
-            # ``png.xmp`` is the packet itself; its properties are views of it.
-            # The check used to require three parts, so the packet key — the only
-            # one a user can tick — was silently dropped from the request.
-            drop_xmp = True
+            # ``png.xmp`` is the packet itself; ``png.xmp.<property>`` is a view of
+            # it and must never be read as "remove the packet".  The check used to
+            # require three parts, so the packet key — the only one a user can
+            # tick — was silently dropped from the request; the fix is to accept
+            # that one key exactly, not every key that starts with it.
+            drop_xmp = drop_xmp or key == "png.xmp"
             continue
         if len(parts) < 3:
             continue

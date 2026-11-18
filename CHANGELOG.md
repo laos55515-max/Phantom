@@ -262,6 +262,38 @@ All notable changes to PHANTOM are recorded here. The format follows
 
 ### Fixed
 
+- **A protected property inside an XMP packet can no longer be deleted with it.**
+  The inspector looked for the text `<dc:rights>` in the packet and treated "I did
+  not find a protected property" as "there is nothing to protect". RDF/XML can put
+  the same property in a place that search never sees — as an attribute of
+  `rdf:Description`, inside a `rdf:Bag`/`Seq`/`Alt`, in a nested node, under a
+  prefix the file chooses, or in a namespace PHANTOM does not know — so a file with
+  `dc:rights="(c) 2024 …"` on the element and a `photoshop:City` child was offered
+  as "personal data only" and the whole packet was removed, copyright line
+  included, while the result claimed `verified: True`.
+
+  `phantom.metadata.xmp` now reads the packet structurally and decides in the
+  other direction: a property is removed only when the reader has *proved* it is
+  personal and the packet holds nothing else. Everything unrecognised — rights,
+  descriptive, provenance, unknown namespaces, unknown local names, and every
+  shape the reader does not model — blocks the whole packet, because XMP is
+  removed as a packet and there is no partial removal. A packet that cannot be
+  read completely is protected as well: truncated XML, a DTD or an entity
+  declaration (refused before parsing, so no entity is ever expanded and nothing
+  is fetched), more elements, attributes or nesting than the limits allow, a
+  packet over 1 MiB or packets over 4 MiB together. Several packets in one file
+  are read together, one unreadable packet protects the others, and a rewrite that
+  would drop a packet the plan promised to keep still fails the integrity
+  confirmation and publishes nothing.
+
+  The properties of the packet are listed one by one, including the ones in a
+  namespace this build does not know, so refusing to remove is never the same as
+  refusing to look. The reason a packet is kept is a locale key: it is shown in
+  the language of the window instead of English inside a Ukrainian card, and the
+  plan card says that personal data sits in a block that may not be removed
+  instead of «очистка не требуется». The save button follows the plan it would
+  execute — a selection that would remove nothing no longer enables it.
+
 - **The scroll wheel and the trackpad, properly this time.** The previous attempt
   bound a handler on every widget of a tab and was wrong in three ways that only
   show up on a real machine:

@@ -207,6 +207,14 @@ it.
   embedded picture. If the block also carries something the policy protects — a
   title, a rights line — it is reported as *protected*, with the reason, instead of
   being offered and then failing halfway.
+- **XMP is read, not searched.** The packet is parsed as RDF/XML, so a property
+  written as an attribute of `rdf:Description`, inside a `Bag`/`Seq`/`Alt`, in a
+  nested node, under a prefix the file chose, or in a namespace this build has
+  never seen counts as a property. A packet whose contents cannot be read
+  completely — truncated XML, a DTD or an entity declaration, more elements or
+  nesting than the limits allow, more than a megabyte — is protected rather than
+  guessed about, and several packets in one file are judged together. The
+  properties are listed one by one, so "kept" never means "not shown".
 - **Never removed** are copyright and licence lines, technical parameters, colour
   profiles, provenance blocks and *unknown* chunks. An unknown chunk is reported
   as unknown and left alone: the cleaner does not delete what it cannot explain.

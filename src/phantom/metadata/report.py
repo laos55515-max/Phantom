@@ -14,7 +14,7 @@ from datetime import UTC, datetime
 from typing import Final, Protocol
 
 from phantom.metadata.cleaner import CleaningOutcome, CleaningPlan
-from phantom.metadata.models import MetadataReport
+from phantom.metadata.models import MetadataField, MetadataReport
 
 LOGGER: Final = logging.getLogger("phantom.metadata.report")
 
@@ -110,6 +110,24 @@ def text_for(texts: Texts | None, key: str, **params: object) -> str:
     return template.format(**params) if params else template
 
 
+def field_reason(item: MetadataField, texts: Texts | None = None) -> str:
+    """The reason a field is kept, in the report's language when there is one.
+
+    Readers that produce a structured reason leave it as a locale key, so a
+    Ukrainian card never shows an English sentence in the middle of it; the
+    English text stays the fallback for the JSON export and the log.
+    """
+    if not item.reason_key or texts is None:
+        return item.reason
+    params = dict(item.reason_params)
+    try:
+        if texts.has(item.reason_key):
+            return str(texts.t(item.reason_key, **params))
+    except Exception as exc:  # noqa: BLE001 - a bad locale must not hide the row
+        LOGGER.debug("reason lookup for %s failed: %s", item.reason_key, exc)
+    return item.reason
+
+
 def yes_no(texts: Texts | None, value: bool) -> str:
     """``yes``/``no`` in the report's language (``{state}`` is filled with this)."""
     return text_for(texts, "report.state_yes" if value else "report.state_no")
@@ -164,7 +182,11 @@ def inspection_text(report: MetadataReport, texts: Texts | None = None) -> str:
         marker = (
             text_for(texts, "report.marker_removable")
             if item.removable
-            else text_for(texts, "report.marker_protected", reason=item.reason or "kept")
+            else text_for(
+                texts,
+                "report.marker_protected",
+                reason=field_reason(item, texts) or "kept",
+            )
         )
         lines.append(
             text_for(
@@ -234,7 +256,7 @@ def cleaning_text(
                 "report.plan_protected_line",
                 container=item.container,
                 label=item.label,
-                reason=item.reason or "protected",
+                reason=field_reason(item, texts) or "protected",
             )
             for item in plan.blocked
         )
