@@ -113,13 +113,41 @@ def measure(ctk: Any, counters: Counters, *, stages: bool) -> dict[str, float]:
     }
 
 
+def profile(ctk: Any, counters: Counters, *, limit: int = 8) -> None:
+    """Where the build time actually goes, as ``PROFILE:`` lines."""
+    import cProfile
+
+    profiler = cProfile.Profile()
+    profiler.enable()
+    try:
+        measure(ctk, counters, stages=False)
+    finally:
+        profiler.disable()
+
+    entries = [
+        (value.tt, value.callcount, key) for key, value in profiler.getstats()
+    ]
+    entries.sort(key=lambda item: item[0], reverse=True)
+    for total_seconds, calls, key in entries[:limit]:
+        where = f"{Path(key.filename).name}:{key.lineno}"
+        print(
+            f"PROFILE: {total_seconds * 1000:8.1f}ms calls={calls:<5} "
+            f"{key.name} @ {where}",
+            flush=True,
+        )
+
+
 def main(argv: list[str]) -> int:
     stages = "--stages" in argv or os.environ.get("PHANTOM_STARTUP_DEBUG", "") not in ("", "0")
+    wants_profile = "--profile" in argv
     counters = Counters()
     ctk = counters.install()
     import customtkinter as plain_ctk
 
     ctk = ctk or plain_ctk
+
+    if wants_profile:
+        profile(ctk, counters)
 
     results: list[dict[str, float]] = []
     for index in range(RUNS):
