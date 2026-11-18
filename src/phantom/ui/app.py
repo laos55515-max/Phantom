@@ -158,26 +158,25 @@ class PhantomApp:
 
         self.trace.mark("init:services")
         self._configure_root()
-        # CustomTkinter's scrollbar flushes the whole window on every draw; during
-        # the build that is a hundred flushes of a window that is still growing.
-        # Nothing in here needs one, and the flush below gives every scrollbar the
-        # same answer once instead of a hundred different ones.
+        # CustomTkinter's scrollbar flushes the whole window on every draw, and the
+        # build plus the first render draw a hundred of them; each flush then pays
+        # for everything laid out before it.  Nothing in this block needs a flush —
+        # the fonts measure text, not layouts — so it runs with the flush off and
+        # ends with exactly one, which answers every pending question at once.
         with self.trace.stage("build:chrome"), quiet_idle_flush():
             self._build()
-        self._scroll.install()
-        self._apply_theme(self.settings.theme, persist=False)
-        # The one flush the build needed: every scrollbar and canvas now knows the
-        # size it was finally given.
+            self._scroll.install()
+            self._apply_theme(self.settings.theme, persist=False)
+            self._wire_shortcuts()
+            with self.trace.stage("render:labels"):
+                self._render_all_labels()
+            with self.trace.stage("render:state"):
+                self._refresh_all(initial=True)
+            # Widths and wrap widths are derived from what the cards really became:
+            # this is the one pass that needs every widget to exist.
+            with self.trace.stage("layout:adopt"):
+                self.responsive.adopt(self.root)
         self._flush_layout()
-        self._wire_shortcuts()
-        with self.trace.stage("render:labels"):
-            self._render_all_labels()
-        with self.trace.stage("render:state"):
-            self._refresh_all(initial=True)
-        # Widths and wrap widths are derived from what the cards really became:
-        # this is the one pass that needs every widget to exist.
-        with self.trace.stage("layout:adopt"):
-            self.responsive.adopt(self.root)
         # Anything that is useful but not needed for the first frame waits for
         # the event loop, so the window is on screen before it happens.
         self.root.after_idle(self._after_first_frame)
