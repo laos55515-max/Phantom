@@ -564,26 +564,33 @@ def _area_for_tab(app, ident: str):
 
 
 def _make_scrollable(canvas, *, top: float = 0.1) -> float:
-    """Give the canvas a document longer than the window and set the view.
+    """Put the canvas somewhere the wheel can really move it, and say where.
 
     Routing is what is under test, not the height of the layout: a tab whose
     content happens to fit would make ``yview`` immovable and the test would
     report a routing failure for a layout reason.  CustomTkinter re-applies its
-    own ``scrollregion`` on ``<Configure>``, which can clamp a forced view to the
-    bottom, so the position is checked and pushed back to the top if it is pinned.
+    own ``scrollregion`` on ``<Configure>``, which can clamp a requested position
+    to the bottom of the real content, so the position is checked and pulled back
+    far enough that a notch in either direction moves something.
     """
     canvas.update_idletasks()
-    width = max(1, canvas.winfo_width())
-    canvas.configure(scrollregion=(0, 0, width, 6000))
-    canvas.update_idletasks()
+    first, last = (float(value) for value in canvas.yview())
+    if last - first >= 0.999:
+        # The layout fits the window: give the canvas a document that does not.
+        canvas.configure(scrollregion=(0, 0, max(1, canvas.winfo_width()), 6000))
+        canvas.update_idletasks()
     canvas.yview_moveto(top)
     canvas.update_idletasks()
     first, last = (float(value) for value in canvas.yview())
-    if first >= last - 0.02:
-        canvas.yview_moveto(0.0)
+    if last >= 0.999 and first > 0.5:
+        # A late <Configure> clamped the view to the bottom of the real content.
+        canvas.yview_moveto(max(0.0, first - 0.2))
         canvas.update_idletasks()
         first, last = (float(value) for value in canvas.yview())
-    assert first < last - 0.02, f"this tab cannot scroll: yview={(first, last)}"
+    assert last - first < 0.999, (
+        f"this tab cannot scroll at all: yview={(first, last)}, "
+        f"scrollregion={canvas.cget('scrollregion')}"
+    )
     return first
 
 
@@ -696,14 +703,20 @@ def test_a_textbox_keeps_its_own_wheel_handling(app) -> None:
     _reveal(app)
     area = _area_for_tab(app, "embed")
     assert area is not None
-    before = _make_scrollable(area.canvas)
     boxes = [widget for widget in _descendants(area.frame) if is_text_area(widget)]
     if not boxes:
         pytest.skip("no text area in this tab on this platform")
     box = boxes[0]
+    # A box with nothing to scroll now hands the gesture to the page on purpose;
+    # this test is about the case where the box really can move.
+    from phantom.ui.widgets import inner_text_widget
+
+    inner = inner_text_widget(box)
+    inner.delete("1.0", "end")
+    inner.insert("1.0", "\n".join(f"line {index}" for index in range(400)))
+    app.root.update()
+    before = _make_scrollable(area.canvas, top=0.5)
     x, y = _screen_centre(box)
-    if app._scroll.resolve(x, y) is not None:
-        pytest.skip("the text area is not the widget under its own centre")
 
     _wheel_on_root(app, delta=-120, x=x, y=y)
 
