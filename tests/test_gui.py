@@ -1038,10 +1038,23 @@ def test_the_counter_stops_and_resets_when_the_operation_ends(app) -> None:
     )
 
 
-def test_a_failed_job_clears_the_progress_bar_and_frees_the_window(app) -> None:
+def test_a_failed_job_clears_the_progress_bar_and_frees_the_window(
+    app, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """After an error the bar must be empty and every control usable again."""
     from phantom.core.errors import MetadataConflictError
+    from phantom.ui import app as ui_app
     from phantom.ui.worker import WorkerEvent, WorkerEventType
+
+    # The dialog is part of the behaviour under test, so record it instead of
+    # letting the fixture refuse it; the text is what the user reads.
+    shown: list[str] = []
+    monkeypatch.setattr(
+        ui_app.messagebox,
+        "showerror",
+        lambda title="", message="", **_: shown.append(message),
+        raising=False,
+    )
 
     app._busy = True
     app._operation = "metadata_clean"
@@ -1062,6 +1075,9 @@ def test_a_failed_job_clears_the_progress_bar_and_frees_the_window(app) -> None:
     assert app.metadata_panel is not None
     for button in app.metadata_panel.action_buttons():
         assert str(button.cget("state")) == "normal", "the tab is usable again"
+    assert len(shown) == 1, "the failure is reported once"
+    assert "GPSVersionID" in shown[0], "the dialog names the field by label"
+    assert "0x" not in shown[0], "not by tag number"
 
 
 def test_the_stage_line_survives_a_language_switch(app) -> None:
