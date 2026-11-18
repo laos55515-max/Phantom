@@ -107,6 +107,10 @@ def fit_button(button: Any, *, font: Any = None, minimum: int = 0) -> int:
         text = str(button.cget("text") or "")
     except Exception:  # noqa: BLE001 - pragma: no cover, Tk dependent
         return 0
+    if not text.strip():
+        # No caption yet: the binder sets it and calls back.  Sizing to an empty
+        # string would redraw the button twice for nothing, ~60 times per window.
+        return 0
     width = fitted_width(
         target_font,
         text,
@@ -126,6 +130,8 @@ def fit_checkbox(widget: Any, *, minimum: int = 0) -> int:
         text = str(widget.cget("text") or "")
     except Exception:  # noqa: BLE001 - pragma: no cover, Tk dependent
         return 0
+    if not text.strip():
+        return 0  # nothing to measure yet; the binder calls back with a caption
     width = fitted_width(
         target_font,
         text,
@@ -174,6 +180,8 @@ def fit_switch(widget: Any, *, minimum: int = 0) -> int:
         text = str(widget.cget("text") or "")
     except Exception:  # noqa: BLE001 - pragma: no cover, Tk dependent
         return 0
+    if not text.strip():
+        return 0  # nothing to measure yet; the binder calls back with a caption
     width = fitted_width(
         target_font,
         text,

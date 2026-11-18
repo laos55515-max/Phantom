@@ -124,15 +124,14 @@ def profile(ctk: Any, counters: Counters, *, limit: int = 8) -> None:
     finally:
         profiler.disable()
 
-    entries = [
-        (value.tt, value.callcount, key) for key, value in profiler.getstats()
-    ]
+    entries = []
+    for (filename, lineno, name), value in profiler.getstats():
+        entries.append((value.tt, value.callcount, filename, lineno, name))
     entries.sort(key=lambda item: item[0], reverse=True)
-    for total_seconds, calls, key in entries[:limit]:
-        where = f"{Path(key.filename).name}:{key.lineno}"
+    for total_seconds, calls, filename, lineno, name in entries[:limit]:
+        where = f"{Path(filename).name}:{lineno}"
         print(
-            f"PROFILE: {total_seconds * 1000:8.1f}ms calls={calls:<5} "
-            f"{key.name} @ {where}",
+            f"PROFILE: {total_seconds * 1000:8.1f}ms calls={calls:<5} {name} @ {where}",
             flush=True,
         )
 
@@ -145,9 +144,6 @@ def main(argv: list[str]) -> int:
     import customtkinter as plain_ctk
 
     ctk = ctk or plain_ctk
-
-    if wants_profile:
-        profile(ctk, counters)
 
     results: list[dict[str, float]] = []
     for index in range(RUNS):
@@ -172,6 +168,9 @@ def main(argv: list[str]) -> int:
         "families={families:.0f} fonts={fonts:.0f}".format(**median),
         flush=True,
     )
+    if wants_profile:
+        # Last, so a bug here can never cost the numbers above.
+        profile(ctk, counters)
     return 0
 
 
