@@ -2077,3 +2077,18 @@ def test_a_whole_window_builds_its_fonts_once(app, tmp_path: Path) -> None:
 
     assert len(families) > 0, "the font list was never read"
     assert len(fonts) <= 14, f"{len(fonts)} font objects for one window: {sorted(fonts)}"
+
+
+def test_the_window_leaves_tk_exactly_as_it_found_it(app) -> None:
+    """The quiet build patches one method to stop a flush storm; it must undo it.
+
+    ``CTkScrollbar._draw`` flushes the whole window on every scrollbar draw during
+    the build (about a hundred of them), so the build runs with that flush off and
+    then flushes once.  A leaked patch would leave every canvas in the process
+    unable to flush at all.
+    """
+    import tkinter as tk
+
+    from phantom.ui import widgets as W
+
+    assert tk.Canvas.update_idletasks is W._CANVAS_FLUSH

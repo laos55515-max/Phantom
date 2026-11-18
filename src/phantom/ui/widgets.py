@@ -12,7 +12,8 @@ import logging
 import tkinter as tk
 import tkinter.font as tkfont
 import weakref
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any, Final
 
@@ -22,6 +23,37 @@ from phantom.ui import theme as T
 from phantom.ui.clipboard import ClipboardActions, TextBuffer, paste
 
 LOGGER: Final = logging.getLogger("phantom.widgets")
+
+#: The ``update_idletasks`` CustomTkinter's scrollbar calls on its own canvas
+#: inside ``_draw``.  Saved at import time so the context manager below can put it
+#: back even if the same method is patched twice.
+_CANVAS_FLUSH: Final[Any] = tk.Canvas.update_idletasks
+
+
+@contextmanager
+def quiet_idle_flush() -> Iterator[None]:
+    """Build the window without CustomTkinter flushing it once per scrollbar.
+
+    ``CTkScrollbar._draw`` ends with ``self._canvas.update_idletasks()`` — a full
+    flush of every pending layout task in the whole window, once per scrollbar
+    draw, and a build causes about a hundred of them.  Each flush therefore costs
+    more than the one before it, which is the quadratic part of the first frame and
+    the reason the window takes longer to appear as the four tabs grow.
+
+    The flush exists only so a scrollbar knows its own size.  During the build that
+    question has one answer, and the single flush after the build gives every
+    scrollbar the same one; afterwards the method is back exactly as it was.
+    """
+
+    def _no_flush(_self: Any, *_args: Any, **_kwargs: Any) -> None:
+        return None
+
+    canvas_type: Any = tk.Canvas
+    canvas_type.update_idletasks = _no_flush
+    try:
+        yield
+    finally:
+        canvas_type.update_idletasks = _CANVAS_FLUSH
 
 #: ``tkfont.families(root)`` costs a full enumeration of the system's fonts —
 #: milliseconds on macOS, where a machine carries hundreds of them — and it used

@@ -69,6 +69,7 @@ from phantom.ui.widgets import (
     mono_font,
     paste_into,
     primary_button,
+    quiet_idle_flush,
     sans_font,
     secondary_button,
     value_label,
@@ -157,10 +158,17 @@ class PhantomApp:
 
         self.trace.mark("init:services")
         self._configure_root()
-        with self.trace.stage("build:chrome"):
+        # CustomTkinter's scrollbar flushes the whole window on every draw; during
+        # the build that is a hundred flushes of a window that is still growing.
+        # Nothing in here needs one, and the flush below gives every scrollbar the
+        # same answer once instead of a hundred different ones.
+        with self.trace.stage("build:chrome"), quiet_idle_flush():
             self._build()
         self._scroll.install()
         self._apply_theme(self.settings.theme, persist=False)
+        # The one flush the build needed: every scrollbar and canvas now knows the
+        # size it was finally given.
+        self._flush_layout()
         self._wire_shortcuts()
         with self.trace.stage("render:labels"):
             self._render_all_labels()
@@ -231,6 +239,13 @@ class PhantomApp:
             "length": C.GENERATED_PASSWORD_LENGTH,
             "seconds": C.CLIPBOARD_CLEAR_SECONDS,
         }
+
+    def _flush_layout(self) -> None:
+        """One idle flush after the build, instead of one per scrollbar draw."""
+        try:
+            self.root.update_idletasks()
+        except Exception as exc:  # noqa: BLE001 - a headless Tk must not stop the launch
+            LOGGER.debug("idle flush skipped: %s", exc)
 
     def _configure_root(self) -> None:
         self.root.title(self._t("window_title"))
