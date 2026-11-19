@@ -30,6 +30,10 @@ LOGGER: Final = logging.getLogger("phantom.widgets")
 #: back even if the same method is patched twice.
 _CANVAS_FLUSH: Final[Any] = tk.Canvas.update_idletasks
 
+#: The same method as every Tk widget inherits it.  CustomTkinter reaches it from
+#: ``CTkBaseClass._set_appearance_mode`` through ``super()``, i.e. once per widget
+#: per appearance change.
+_MISC_FLUSH: Final[Any] = tk.Misc.update_idletasks
 
 @contextmanager
 def quiet_idle_flush() -> Iterator[None]:
@@ -65,6 +69,72 @@ def quiet_idle_flush() -> Iterator[None]:
         yield
     finally:
         canvas_type.update_idletasks = _CANVAS_FLUSH
+
+
+@dataclass
+class _QuietState:
+    """How deep the refusal is nested, and how many passes it has refused."""
+
+    depth: int = 0
+    refused: int = 0
+
+
+#: One counter for the whole process: a theme switch can nest (a redraw asked for
+#: from inside a redraw), and a test wants the total.
+_QUIET: Final[_QuietState] = _QuietState()
+
+
+def suppressed_flush_count() -> int:
+    """How many display passes have been refused while a redraw was in progress."""
+    return _QUIET.refused
+
+
+def _flush_refused(_widget: Any, *_args: Any, **_kwargs: Any) -> None:
+    _QUIET.refused += 1
+
+
+@contextmanager
+def quiet_redraws() -> Iterator[None]:
+    """Repaint without asking Tk for pixels from inside the callback doing it.
+
+    ``customtkinter.set_appearance_mode`` walks every registered widget
+    *synchronously*, and ``CTkBaseClass._set_appearance_mode`` ends with
+    ``super().update_idletasks()`` — one full display pass per widget, all of them
+    inside the click handler that asked for the new mode.  A window of this size
+    makes that a few hundred nested passes.
+
+    ``update idletasks`` runs Tk's display idle handlers, and on macOS that is where
+    native crashes live: Tk 9.1 on Aqua segfaults inside exactly this call when it
+    comes from a button command (the script-level flush sits inside Aqua's own idle
+    drawing loop, and idle tasks there hold window pointers that are freed under
+    them — see the open Aqua tickets quoted in ``PhantomApp._flush_layout``).
+    Nothing on screen depends on those passes: every widget has already recoloured
+    itself, and Tk paints when the callback returns.  The window still owes one pass
+    and runs it from a task of its own
+    (:meth:`PhantomApp._schedule_layout_flush`).
+
+    ``PHANTOM_QUIET_FLUSH=0`` turns the refusal off — the old behaviour, where a
+    theme click flushes once per widget.  It exists for the machine this project
+    cannot reach: run the case both ways and the difference is the answer.
+    """
+    if os.environ.get("PHANTOM_QUIET_FLUSH", "1") == "0":
+        yield
+        return
+
+    misc_type: Any = tk.Misc
+    canvas_type: Any = tk.Canvas
+    _QUIET.depth += 1
+    if _QUIET.depth == 1:
+        misc_type.update_idletasks = _flush_refused
+        canvas_type.update_idletasks = _flush_refused
+    try:
+        yield
+    finally:
+        _QUIET.depth -= 1
+        if _QUIET.depth == 0:
+            misc_type.update_idletasks = _MISC_FLUSH
+            canvas_type.update_idletasks = _CANVAS_FLUSH
+
 
 #: ``tkfont.families(root)`` costs a full enumeration of the system's fonts —
 #: milliseconds on macOS, where a machine carries hundreds of them — and it used

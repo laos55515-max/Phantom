@@ -71,6 +71,7 @@ from phantom.ui.widgets import (
     paste_into,
     primary_button,
     quiet_idle_flush,
+    quiet_redraws,
     sans_font,
     secondary_button,
     set_enabled,
@@ -197,7 +198,7 @@ class PhantomApp:
         # The single display pass the build deferred is *scheduled*, never entered
         # from the constructor: see _flush_layout for why that distinction is the
         # difference between a slow first frame and a native crash.
-        self._schedule_first_layout()
+        self._schedule_layout_flush()
         # Anything that is useful but not needed for the first frame waits for
         # the event loop, so the window is on screen before it happens.
         self.root.after_idle(self._after_first_frame)
@@ -260,19 +261,21 @@ class PhantomApp:
             "seconds": C.CLIPBOARD_CLEAR_SECONDS,
         }
 
-    def _schedule_first_layout(self) -> None:
-        """Ask the event loop for the display pass the build deferred.
+    def _schedule_layout_flush(self) -> None:
+        """Ask the event loop for the display pass the window owes.
 
-        ``after_idle`` and not a direct call: the pass then runs as a loop task,
-        like every other repaint, instead of as a nested event loop inside a
-        constructor (see :meth:`_flush_layout`).
+        Owed by the build, by a theme change and by the first mapping of a window
+        that was built hidden.  ``after_idle`` and not a direct call: the pass then
+        runs as a loop task of its own, like every other repaint, instead of as a
+        nested event loop inside a constructor or an event handler (see
+        :meth:`_flush_layout`).
         """
         if self._layout_token is not None:
             return
-        self._layout_token = self.root.after_idle(self._run_first_layout)
+        self._layout_token = self.root.after_idle(self._run_layout_flush)
 
-    def _run_first_layout(self) -> None:
-        """The idle callback behind :meth:`_schedule_first_layout`."""
+    def _run_layout_flush(self) -> None:
+        """The idle callback behind :meth:`_schedule_layout_flush`."""
         self._layout_token = None
         self._flush_layout()
 
@@ -318,7 +321,7 @@ class PhantomApp:
             return
         if not self._layout_pending:
             return
-        self._schedule_first_layout()
+        self._schedule_layout_flush()
 
     def _configure_root(self) -> None:
         self.root.title(self._t("window_title"))
@@ -2259,9 +2262,25 @@ class PhantomApp:
         self._apply_theme(mode)
         self._set_status_key("status_theme", severity="ok", mode=label)
 
+    def _set_appearance_mode(self, mode: str) -> None:
+        """Hand CustomTkinter a new appearance mode without flushing the window.
+
+        ``set_appearance_mode`` notifies every registered widget synchronously and
+        each notification ends with a full ``update_idletasks()``: one click is a
+        few hundred nested display passes, all of them inside the button's own Tk
+        callback.  On Aqua under Tk 9.1 that call segfaults (it was the last
+        reproducible native crash in this window), so the passes are refused while
+        the mode change runs — every widget recolours itself either way, Tk paints
+        when this returns, and the window runs one pass of its own from an idle
+        task (:meth:`_schedule_layout_flush`).
+        """
+        with quiet_redraws():
+            ctk.set_appearance_mode(mode)
+        self._schedule_layout_flush()
+
     def _apply_theme(self, theme: str, *, persist: bool = True) -> None:
         self.settings.theme = theme if theme in T.THEME_MODES else "System"
-        ctk.set_appearance_mode(T.appearance_for(self.settings.theme))
+        self._set_appearance_mode(T.appearance_for(self.settings.theme))
         self.theme_watcher.set_enabled(self.settings.theme == "System")
         self._schedule_theme_poll()
         self._render_theme_labels()
@@ -2279,7 +2298,7 @@ class PhantomApp:
         changed = self.theme_watcher.poll()
         if changed is not None:
             LOGGER.info("OS theme changed to %s", changed)
-            ctk.set_appearance_mode("System")
+            self._set_appearance_mode("System")
         self._schedule_theme_poll()
 
     def _on_animations_toggle(self) -> None:
