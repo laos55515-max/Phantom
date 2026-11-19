@@ -2322,6 +2322,13 @@ class PhantomApp:
         if self._layout_token is not None:
             self.root.after_cancel(self._layout_token)
             self._layout_token = None
+        # The remaining timers die with the interpreter anyway, but a callback that
+        # fires between destroy() and exit still reaches widgets that are gone.
+        for name in ("_stage_tick_token", "_anim_token", "_theme_token"):
+            token = getattr(self, name)
+            if token is not None:
+                self.root.after_cancel(token)
+                setattr(self, name, None)
         self._forget_clipboard()
         if self._result_window is not None:
             self._result_window.close()

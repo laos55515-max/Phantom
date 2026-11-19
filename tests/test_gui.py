@@ -2129,6 +2129,10 @@ def _build(tmp_path: Path, *, map_window: bool):
     root = ctk.CTk()
     if map_window:
         root.deiconify()
+    else:
+        # X11 maps a toplevel as soon as it exists, with or without a window
+        # manager; «hidden» has to be asked for explicitly.
+        root.withdraw()
     instance = PhantomApp(
         root,
         settings_store=SettingsStore(path=tmp_path / "settings.json"),
@@ -2152,10 +2156,7 @@ def test_the_build_never_enters_the_event_loop(app, tmp_path: Path) -> None:
         return real(self, *args, **kwargs)
 
     type(app)._flush_layout = record
-    try:
-        root, instance = _build(tmp_path / "deferred", map_window=True)
-    finally:
-        type(app)._flush_layout = real
+    root, instance = _build(tmp_path / "deferred", map_window=True)
     try:
         assert passes == [], "the constructor ran a display pass of its own"
         assert instance._layout_token is not None, "no pass was scheduled either"
@@ -2167,6 +2168,7 @@ def test_the_build_never_enters_the_event_loop(app, tmp_path: Path) -> None:
         assert instance._display_passes >= 1
         assert instance._layout_token is None
     finally:
+        type(app)._flush_layout = real
         instance.worker.shutdown(timeout=2)
         root.destroy()
 
