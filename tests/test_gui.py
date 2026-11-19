@@ -104,10 +104,15 @@ def _pump(app, seconds: float = 30.0) -> None:
     import time
 
     def settled() -> bool:
-        # The collector belongs to the operation too: the pause is given back as
-        # soon as the worker thread is really gone, which can be a poll or two
-        # after the job's DONE.
-        return not (app.worker.busy or app._busy or app._gc_paused)
+        # Three things belong to a finished operation: the collector comes back a
+        # poll or two after the job's DONE, and a job that finished often schedules
+        # another one (the carrier probe schedules the size estimate).  Waiting only
+        # for the worker left that follow-up to start on the next ``update`` — after
+        # the loop — and the test that thought it had waited saw a busy window with
+        # an idle worker and blamed the app.
+        return not (
+            app.worker.busy or app._busy or app._gc_paused or app.debouncer.pending
+        )
 
     deadline = time.monotonic() + seconds
     # How often the loop got to run, and how long a single ``update`` took: a poll
@@ -1410,13 +1415,10 @@ def test_a_chain_of_jobs_gives_the_collector_back(app, rgb_carrier: Path) -> Non
     import gc
 
     assert gc.isenabled()
-    app._set_carrier(str(rgb_carrier))  # probe job
-    _pump(app)
-    assert app._start_job(
-        "estimate", lambda report, cancel: 0, "status_ready", silent=True
-    )
-    _pump(app)
-    assert gc.isenabled(), "the second job left the collector disabled"
+    app._set_textbox(app.embed_text, "chained jobs")  # schedules a size estimate
+    app._set_carrier(str(rgb_carrier))  # starts the carrier probe
+    _pump(app)  # the probe, and the estimate it schedules when it lands
+    assert gc.isenabled(), "a chained job left the collector disabled"
     assert app._gc_paused is False
 
 
