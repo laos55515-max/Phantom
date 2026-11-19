@@ -30,6 +30,7 @@ from phantom.core.errors import (
 )
 from phantom.core.payload import PayloadKind
 from phantom.core.progress import INDETERMINATE_STAGES, Stage
+from phantom.core.text import utf8_size
 from phantom.i18n import I18n
 from phantom.metadata.cleaner import CleaningOutcome
 from phantom.metadata.models import MetadataReport
@@ -72,6 +73,7 @@ from phantom.ui.widgets import (
     quiet_idle_flush,
     sans_font,
     secondary_button,
+    set_enabled,
     value_label,
 )
 from phantom.ui.worker import WorkerEvent, WorkerEventType, WorkerService
@@ -1034,7 +1036,9 @@ class PhantomApp:
             text=self.i18n.t(
                 "lbl_char_count",
                 chars=len(vm.text),
-                **{"bytes": len(vm.text.encode("utf-8"))},
+                # Every keystroke passes through here: a lone surrogate in the text
+                # must not raise from a counter and freeze the character label.
+                **{"bytes": utf8_size(vm.text)},
             )
         )
         if vm.mode is PayloadMode.TEXT:
@@ -1192,7 +1196,7 @@ class PhantomApp:
             self.clear_result_button,
         ):
             if widget is not None:
-                widget.configure(state=state)
+                set_enabled(widget, not self._busy)
         if self.metadata_panel is not None:
             # When the job ends, "save" is decided by the selection and the plan,
             # not by the busy flag: a disabled save button has to say why.
@@ -1202,7 +1206,7 @@ class PhantomApp:
                 else self.metadata_panel.editable_action_buttons()
             )
             for widget in buttons:
-                widget.configure(state=state)
+                set_enabled(widget, not self._busy)
             self.metadata_panel._render_save_state()
         self.cancel_button.configure(state="normal" if self._busy else "disabled")
 
@@ -1522,6 +1526,13 @@ class PhantomApp:
     def _start_estimate(self) -> None:
         if self.worker.busy:
             self.debouncer.schedule(self._start_estimate)
+            return
+        problem = self.embed_vm.text_problem()
+        if problem is not None:
+            # Text that has no UTF-8 form cannot be packed, so there is nothing to
+            # estimate.  Say so in the status line instead of starting a job whose
+            # only outcome is an error dialog over the text box the user is typing in.
+            self._set_status_key(problem.i18n_key, severity="warn", **problem.params)
             return
         job = self.embed_vm.make_estimate_job()
         self._start_job("estimate", job, "status_ready", silent=True)

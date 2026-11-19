@@ -362,7 +362,10 @@ def test_two_packets_are_read_together(tmp_path: Path) -> None:
 
     assert entry is not None
     assert entry.removable is False, "the second packet carries a copyright line"
-    assert "2 packets" in entry.value
+    # The count moved out of the sentence and into the container: a sentence has to
+    # be translatable, and a number glued to it was neither a value nor a count.
+    assert entry.container == "iTXt/XMP \u00d72"
+    assert entry.value_key == "meta.value.xmp_mixed"
     assert found.find("png.xmp.dc:rights") is not None
     assert found.find("png.xmp.photoshop:City") is not None
     with pytest.raises(MetadataError):

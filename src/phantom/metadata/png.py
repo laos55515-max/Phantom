@@ -36,6 +36,12 @@ _CHUNK_CRC: Final = struct.Struct(">I")
 #: Text chunks larger than this are listed but not decoded: a metadata block is
 #: never a reason for the inspector to allocate a gigabyte.
 MAX_TEXT_BYTES: Final = 8 * 1024 * 1024
+#: A cap on what a *compressed* text chunk may **inflate to**.  The size of the
+#: chunk says nothing about the size of its contents: 256 KiB of zlib expands to
+#: 256 MiB of zeros, and ``zlib.decompress`` used to accept that without a word, so
+#: a 264 KiB PNG could make the inspector allocate half a gigabyte.  The ceiling is
+#: checked while inflating, not after.
+MAX_INFLATE_BYTES: Final = MAX_TEXT_BYTES
 #: A PNG with more chunks than this is either broken or hostile; stop walking.
 MAX_CHUNKS: Final = 50_000
 #: Exceeding this many EXIF entries means the IFD is lying about its size.
@@ -230,6 +236,21 @@ def iter_chunks(data: bytes) -> list[PngChunk]:
     return chunks
 
 
+def _inflate(data: bytes, *, limit: int = MAX_INFLATE_BYTES) -> tuple[bytes, bool]:
+    """Decompress ``data`` with a ceiling on the output; never trust the input size.
+
+    Returns ``(bytes, capped)``.  ``decompressobj().decompress(data, limit + 1)``
+    stops after a bounded number of bytes, so a zlib bomb costs the ceiling and no
+    more; anything left over lands in ``unconsumed_tail``, which is exactly the
+    signal that the value really was longer than the ceiling.
+    """
+    engine = zlib.decompressobj()
+    out = engine.decompress(data, limit + 1)
+    if len(out) > limit or engine.unconsumed_tail:
+        return out[:limit], True
+    return out, False
+
+
 def _decode_text(chunk: PngChunk) -> tuple[str, str, list[str]]:  # noqa: PLR0911 - one return per chunk layout
     """``(keyword, text, warnings)`` for a tEXt/zTXt/iTXt chunk."""
     warnings: list[str] = []
@@ -252,7 +273,12 @@ def _decode_text(chunk: PngChunk) -> tuple[str, str, list[str]]:  # noqa: PLR091
                 return keyword.decode("latin-1"), "<unknown compression>", [
                     f"zTXt {keyword!r}: unsupported compression method {method!r}"
                 ]
-            raw = zlib.decompress(rest[1:])
+            raw, capped = _inflate(rest[1:])
+            if capped:
+                warnings.append(
+                    f"zTXt {keyword!r} inflates to more than {MAX_INFLATE_BYTES} bytes: "
+                    "the value is shown truncated"
+                )
             return keyword.decode("latin-1"), _safe_utf8(raw, warnings), warnings
         keyword, _, rest = data.partition(b"\x00")
         compressed = rest[:1] == b"\x01"
@@ -265,7 +291,12 @@ def _decode_text(chunk: PngChunk) -> tuple[str, str, list[str]]:  # noqa: PLR091
                 return keyword.decode("latin-1"), "<unknown compression>", [
                     f"iTXt {keyword!r}: unsupported compression method {method!r}"
                 ]
-            text = zlib.decompress(text)
+            text, capped = _inflate(text)
+            if capped:
+                warnings.append(
+                    f"iTXt {keyword.decode('latin-1')!r} inflates to more than "
+                    f"{MAX_INFLATE_BYTES} bytes: the value is shown truncated"
+                )
         if language:
             warnings.append(f"iTXt {keyword.decode('latin-1')!r}: language {language!r}")
         return keyword.decode("latin-1"), _safe_utf8(text, warnings), warnings
@@ -518,6 +549,7 @@ def _exif_fields(tiff: _Tiff) -> tuple[list[MetadataField], list[str]]:
                     container=container,
                     removable=removable,
                     reason="" if removable else "kept by policy",
+                    reason_key="" if removable else "meta.reason.kept_by_policy",
                     size=len(entry.value),
                     truncated=len(value) > MAX_DISPLAY_VALUE,
                 )
@@ -528,10 +560,13 @@ def _exif_fields(tiff: _Tiff) -> tuple[list[MetadataField], list[str]]:
                 key="png.exif.thumbnail",
                 label="Embedded EXIF thumbnail",
                 value=f"{len(tiff.thumbnail)} bytes",
+                value_key="meta.value.bytes",
+                value_params=(("size", str(len(tiff.thumbnail))),),
                 category=MetadataCategory.UNKNOWN,
                 container="eXIf/ifd1",
                 removable=False,
                 reason="structural: the cleaner preserves the thumbnail",
+                reason_key="meta.reason.thumbnail",
                 size=len(tiff.thumbnail),
             )
         )
@@ -550,6 +585,7 @@ def _exif_fields(tiff: _Tiff) -> tuple[list[MetadataField], list[str]]:
                 container="eXIf/GPS",
                 removable=False,
                 reason="derived from the GPS tags above; removing them removes this",
+                reason_key="meta.reason.gps_derived",
                 derived=True,
             )
         )
@@ -736,10 +772,16 @@ def _chunk_fields(chunks: list[PngChunk]) -> list[MetadataField]:
                     key="png.chunk.iCCP",
                     label="ICC colour profile",
                     value=f"{name.decode('latin-1') or '<unnamed>'} ({len(body)} bytes)",
+                    value_key="meta.value.profile_bytes",
+                    value_params=(
+                        ("name", name.decode("latin-1") or "<unnamed>"),
+                        ("size", str(len(body))),
+                    ),
                     category=MetadataCategory.TECHNICAL,
                     container="iCCP",
                     removable=False,
                     reason="colour profile: removing it changes how the image is displayed",
+                    reason_key="meta.reason.colour_profile",
                     size=len(chunk.data),
                 )
             )
@@ -750,10 +792,13 @@ def _chunk_fields(chunks: list[PngChunk]) -> list[MetadataField]:
                     key=f"png.chunk.{kind}",
                     label=f"Digital signature block ({kind})",
                     value=f"{len(chunk.data)} bytes",
+                    value_key="meta.value.bytes",
+                    value_params=(("size", str(len(chunk.data))),),
                     category=MetadataCategory.PROVENANCE,
                     container=kind,
                     removable=False,
                     reason="content credential: never rewritten by the cleaner",
+                    reason_key="meta.reason.credential",
                     size=len(chunk.data),
                 )
             )
@@ -767,10 +812,13 @@ def _chunk_fields(chunks: list[PngChunk]) -> list[MetadataField]:
                 key=f"png.chunk.{kind}",
                 label=f"Unknown chunk {kind}",
                 value=f"{len(chunk.data)} bytes",
+                value_key="meta.value.bytes",
+                value_params=(("size", str(len(chunk.data))),),
                 category=MetadataCategory.UNKNOWN,
                 container=kind,
                 removable=False,
                 reason="unknown data: listed, never removed automatically",
+                reason_key="meta.reason.unknown_data",
                 size=len(chunk.data),
             )
         )
@@ -806,6 +854,7 @@ def _xmp_fields(analysis: xmp_reader.XmpAnalysis) -> list[MetadataField]:
                 container="iTXt/XMP",
                 removable=False,
                 reason="a property of the packet below, not an entry of its own",
+                reason_key="meta.reason.xmp_property",
                 size=len(item.value),
                 truncated=len(item.value) > MAX_DISPLAY_VALUE,
                 derived=True,
@@ -823,21 +872,29 @@ def _xmp_packet_field(analysis: xmp_reader.XmpAnalysis) -> MetadataField:
     """
     if not analysis.ok:
         head = "present, unreadable — kept"
+        value_key = "meta.value.xmp_unreadable"
     elif analysis.removable:
         head = "contains personal properties"
+        value_key = "meta.value.xmp_personal"
     elif analysis.personal:
         head = "contains personal properties and properties the policy keeps"
+        value_key = "meta.value.xmp_mixed"
     else:
         head = "present, no personal properties recognised"
-    value = head if analysis.packet_count < 2 else f"{analysis.packet_count} packets; {head}"
+        value_key = "meta.value.xmp_no_personal"
+    container = "iTXt/XMP"
+    if analysis.packet_count > 1:
+        container = f"{container} \u00d7{analysis.packet_count}"
     return MetadataField(
         key="png.xmp",
         label="XMP packet",
-        value=value,
+        value=head,
+        value_key=value_key,
+        value_params=(("count", str(analysis.packet_count)),),
         category=(
             MetadataCategory.PERSONAL if analysis.personal else MetadataCategory.PROVENANCE
         ),
-        container="iTXt/XMP",
+        container=container,
         removable=analysis.removable,
         reason=analysis.reason,
         reason_key=analysis.reason_key,
@@ -890,6 +947,7 @@ def inspect_png(data: bytes) -> Section:
                     container=chunk.kind,
                     removable=removable,
                     reason="" if removable else "kept by policy",
+                    reason_key="" if removable else "meta.reason.kept_by_policy",
                     size=len(chunk.data),
                     truncated=len(text) > MAX_DISPLAY_VALUE,
                 )

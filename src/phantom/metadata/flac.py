@@ -229,6 +229,7 @@ def _vorbis_fields(block: FlacBlock) -> tuple[list[MetadataField], list[str]]:
             container="VORBIS_COMMENT",
             removable=False,
             reason="written by the encoder; kept by policy",
+            reason_key="meta.reason.encoder_written",
             size=vendor_length,
         )
     )
@@ -270,6 +271,7 @@ def _vorbis_fields(block: FlacBlock) -> tuple[list[MetadataField], list[str]]:
                 container="VORBIS_COMMENT",
                 removable=removable,
                 reason="" if removable else "kept by policy",
+                reason_key="" if removable else "meta.reason.kept_by_policy",
                 size=length,
                 truncated=len(value) > MAX_DISPLAY_VALUE,
             )
@@ -312,6 +314,7 @@ def _picture_field(block: FlacBlock) -> tuple[list[MetadataField], list[str]]:
                 container="PICTURE",
                 removable=True,
                 reason="removed as a whole picture",
+                reason_key="meta.reason.whole_picture",
                 size=len(data),
             )
         ],
@@ -331,10 +334,16 @@ def _application_field(block: FlacBlock) -> tuple[list[MetadataField], list[str]
                     key=f"flac.application.{block.index}",
                     label="Content credential block",
                     value=f"application {app_id.decode('latin-1')!r}, {len(payload)} bytes",
+                    value_key="meta.value.application_bytes",
+                    value_params=(
+                        ("app_id", app_id.decode("latin-1")),
+                        ("size", str(len(payload))),
+                    ),
                     category=MetadataCategory.PROVENANCE,
                     container="APPLICATION",
                     removable=False,
                     reason="content credential: never rewritten by the cleaner",
+                    reason_key="meta.reason.credential",
                     size=len(data),
                 )
             ],
@@ -351,6 +360,7 @@ def _application_field(block: FlacBlock) -> tuple[list[MetadataField], list[str]
                 container="APPLICATION",
                 removable=True,
                 reason="removed as a whole block",
+                reason_key="meta.reason.whole_block",
                 size=len(data),
             )
         ],
@@ -378,6 +388,7 @@ def _cuesheet_field(block: FlacBlock) -> tuple[list[MetadataField], list[str]]:
                 container="CUESHEET",
                 removable=False,
                 reason="kept by policy",
+                reason_key="meta.reason.kept_by_policy",
                 size=len(data),
             )
         ],
@@ -430,10 +441,13 @@ def inspect_flac(data: bytes) -> Section:
                     key=f"flac.block.{block.index}",
                     label=f"Unknown block {block.name}",
                     value=f"{len(block.data)} bytes",
+                    value_key="meta.value.bytes",
+                    value_params=(("size", str(len(block.data))),),
                     category=MetadataCategory.UNKNOWN,
                     container=block.name,
                     removable=False,
                     reason="unknown data: listed, never removed automatically",
+                    reason_key="meta.reason.unknown_data",
                     size=len(block.data),
                 )
             )

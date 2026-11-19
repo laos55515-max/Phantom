@@ -33,6 +33,7 @@ from phantom.core.errors import (
 )
 from phantom.core.files import FALLBACK_FILE_NAME, sanitise_filename
 from phantom.core.progress import ProgressFn, Stage, check_cancel, noop_progress
+from phantom.core.text import require_exact
 
 _HEADER: Final = struct.Struct(">BH")
 _LEN: Final = struct.Struct(">I")
@@ -65,12 +66,25 @@ class Payload:
             raise InvalidInput("text payloads have no file name")
         if self.kind is PayloadKind.FILE and not self.name:
             raise InvalidInput("file payloads need a name")
-        if len(self.name.encode("utf-8")) > C.MAX_FILENAME_BYTES:
+        # ``encode`` here used to be the crash site: a name that the OS handed over
+        # with surrogate escapes (an undecodable byte in a file name) raised a bare
+        # UnicodeEncodeError from a constructor, which the worker could only report
+        # as an internal failure.  The name is measured the same way it is written,
+        # and a name that cannot be written is refused with a typed error.
+        if len(require_exact(self.name, what="file name")) > C.MAX_FILENAME_BYTES:
             raise InvalidInput("file name too long")
 
     @classmethod
     def text(cls, text: str) -> Payload:
-        return cls(kind=PayloadKind.TEXT, data=text.encode("utf-8"))
+        """Pack text exactly as typed, or refuse it with :class:`InvalidUnicode`.
+
+        Silent replacement was never an option: the whole feature promises that the
+        text comes back identical, and a lone surrogate cannot be written as UTF-8
+        at all.  Refusing here — in the constructor, before anything is read,
+        compressed or written — means no output file is ever produced from text that
+        would not round-trip.
+        """
+        return cls(kind=PayloadKind.TEXT, data=require_exact(text, what="text"))
 
     @classmethod
     def file(cls, name: str, data: bytes) -> Payload:
@@ -106,7 +120,7 @@ def carried_bytes(payload: ExtractedPayload) -> int:
     stores around it (type, name, digest, length) and the authentication tag are
     added back to get the ciphertext length the engine actually wrote.
     """
-    name_bytes = len(payload.name.encode("utf-8"))
+    name_bytes = len(require_exact(payload.name, what="file name"))
     return C.PAYLOAD_META_OVERHEAD + name_bytes + payload.compressed_size + C.TAG_SIZE
 
 
@@ -202,7 +216,7 @@ def pack_payload(
 ) -> PackedPayload:
     """Serialize + compress ``payload`` into the canonical v2 plaintext blob."""
     # ``Payload`` validates the name length on construction, so no re-check here.
-    name_bytes = payload.name.encode("utf-8")
+    name_bytes = require_exact(payload.name, what="file name")
     meta = _HEADER.size + len(name_bytes) + C.SHA256_SIZE + _LEN.size
     compressed_budget = (
         None if max_payload_bytes is None else max(0, max_payload_bytes - meta)
@@ -244,7 +258,7 @@ def pack_file(
 ) -> PackedPayload:
     """Pack a file without loading it into memory."""
     display_name = os.path.basename(path)
-    name_bytes = display_name.encode("utf-8")
+    name_bytes = require_exact(display_name, what="file name")
     if len(name_bytes) > C.MAX_FILENAME_BYTES:
         raise InvalidInput("file name too long")
     try:
@@ -291,7 +305,12 @@ def estimate_size(
     chunk: int = _CHUNK,
 ) -> SizeEstimate:
     """Streaming size estimate with early exit — never scans a whole 100 MB file."""
-    meta = _HEADER.size + len(payload.name.encode("utf-8")) + C.SHA256_SIZE + _LEN.size
+    meta = (
+        _HEADER.size
+        + len(require_exact(payload.name, what="file name"))
+        + C.SHA256_SIZE
+        + _LEN.size
+    )
     budget = None if capacity_bytes is None else max(0, capacity_bytes - meta)
     return _estimate_chunks(
         iter_bytes_chunks(payload.data, chunk=chunk),
@@ -314,7 +333,7 @@ def estimate_file_size(
 ) -> SizeEstimate:
     """Streaming estimate for a file payload (early exit at capacity)."""
     name = os.path.basename(path)
-    meta = _HEADER.size + len(name.encode("utf-8")) + C.SHA256_SIZE + _LEN.size
+    meta = _HEADER.size + len(require_exact(name, what="file name")) + C.SHA256_SIZE + _LEN.size
     budget = None if capacity_bytes is None else max(0, capacity_bytes - meta)
     try:
         total = os.path.getsize(path)
@@ -468,5 +487,5 @@ def _decompress_bounded(
 
 def payload_capacity_for(carrier_payload_bytes: int, name: str = "") -> int:
     """Usable bytes of *user data* for a carrier that can hold N payload bytes."""
-    meta = _HEADER.size + len(name.encode("utf-8")) + C.SHA256_SIZE + _LEN.size
+    meta = _HEADER.size + len(require_exact(name, what="file name")) + C.SHA256_SIZE + _LEN.size
     return max(0, carrier_payload_bytes - meta)

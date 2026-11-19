@@ -23,7 +23,7 @@ import logging
 import os
 import re
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Final
 
 from phantom.core import files as fsutil
@@ -248,6 +248,10 @@ def clean(
     check_cancel(cancel)
     progress(Stage.VERIFYING, 3, 4)
     published = _publish(output, cleaned)
+    # ``after`` describes the bytes that now live in ``published``: reporting it
+    # under the source name made "analysis" and "file" name different files in the
+    # same card, and the user could not tell which one carried the numbers.
+    after = replace(after, path=published)
     progress(Stage.WRITING, 4, 4)
     return CleaningOutcome(
         source=source,

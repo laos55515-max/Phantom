@@ -22,6 +22,7 @@ class ErrorCode(Enum):
     CANCELLED = "cancelled"
     INVALID_PASSWORD = "invalid_password"  # noqa: S105 - an error id
     INVALID_INPUT = "invalid_input"
+    INVALID_UNICODE = "invalid_unicode"
     IO = "io"
     OUTPUT_IS_CARRIER = "output_is_carrier"
     SOURCE_OVERWRITE = "source_overwrite"
@@ -96,6 +97,12 @@ class InvalidPassword(PhantomError):  # noqa: N818 - name is the user-facing con
 
 class InvalidInput(PhantomError):  # noqa: N818 - name is the user-facing contract
     code = ErrorCode.INVALID_INPUT
+
+
+class InvalidUnicode(PhantomError):  # noqa: N818 - name is the user-facing contract
+    """Text that has no UTF-8 form (a lone surrogate): refused, never rewritten."""
+
+    code = ErrorCode.INVALID_UNICODE
 
 
 class PhantomIOError(PhantomError):

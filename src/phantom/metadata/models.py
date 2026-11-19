@@ -105,6 +105,11 @@ class MetadataField:
     #: Values for the placeholders of :attr:`reason_key`, e.g. the names of the
     #: protected properties that block the removal.
     reason_params: tuple[tuple[str, str], ...] = ()
+    #: The same treatment for :attr:`value` when the value is a sentence this
+    #: program wrote rather than data it read ("contains personal properties",
+    #: "12 bytes"): data is never translated, prose always is.
+    value_key: str = ""
+    value_params: tuple[tuple[str, str], ...] = ()
     size: int = 0
     truncated: bool = False
     #: A view computed from other fields rather than read from the container
@@ -136,6 +141,7 @@ class MetadataField:
             "derived": self.derived,
             "reason": self.reason,
             "reason_key": self.reason_key,
+            "value_key": self.value_key,
             "size": self.size,
             "truncated": self.truncated,
         }
@@ -233,12 +239,49 @@ class MetadataCounts:
         }
 
 
+@dataclass(frozen=True, slots=True)
+class DerivedCounts:
+    """Views computed from other fields, counted separately from the entries.
+
+    The XMP properties of a packet and the decimal GPS position are ways of reading
+    fields that are already counted, so they are not entries: adding them to
+    ``total`` would count one position six times.  They are still *visible* in the
+    list, and a card that said "unknown 0" next to a visible unknown property was
+    simply confusing two different things.  Hence a second, small tally.
+    """
+
+    total: int = 0
+    personal: int = 0
+    unknown: int = 0
+
+    def of(self, category: MetadataCategory) -> int:
+        return {
+            MetadataCategory.PERSONAL: self.personal,
+            MetadataCategory.UNKNOWN: self.unknown,
+        }.get(category, 0)
+
+    def to_dict(self) -> dict[str, int]:
+        return {"total": self.total, "personal": self.personal, "unknown": self.unknown}
+
+
+def count_derived(fields: tuple[MetadataField, ...]) -> DerivedCounts:
+    """Tally the derived views that ``count_fields`` deliberately leaves out."""
+    total = personal = unknown = 0
+    for item in fields:
+        if not item.derived:
+            continue
+        total += 1
+        personal += 1 if item.category is MetadataCategory.PERSONAL else 0
+        unknown += 1 if item.category is MetadataCategory.UNKNOWN else 0
+    return DerivedCounts(total=total, personal=personal, unknown=unknown)
+
+
 def count_fields(fields: tuple[MetadataField, ...]) -> MetadataCounts:
     """Count fields per category, once, so the UI and the report cannot disagree.
 
     Derived views are left out: they are a second way of reading fields that are
     already counted, and adding them would make a file with one GPS position look
-    like it carried six personal fields.
+    like it carried six personal fields.  :func:`count_derived` tallies them.
     """
     totals = dict.fromkeys(CATEGORY_ORDER, 0)
     removable = 0
@@ -272,11 +315,13 @@ class MetadataReport:
     section: Section
     provenance: ProvenanceReport
     counts: MetadataCounts = field(init=False)
+    derived_counts: DerivedCounts = field(init=False)
 
     def __post_init__(self) -> None:
         # ``counts`` is derived, so it is computed once here instead of being
         # passed around (and eventually disagreeing with the fields).
         object.__setattr__(self, "counts", count_fields(self.section.fields))
+        object.__setattr__(self, "derived_counts", count_derived(self.section.fields))
 
     @property
     def fields(self) -> tuple[MetadataField, ...]:
@@ -328,6 +373,7 @@ class MetadataReport:
             "size_bytes": self.size_bytes,
             "sha256": self.sha256,
             "counts": self.counts.to_dict(),
+            "derived_counts": self.derived_counts.to_dict(),
             "technical": self.technical,
             "checksum_ok": self.checksum_ok,
             "warnings": list(self.warnings),

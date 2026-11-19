@@ -128,6 +128,25 @@ def field_reason(item: MetadataField, texts: Texts | None = None) -> str:
     return item.reason
 
 
+def field_value(item: MetadataField, texts: Texts | None = None) -> str:
+    """The value a user sees: data verbatim, a sentence in their language.
+
+    Field *values* are data — a city, a date, a SHA-256 — and are never translated.
+    A handful of them are sentences this program wrote ("contains personal
+    properties", "12 bytes"), and those carry a locale key; showing the English one
+    inside a Ukrainian card was the bug this exists to prevent.
+    """
+    if not item.value_key or texts is None:
+        return item.value
+    params = dict(item.value_params)
+    try:
+        if texts.has(item.value_key):
+            return str(texts.t(item.value_key, **params))
+    except Exception as exc:  # noqa: BLE001 - a bad locale must not hide the row
+        LOGGER.debug("value lookup for %s failed: %s", item.value_key, exc)
+    return item.value
+
+
 def yes_no(texts: Texts | None, value: bool) -> str:
     """``yes``/``no`` in the report's language (``{state}`` is filled with this)."""
     return text_for(texts, "report.state_yes" if value else "report.state_no")
@@ -195,7 +214,7 @@ def inspection_text(report: MetadataReport, texts: Texts | None = None) -> str:
                 category=item.category.value,
                 container=item.container,
                 label=item.label,
-                value=item.value,
+                value=field_value(item, texts),
                 marker=marker,
             )
         )

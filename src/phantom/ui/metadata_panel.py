@@ -53,6 +53,7 @@ from phantom.ui.widgets import (
     primary_button,
     sans_font,
     secondary_button,
+    set_enabled,
     value_label,
 )
 
@@ -171,6 +172,11 @@ class MetadataPanel:
         box = card(parent)
         box.grid(row=row, column=0, sticky="ew", pady=(0, 10))
         self._title(box, "meta_card_results")
+        # Which file these numbers describe. After a clean the card describes the
+        # cleaned copy, while the card above still names the file that was opened:
+        # without this line the two read as one file.
+        self.target_label = hint_label(box, self.root, "", wrap=760)
+        self.target_label.pack(fill="x", padx=18, pady=(0, 2))
         self.summary_label = value_label(box, self.root, "", mono=True)
         self.summary_label.pack(fill="x", padx=18, pady=(0, 4))
         self.provenance_label = hint_label(box, self.root, "", wrap=760)
@@ -467,6 +473,7 @@ class MetadataPanel:
             self.removable_check.deselect()
         if report is None:
             self.summary_label.configure(text=self.t("meta_results_empty"))
+            self.target_label.configure(text="")
             self.provenance_label.configure(text="")
             self.warning_label.configure(text="")
             self._clear_rows()
@@ -474,15 +481,30 @@ class MetadataPanel:
             self.truncated_label.configure(text="")
             return
         counts = report.counts
-        self.summary_label.configure(
-            text=self.t(
-                "meta_results_summary",
-                total=counts.total,
-                personal=counts.personal,
-                removable=counts.removable,
-                unknown=counts.unknown,
-            )
+        derived = report.derived_counts
+        summary = self.t(
+            "meta_results_summary",
+            total=counts.total,
+            personal=counts.personal,
+            removable=counts.removable,
+            unknown=counts.unknown,
         )
+        # Derived views are not entries: one GPS position is four tags plus a
+        # decimal view, and counting the view again made "unknown 0" sit next to a
+        # visible unknown property. They get their own clause instead.
+        if derived.total:
+            summary = "\n".join(
+                [
+                    summary,
+                    self.t(
+                        "meta_results_derived",
+                        total=derived.total,
+                        unknown=derived.unknown,
+                    ),
+                ]
+            )
+        self.summary_label.configure(text=summary)
+        self.target_label.configure(text=self._target_text(report))
         self.provenance_label.configure(text=self._provenance_text(report))
         self.warning_label.configure(
             text="\n".join(report.warnings[:4]) if report.warnings else ""
@@ -572,7 +594,10 @@ class MetadataPanel:
         return f"{item.label} · {self.t(item.category.i18n_key)} · {marker}"
 
     def _row_value(self, item: MetadataField) -> str:
-        text = item.value if len(item.value) <= 200 else item.value[:197] + CLIP_MARK
+        # Values that are sentences this program wrote are translated; values that
+        # are data are shown verbatim (see ``meta_report.field_value``).
+        value = meta_report.field_value(item, self.app.i18n)
+        text = value if len(value) <= 200 else value[:197] + CLIP_MARK
         text = text.replace("\n", " ")
         # A reader that knows its reason as a locale key gets it translated here:
         # an English sentence in the middle of a Ukrainian card reads like a bug.
@@ -580,6 +605,12 @@ class MetadataPanel:
         if not item.removable and reason:
             return f"{text} — {reason}"
         return text or "—"
+
+    def _target_text(self, report: MetadataReport) -> str:
+        name = os.path.basename(report.path) or report.path
+        cleaned = self.vm.outcome is not None
+        key = "meta_results_target_cleaned" if cleaned else "meta_results_target"
+        return self.t(key, file=name)
 
     def _clear_rows(self) -> None:
         for row in self._rows:
@@ -626,13 +657,13 @@ class MetadataPanel:
     def _render_save_state(self) -> None:
         """A save button that can do nothing is disabled, and the reason is shown."""
         if getattr(self.app, "_busy", False):
-            self.save_button.configure(state="disabled")
+            set_enabled(self.save_button, False)
             self.save_hint.configure(text="")
             return
         report = self.vm.report
         decision = self.vm.plan()
         allowed = self.vm.save_allowed()
-        self.save_button.configure(state="normal" if allowed else "disabled")
+        set_enabled(self.save_button, allowed)
         if report is None:
             hint = ""
         elif decision is not None and not decision.allowed:

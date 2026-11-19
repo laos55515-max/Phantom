@@ -52,6 +52,10 @@ MAX_TOTAL_BYTES: Final = 4 << 20
 MAX_ELEMENTS: Final = 4096
 MAX_ATTRIBUTES: Final = 1024
 MAX_DEPTH: Final = 32
+#: XML levels that belong to the wrapper rather than to the graph: ``x:xmpmeta``,
+#: ``rdf:RDF``, ``rdf:Description`` and one property element before any nesting
+#: the reader counts.
+_WRAPPER_DEPTH: Final = 8
 #: A property without children is shown as this many characters of its value.
 MAX_VALUE: Final = 400
 
@@ -341,19 +345,41 @@ def _parse(text: str) -> tuple[ET.Element, dict[str, str]]:
             raise _PacketError("meta.xmp.unreadable.doctype", token)
     body = _strip_wrapper(head)
     prefixes: dict[str, str] = {}
+    # The limits are enforced *while* the document is parsed, not after the tree is
+    # complete: a packet that grows 4000 elements is a document this reader is
+    # entitled to refuse, and refusing it after building it would mean paying for
+    # the allocation first.  ``MAX_DEPTH`` here is the XML nesting depth (wrapper,
+    # RDF, description, property, item), which is a little deeper than the node
+    # depth the reader counts afterwards.
+    elements = 0
+    attributes = 0
+    depth = 0
     try:
         # The parser is fed a document that has already been refused a DTD, an
         # entity declaration and a size over the limit, and ElementTree never
         # resolves an external reference; that is the whole of S314's concern.
         parser = ET.iterparse(  # noqa: S314
-            StringIO(body), events=("start-ns", "start")
+            StringIO(body), events=("start-ns", "start", "end")
         )
         root: ET.Element | None = None
         for event, payload in parser:
             if event == "start-ns":
                 prefix, uri = payload
                 prefixes.setdefault(uri, prefix)
-            elif root is None:
+                continue
+            if event == "end":
+                depth -= 1
+                continue
+            elements += 1
+            attributes += len(payload.attrib)
+            depth += 1
+            if elements > MAX_ELEMENTS:
+                raise _PacketError("meta.xmp.unreadable.many", f">{MAX_ELEMENTS} elements")
+            if attributes > MAX_ATTRIBUTES:
+                raise _PacketError("meta.xmp.unreadable.many", f">{MAX_ATTRIBUTES} attributes")
+            if depth > MAX_DEPTH + _WRAPPER_DEPTH:
+                raise _PacketError("meta.xmp.unreadable.deep", f">{MAX_DEPTH} levels")
+            if root is None:
                 root = payload
     except ET.ParseError as exc:
         raise _PacketError("meta.xmp.unreadable.malformed", str(exc)[:120]) from exc

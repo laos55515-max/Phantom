@@ -33,6 +33,7 @@ from phantom.core.errors import IntegrityError, WrongPasswordOrNoData
 from phantom.core.kdf import password_variants
 from phantom.core.payload import ExtractedPayload, unpack_payload
 from phantom.core.progress import ProgressFn, Stage, check_cancel, noop_progress
+from phantom.core.text import require_exact
 from phantom.stego.lsb import bits_to_bytes
 
 _HEADER_BITS: Final = 32
@@ -42,13 +43,16 @@ _NONCE: Final = 12
 
 
 def _legacy_key(password: str, salt: bytes) -> bytes:
+    # ``require_exact`` first: a password with no UTF-8 form must be refused as a
+    # password, not raise a UnicodeEncodeError from inside the KDF.
+    secret = require_exact(password, what="password")
     kdf = PBKDF2HMAC(
         algorithm=hashes.SHA256(),
         length=C.AES_KEY_SIZE,
         salt=salt,
         iterations=C.LEGACY_PBKDF2_ITERATIONS,
     )
-    return kdf.derive(password.encode("utf-8"))
+    return kdf.derive(secret)
 
 
 def _decrypt_legacy(blob: bytes, password: str) -> bytes:

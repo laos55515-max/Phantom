@@ -202,6 +202,7 @@ def _info_fields(chunk: WavChunk) -> tuple[list[MetadataField], list[str]]:
                 container=f"LIST/INFO/{name}",
                 removable=removable,
                 reason="" if removable else "kept by policy",
+                reason_key="" if removable else "meta.reason.kept_by_policy",
                 size=size,
             )
         )
@@ -249,6 +250,7 @@ def _bext_fields(chunk: WavChunk) -> tuple[list[MetadataField], list[str]]:
                 container="bext",
                 removable=False,
                 reason="identifies the material, not a person",
+                reason_key="meta.reason.material_identity",
                 size=64,
             )
         )
@@ -263,6 +265,7 @@ def _bext_fields(chunk: WavChunk) -> tuple[list[MetadataField], list[str]]:
                 container="bext",
                 removable=False,
                 reason="kept by policy",
+                reason_key="meta.reason.kept_by_policy",
                 size=10,
             )
         )
@@ -273,10 +276,16 @@ def _bext_fields(chunk: WavChunk) -> tuple[list[MetadataField], list[str]]:
                 key="wav.bext.reserved",
                 label="bext reserved field",
                 value=f"{sum(1 for byte in reserved if byte)} non-zero bytes of {len(reserved)}",
+                value_key="meta.value.unstructured_bytes",
+                value_params=(
+                    ("used", str(sum(1 for byte in reserved if byte))),
+                    ("total", str(len(reserved))),
+                ),
                 category=MetadataCategory.PERSONAL,
                 container="bext",
                 removable=True,
                 reason="an unstructured area that some recorders fill with device data",
+                reason_key="meta.reason.unstructured_area",
                 size=len(reserved),
             )
         )
@@ -291,6 +300,7 @@ def _bext_fields(chunk: WavChunk) -> tuple[list[MetadataField], list[str]]:
                 container="bext",
                 removable=False,
                 reason="kept by policy",
+                reason_key="meta.reason.kept_by_policy",
                 size=len(history),
             )
         )
@@ -402,6 +412,7 @@ def _ixml_field(chunk: WavChunk) -> tuple[list[MetadataField], list[str]]:
                 container="iXML",
                 removable=True,
                 reason="removed as a whole block: PHANTOM lists iXML but never rewrites it",
+                reason_key="meta.reason.ixml_listed",
                 size=len(chunk.data),
             )
         ],
@@ -481,10 +492,13 @@ def inspect_wav(data: bytes) -> Section:
                     key=f"wav.chunk.{cid}",
                     label=f"Content credential block ({cid})",
                     value=f"{len(chunk.data)} bytes",
+                    value_key="meta.value.bytes",
+                    value_params=(("size", str(len(chunk.data))),),
                     category=MetadataCategory.PROVENANCE,
                     container=cid,
                     removable=False,
                     reason="content credential: never rewritten by the cleaner",
+                    reason_key="meta.reason.credential",
                     size=len(chunk.data),
                 )
             )
@@ -494,10 +508,13 @@ def inspect_wav(data: bytes) -> Section:
                     key=f"wav.chunk.{cid.strip()}",
                     label=f"Unknown chunk {cid!r}",
                     value=f"{len(chunk.data)} bytes",
+                    value_key="meta.value.bytes",
+                    value_params=(("size", str(len(chunk.data))),),
                     category=MetadataCategory.UNKNOWN,
                     container=cid,
                     removable=False,
                     reason="unknown data: listed, never removed automatically",
+                    reason_key="meta.reason.unknown_data",
                     size=len(chunk.data),
                 )
             )

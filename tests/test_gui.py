@@ -2116,3 +2116,134 @@ def test_the_window_leaves_tk_exactly_as_it_found_it(app) -> None:
     from phantom.ui import widgets as W
 
     assert tk.Canvas.update_idletasks is W._CANVAS_FLUSH
+
+
+# ---------------------------------------------------------------------------
+# cancelled or busy: the window has to come back
+# ---------------------------------------------------------------------------
+def test_a_cancelled_job_restores_the_window(app) -> None:
+    """Cancel used to leave a frozen bar, a dead stage line and locked buttons."""
+    from phantom.core.progress import Stage
+    from phantom.ui import theme as T
+    from phantom.ui.worker import WorkerEvent, WorkerEventType
+
+    app._busy = True
+    app._operation = "metadata_clean"
+    app.progress_bar.set(0.6)
+    app._show_stage("lbl_progress_stage", stage=Stage.CLEANING, pct="60")
+
+    app._handle_worker_event(WorkerEvent(WorkerEventType.CANCELLED))
+
+    assert app._busy is False
+    assert app._operation == ""
+    assert float(app.progress_bar.get()) == 0.0, "a cancelled bar must be empty"
+    assert app.progress_bar.cget("mode") == "determinate"
+    assert app.stage_label.cget("text") == app.i18n.t("lbl_progress_idle")
+    assert str(app.cancel_button.cget("state")) == "disabled"
+    assert app.status_label.cget("text") == app.i18n.t("status_cancelled")
+    for button in (app.embed_button, app.extract_button):
+        assert str(button.cget("state")) == "normal", "the actions are usable again"
+        assert tuple(button.cget("fg_color")) == tuple(T.CLR_ACCENT), (
+            "a button that is enabled again must get its accent back"
+        )
+    panel = app.metadata_panel
+    assert panel is not None
+    for button in panel.editable_action_buttons():
+        assert str(button.cget("state")) == "normal"
+
+
+def test_a_busy_window_does_not_paint_its_primary_buttons_blue(app) -> None:
+    """The reported defect: a disabled button that still looked enabled."""
+    from phantom.ui import theme as T
+
+    app._busy = True
+    app._refresh_busy_state()
+
+    assert str(app.embed_button.cget("state")) == "disabled"
+    assert tuple(app.embed_button.cget("fg_color")) == tuple(T.CLR_DISABLED_FILL), (
+        "a disabled accent button kept the accent fill and read as clickable"
+    )
+    panel = app.metadata_panel
+    assert panel is not None
+    assert tuple(panel.save_button.cget("fg_color")) == tuple(T.CLR_DISABLED_FILL)
+
+    app._busy = False
+    app._refresh_busy_state()
+    assert tuple(app.embed_button.cget("fg_color")) == tuple(T.CLR_ACCENT)
+
+
+def test_the_save_button_loses_its_accent_when_nothing_is_selected(
+    app, tmp_path: Path, dialogs
+) -> None:
+    from phantom.ui import theme as T
+
+    panel = app.metadata_panel
+    assert panel is not None
+    _scanned(app, tmp_path, dialogs)
+    assert tuple(panel.save_button.cget("fg_color")) == tuple(T.CLR_ACCENT)
+
+    panel.clear_selection()
+    app._refresh_busy_state()
+
+    assert str(panel.save_button.cget("state")) == "disabled"
+    assert tuple(panel.save_button.cget("fg_color")) == tuple(T.CLR_DISABLED_FILL)
+
+
+# ---------------------------------------------------------------------------
+# the results card names the file it describes
+# ---------------------------------------------------------------------------
+def test_the_results_card_says_which_copy_the_numbers_describe(
+    app, tmp_path: Path, dialogs
+) -> None:
+    panel = app.metadata_panel
+    assert panel is not None
+    source = _scanned(app, tmp_path, dialogs)
+    assert source.name in panel.name_label.cget("text")
+    assert source.name in panel.target_label.cget("text"), (
+        "before a clean, the results describe the opened file"
+    )
+
+    output = tmp_path / "gui-copy.png"
+    panel.output_entry.delete(0, "end")
+    panel.output_entry.insert(0, str(output))
+    panel.save_clean()
+    _pump(app)
+
+    assert panel.vm.outcome is not None
+    label = panel.target_label.cget("text")
+    assert output.name in label, "the results must name the cleaned copy"
+    assert app.i18n.t("meta_results_target_cleaned", file=output.name) == label
+    assert source.name in panel.name_label.cget("text"), "the file card keeps the source"
+
+
+def test_the_derived_tally_is_shown_apart_from_the_entries(
+    app, tmp_path: Path, dialogs
+) -> None:
+    import metadata_samples as samples
+
+    panel = app.metadata_panel
+    assert panel is not None
+    rdf = "http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+    packet = (
+        '<?xpacket begin="\ufeff" id="W5M0MpCehiHzreSzNTczkc9d"?>'
+        '<x:xmpmeta xmlns:x="adobe:ns:meta/">'
+        f'<rdf:RDF xmlns:rdf="{rdf}">'
+        '<rdf:Description rdf:about=""'
+        ' xmlns:photoshop="http://ns.adobe.com/photoshop/1.0/"'
+        ' xmlns:qa="http://example.com/qa/1.0/" qa:TestProperty="alpha">'
+        "<photoshop:City>Lubny</photoshop:City></rdf:Description>"
+        "</rdf:RDF></x:xmpmeta>"
+    )
+    path = samples.png_file(tmp_path / "views.png", text={"XML:com.adobe.xmp": packet})
+    app._show_tab("metadata")
+    panel.load_file(str(path))
+    _pump(app)
+
+    report = panel.vm.report
+    assert report is not None
+    assert report.counts.unknown == 0
+    assert report.derived_counts.unknown >= 1
+
+    summary = panel.summary_label.cget("text")
+    assert app.i18n.t("meta_results_derived", total=report.derived_counts.total, unknown=report.derived_counts.unknown) in summary
+    assert "unknown 0" in summary, "the entry count is still reported honestly"

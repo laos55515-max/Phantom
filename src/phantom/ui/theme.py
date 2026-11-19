@@ -25,6 +25,9 @@ CLR_ACCENT: Final[AppearanceTuple] = ("#2563EB", "#2563EB")
 CLR_ACCENT_HOVER: Final[AppearanceTuple] = ("#1D4ED8", "#3B82F6")
 CLR_ACCENT_SOFT: Final[AppearanceTuple] = ("#2563EB", "#93B4FC")
 CLR_ACCENT_DIM: Final[AppearanceTuple] = ("#DBEAFE", "#1B2E4D")
+#: A disabled button keeps its shape but loses its accent: CustomTkinter only greys
+#: the caption, so an unavailable "save" still looked like a blue, clickable button.
+CLR_DISABLED_FILL: Final[AppearanceTuple] = ("#DCE3EE", "#1B2333")
 
 CLR_TEXT: Final[AppearanceTuple] = ("#111827", "#F9FAFB")
 CLR_TEXT_DIM: Final[AppearanceTuple] = ("#4B5563", "#9CA3AF")

@@ -224,6 +224,24 @@ def value_label(master: Any, root: Any, text: str = "", *, mono: bool = False) -
     return label
 
 
+def set_enabled(button: Any, enabled: bool) -> None:
+    """Enable or disable a button so that its state is visible, not just true.
+
+    CustomTkinter greys only the caption of a disabled button; the fill keeps the
+    accent colour, so a blocked "save" looked available and a click did nothing.
+    Accent buttons record their fill on creation and get a muted one here.
+    """
+    accent = getattr(button, "_phantom_accent", None)
+    if enabled:
+        button.configure(state="normal")
+        if accent is not None:
+            button.configure(fg_color=accent)
+        return
+    if accent is not None:
+        button.configure(fg_color=T.CLR_DISABLED_FILL)
+    button.configure(state="disabled")
+
+
 def primary_button(master: Any, root: Any, text: str, command: Any, **kwargs: Any) -> ctk.CTkButton:
     """The accent button, wide enough for its caption in every language.
 
@@ -244,6 +262,8 @@ def primary_button(master: Any, root: Any, text: str, command: Any, **kwargs: An
     }
     options.update(kwargs)
     button = ctk.CTkButton(master, **options)
+    #: Remembered so :func:`set_enabled` can restore the accent after a disable.
+    setattr(button, "_phantom_accent", T.CLR_ACCENT)  # noqa: B010 - widget marker
     return fit_button_on_change(button, font=font, minimum=minimum)
 
 
