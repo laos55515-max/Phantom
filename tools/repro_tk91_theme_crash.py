@@ -11,6 +11,7 @@ whole of ``test_theme_switch_persists`` as far as the native crash is concerned.
     python tools/repro_tk91_theme_crash.py --hidden       # a withdrawn window
     python tools/repro_tk91_theme_crash.py --direct       # not from a callback
     python tools/repro_tk91_theme_crash.py --toggles 10
+    python tools/repro_tk91_theme_crash.py --update-between   # pump between clicks
 
 On an affected build (macOS ARM64, Tcl/Tk 9.1, Aqua) the default mode dies with
 ``Fatal Python error: Segmentation fault`` inside ``update_idletasks``, and the
@@ -83,6 +84,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--hidden", action="store_true", help="withdraw the window first")
     parser.add_argument("--direct", action="store_true", help="call from the top level")
     parser.add_argument("--toggles", type=int, default=4, help="how many mode changes")
+    parser.add_argument(
+        "--update-between",
+        action="store_true",
+        help="pump the event loop after each change, the way a test does",
+    )
     parser.add_argument("--rows", type=int, default=ROWS, help="how many card rows")
     parser.add_argument("--delay", type=int, default=400, help="ms before the first click")
     args = parser.parse_args(argv)
@@ -119,6 +125,8 @@ def main(argv: list[str] | None = None) -> int:
             ctk.set_appearance_mode(mode)
         state["done"] += 1
         print(f"  toggle {state['done']}/{args.toggles}: {mode} applied")
+        if args.update_between:
+            root.update()
         if state["done"] >= args.toggles:
             root.after(50, root.destroy)
             return

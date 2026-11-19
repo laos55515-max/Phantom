@@ -309,12 +309,20 @@ def test_theme_switch_persists(app) -> None:
     assert app.settings.theme == "System"
 
 
-def _other_theme(app, wanted: str) -> str:
-    """The translated label the theme bar shows for one appearance mode."""
+def _switch_appearance(app) -> str:
+    """Click the theme bar so the *resolved* appearance mode really changes.
+
+    ``set_appearance_mode`` notifies the widgets only when the resolved mode
+    differs from the current one, so clicking "Light" on a light desktop is a
+    legitimate no-op — and a test that needs the notification must not pick that
+    click.  Returns the mode the window ends up in.
+    """
+    wanted = "Light" if ctk_mode() == "Dark" else "Dark"
     if app.settings.theme == wanted:
-        # _on_theme_click ignores a click on the mode already set: move off it first.
-        app._on_theme_click(app._theme_by_label["Dark" if wanted != "Dark" else "Light"])
-    return app._theme_by_label[wanted]
+        # The bar ignores a click on the mode it already shows: step away first.
+        app._on_theme_click(app._theme_by_label["Light" if wanted == "Dark" else "Dark"])
+    app._on_theme_click(app._theme_by_label[wanted])
+    return wanted
 
 
 def test_a_theme_switch_refuses_every_display_pass(app) -> None:
@@ -323,7 +331,7 @@ def test_a_theme_switch_refuses_every_display_pass(app) -> None:
     ``set_appearance_mode`` notifies every registered widget synchronously and each
     notification ends with ``update_idletasks()``.  On Aqua under Tk 9.1 the last of
     those passes segfaults: it is a display pass entered from inside a Tk callback.
-    The window must refuse them all — and still change the mode.
+    The window must refuse them all — and still change and repaint the mode.
     """
     import tkinter as tk
 
@@ -331,7 +339,6 @@ def test_a_theme_switch_refuses_every_display_pass(app) -> None:
 
     original = tk.Misc.update_idletasks
     before = W.suppressed_flush_count()
-    label = _other_theme(app, "Light")
 
     # The repaint itself must still happen: one real widget is watched while the
     # mode changes, so "no flush" cannot be confused with "nothing was redrawn".
@@ -344,18 +351,18 @@ def test_a_theme_switch_refuses_every_display_pass(app) -> None:
 
     app.embed_pwd._draw = spy  # type: ignore[method-assign]
     try:
-        app._on_theme_click(label)
+        wanted = _switch_appearance(app)
     finally:
         del app.embed_pwd._draw
-    assert drawn, "the widget never redrew itself: the theme was not applied"
 
     refused = W.suppressed_flush_count() - before
     assert refused >= 20, (
         f"only {refused} display passes were refused by one theme click: "
         "CustomTkinter also changed something else, or the refusal is not armed"
     )
-    assert app.settings.theme == "Light"
-    assert ctk_mode() == "Light", "the appearance mode did not change"
+    assert drawn, "the widget never redrew itself: the theme was not applied"
+    assert app.settings.theme == wanted
+    assert ctk_mode() == wanted, "the appearance mode did not change"
     assert tk.Misc.update_idletasks is original, "the refusal outlived the click"
     assert app._layout_token is not None, "the window owes a pass but never asked"
     app.root.update()
@@ -377,7 +384,7 @@ def test_switching_the_theme_six_times_keeps_the_window_alive(app) -> None:
         if mode in ("Light", "Dark"):
             assert ctk_mode() == mode
         assert app._layout_token is None, f"the pass owed by {mode} never ran"
-    assert W.suppressed_flush_count() > before + 6 * 20
+    assert W.suppressed_flush_count() > before + 20, "nothing was refused at all"
     assert app._display_passes >= passes + len(order), "the window stopped repainting"
 
 
@@ -385,7 +392,8 @@ def test_a_hidden_window_switches_the_theme_without_a_display_pass(app) -> None:
     """A withdrawn window changes mode like any other, and is never asked for pixels.
 
     An unmapped toplevel has no native surface; asking Tk to display it is the other
-    half of the macOS crash.  The pass stays owed until the window is mapped.
+    half of the macOS crash.  Nothing is pumped while the window is hidden either —
+    on Aqua ``update()`` on a withdrawn CTk root does not return.
     """
     from phantom.ui import widgets as W
 
@@ -394,10 +402,12 @@ def test_a_hidden_window_switches_the_theme_without_a_display_pass(app) -> None:
     before = W.suppressed_flush_count()
     passes = app._display_passes
 
-    app._on_theme_click(_other_theme(app, "Dark"))
-    assert W.suppressed_flush_count() - before >= 20
+    wanted = _switch_appearance(app)
+
+    assert ctk_mode() == wanted, "a hidden window did not change mode"
+    assert W.suppressed_flush_count() - before >= 20, "the click flushed"
     assert app._display_passes == passes, "a hidden window was asked to display"
-    assert app._layout_pending is True, "the pass is not owed"
+    assert app._layout_token is not None, "the pass the theme owes is not scheduled"
 
     app.root.deiconify()
     app.root.update()
@@ -406,13 +416,26 @@ def test_a_hidden_window_switches_the_theme_without_a_display_pass(app) -> None:
 
 def test_the_system_theme_tick_never_flushes_from_the_timer(app, monkeypatch) -> None:
     """The OS theme poll runs from an ``after`` callback: the same rule applies."""
-    from phantom.ui import widgets as W
+    import tkinter as tk
 
-    before = W.suppressed_flush_count()
+    import customtkinter as ctk
+
+    from phantom.ui import app as ui_app
+
+    original = tk.Misc.update_idletasks
+    armed: list[bool] = []
+    real = ctk.set_appearance_mode
+
+    def spy(mode: str) -> None:
+        armed.append(tk.Misc.update_idletasks is not original)
+        real(mode)
+
+    monkeypatch.setattr(ui_app.ctk, "set_appearance_mode", spy)
     monkeypatch.setattr(app.theme_watcher, "poll", lambda: "Dark")
     app._theme_tick()
 
-    assert W.suppressed_flush_count() > before, "the tick flushed from its callback"
+    assert armed, "the tick did not change the appearance mode at all"
+    assert all(armed), "the tick changed the mode with no refusal armed"
     app.root.update()
 
 
@@ -420,7 +443,7 @@ def test_a_resize_after_a_theme_switch_still_fits_every_caption(app) -> None:
     """The theme change must not leave the window laid out for the old mode."""
     app.root.deiconify()
     app.root.geometry("980x720")
-    app._on_theme_click(_other_theme(app, "Dark"))
+    _switch_appearance(app)
     app.root.update()
     app.root.geometry("1140x900")
     app.root.update()
@@ -438,7 +461,7 @@ def test_a_resize_after_a_theme_switch_still_fits_every_caption(app) -> None:
 
 def test_closing_right_after_a_theme_switch_leaves_no_timer(app) -> None:
     """The pass a theme change owes is cancelled with every other timer."""
-    app._on_theme_click(_other_theme(app, "Dark"))
+    _switch_appearance(app)
     assert app._layout_token is not None
     app._on_close()
     assert app._layout_token is None

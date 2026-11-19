@@ -272,10 +272,17 @@ class PhantomApp:
         """
         if self._layout_token is not None:
             return
-        self._layout_token = self.root.after_idle(self._run_layout_flush)
+        # A timer, not ``after_idle``.  ``update idletasks`` runs Tk's idle handlers,
+        # and calling it *from* an idle handler is a re-entrant pass over the queue
+        # that is already being walked — the shape of Tk's own Aqua crash reports
+        # (``Tk_UnmapWindow`` recursion, freed window pointers) and the reason the
+        # theme-switch test still died on Tcl/Tk 9.1 while every pass from the main
+        # loop was fine.  A timer callback runs from the event loop, where Tk is not
+        # already iterating its idle queue.
+        self._layout_token = self.root.after(1, self._run_layout_flush)
 
     def _run_layout_flush(self) -> None:
-        """The idle callback behind :meth:`_schedule_layout_flush`."""
+        """The timer callback behind :meth:`_schedule_layout_flush`."""
         self._layout_token = None
         self._flush_layout()
 
