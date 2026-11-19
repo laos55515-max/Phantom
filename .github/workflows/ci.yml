@@ -231,12 +231,12 @@ jobs:
         timeout-minutes: 20
         run: |
           set -o pipefail
-          # No xvfb-run: Aqua needs the session, not a virtual display.  The cap
-          # ends a wedged run instead of letting it burn the job limit.
-          timeout --preserve-status --signal=TERM --kill-after=20 900 \
-            python -m pytest -ra -m gui -v --durations=20 \
-              --timeout=120 --timeout-method=thread \
-              -o faulthandler_timeout=120 2>&1 | tee gui-macos.log
+          # No xvfb-run: Aqua needs the session, not a virtual display.  No
+          # ``timeout`` either — macOS ships none (the Linux job's shell has it);
+          # pytest-timeout kills a wedged test and the step cap covers the rest.
+          python -m pytest -ra -m gui -v --durations=20 \
+            --timeout=120 --timeout-method=thread \
+            -o faulthandler_timeout=120 2>&1 | tee gui-macos.log
       - name: GUI log
         if: always()
         run: |
@@ -287,9 +287,8 @@ jobs:
           root.destroy()
           PY
           set -o pipefail
-          timeout --preserve-status --signal=TERM --kill-after=20 900 \
-            python -m pytest -ra -m gui -q --timeout=120 --timeout-method=thread \
-              -o faulthandler_timeout=120 2>&1 | tee gui-tk9.log
+          python -m pytest -ra -m gui -q --timeout=120 --timeout-method=thread \
+            -o faulthandler_timeout=120 2>&1 | tee gui-tk9.log
 
   benchmark:
     name: slow benchmarks
