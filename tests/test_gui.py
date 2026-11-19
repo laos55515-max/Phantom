@@ -95,8 +95,14 @@ def _pump(app, seconds: float = 30.0) -> None:
     """
     import time
 
+    def settled() -> bool:
+        # The collector belongs to the operation too: the pause is given back as
+        # soon as the worker thread is really gone, which can be a poll or two
+        # after the job's DONE.
+        return not (app.worker.busy or app._busy or app._gc_paused)
+
     deadline = time.monotonic() + seconds
-    while (app.worker.busy or app._busy) and time.monotonic() < deadline:
+    while not settled() and time.monotonic() < deadline:
         app.root.update()
         time.sleep(0.02)
     app.root.update()
@@ -134,7 +140,9 @@ def _pump(app, seconds: float = 30.0) -> None:
         f"poll_error={getattr(app, '_last_poll_error', '')!r}, "
         f"status={app.status_label.cget('text')!r}, "
         f"stage={app.stage_label.cget('text')!r}, "
-        f"quiet={app.worker.seconds_since_progress():.0f}s"
+        f"quiet={app.worker.seconds_since_progress():.0f}s, "
+        f"poll_runs={getattr(app, '_poll_runs', -1)}, "
+        f"events={app.worker.operation!r}"
     )
 
 
@@ -1363,6 +1371,28 @@ def test_the_collector_never_runs_on_the_worker_thread(app) -> None:
     assert gc.isenabled(), "the collector must come back when the job ends"
 
 
+def test_a_chain_of_jobs_gives_the_collector_back(app, rgb_carrier: Path) -> None:
+    """Two jobs in a row must leave the collector enabled, as one job does.
+
+    The resume is deferred while the finished job's thread is still winding down;
+    the second job used to start inside that window, re-read the collector (off,
+    because the first job had turned it off) and record "it was never enabled", so
+    the last resume switched nothing back on.  The whole suite then ran with the
+    collector off — which is how the collector tests found it.
+    """
+    import gc
+
+    assert gc.isenabled()
+    app._set_carrier(str(rgb_carrier))  # probe job
+    _pump(app)
+    assert app._start_job(
+        "estimate", lambda report, cancel: 0, "status_ready", silent=True
+    )
+    _pump(app)
+    assert gc.isenabled(), "the second job left the collector disabled"
+    assert app._gc_paused is False
+
+
 def test_choosing_a_file_fills_the_tab(app, tmp_path: Path, dialogs) -> None:
     import metadata_samples as samples
 
@@ -1746,7 +1776,9 @@ def test_the_window_starts_at_its_saved_geometry_not_a_default(app, tmp_path: Pa
         root.update()
 
         assert applied, "the saved geometry was never applied"
-        value, children = applied[0]
+        restored = [(value, children) for value, children in applied if "1040x780" in value]
+        assert restored, f"the saved geometry was never applied: {applied!r}"
+        value, children = restored[0]
         assert value.startswith("1040x780"), f"restored geometry was {value!r}"
         assert children == baseline, (
             f"the geometry was applied after {children - baseline} widgets existed: "

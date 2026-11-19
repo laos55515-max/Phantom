@@ -164,6 +164,10 @@ class PhantomApp:
         self._display_passes = 0
         #: The last exception the poll chain swallowed, for the tests and the log.
         self._last_poll_error = ""
+        #: How many times the poll callback really ran (diagnostics).
+        self._poll_runs = 0
+        #: A pending retry of the collector resume, while a worker thread winds down.
+        self._gc_resume_token: str | None = None
 
         self.trace.mark("init:services")
         self._configure_root()
@@ -1656,6 +1660,12 @@ class PhantomApp:
         refcounting frees without the collector.
         """
         if self._gc_paused:
+            # A previous job already owns the pause.  Do not re-read the collector
+            # here: it is off *because that job turned it off*, so reading it again
+            # would record "it was never enabled" and the last resume would leave
+            # the collector disabled for the rest of the session.  Chained jobs (a
+            # carrier probe, the estimate it schedules, the embed that follows) hit
+            # exactly this.
             return
         self._gc_was_enabled = gc.isenabled()
         if not self._gc_was_enabled:
@@ -1674,15 +1684,29 @@ class PhantomApp:
         if not self._gc_paused:
             return
         if self.worker.busy:
-            # Another job owns the pause now: enabling here would let a finalizer
-            # run on a worker thread, which is the freeze this exists to prevent.
+            # A worker thread is still on its way out: enabling here would let a
+            # finalizer run while it allocates, which is the freeze this exists to
+            # prevent.  This used to simply give up — the job had already posted its
+            # terminal event, so no further finish ever came and the collector stayed
+            # off for the rest of the session (the 3.11 GUI suite saw exactly that).
             LOGGER.debug("collector stays paused: a job is still running")
+            if self._gc_resume_token is None:
+                self._gc_resume_token = self.root.after(
+                    C.WORKER_POLL_MS, self._resume_collection_after_job
+                )
             return
+        self._cancel_gc_resume()
         self._gc_paused = False
         if not self._gc_was_enabled:
             return
         gc.enable()
         gc.collect()
+
+    def _cancel_gc_resume(self) -> None:
+        if self._gc_resume_token is not None:
+            with contextlib.suppress(TclError):
+                self.root.after_cancel(self._gc_resume_token)
+            self._gc_resume_token = None
 
     def _ensure_polling(self) -> None:
         if self._poll_token is None:
@@ -1690,6 +1714,7 @@ class PhantomApp:
 
     def _poll(self) -> None:
         self._poll_token = None
+        self._poll_runs += 1
         try:
             self._poll_once()
         except Exception as exc:
@@ -2333,6 +2358,7 @@ class PhantomApp:
             self._layout_token = None
         # The remaining timers die with the interpreter anyway, but a callback that
         # fires between destroy() and exit still reaches widgets that are gone.
+        self._cancel_gc_resume()
         for name in ("_stage_tick_token", "_anim_token", "_theme_token"):
             token = getattr(self, name)
             if token is not None:
