@@ -1712,13 +1712,16 @@ def test_the_window_starts_at_its_saved_geometry_not_a_default(app, tmp_path: Pa
     store.save(saved)
 
     root = ctk.CTk()
+    # Mapped before it is asked: on Aqua a withdrawn toplevel reports the geometry
+    # it was created with, not the one that was restored.
+    root.deiconify()
     try:
         instance = PhantomApp(
             root,
             settings_store=SettingsStore(path=tmp_path / "geometry" / "settings.json"),
             dnd=DndProvider(),
         )
-        root.update_idletasks()
+        root.update()
         assert instance.root.geometry().startswith("1040x780")
     finally:
         root.destroy()
