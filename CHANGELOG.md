@@ -262,6 +262,55 @@ All notable changes to PHANTOM are recorded here. The format follows
 
 ### Fixed
 
+- **Text that has no UTF-8 form is refused, not quietly changed.** A lone
+  surrogate (``"\ud800"``) cannot be encoded, and the failure used to surface as a
+  `UnicodeEncodeError` from inside the container writer, after the carrier had
+  already been read and compressed. `phantom.core.text.require_exact()` now runs at
+  every place that turns text into bytes — payload, password KDF, legacy container
+  — and raises `InvalidUnicode` (`err.invalid_unicode`, with the code point and its
+  position) *before* anything is read, compressed or written: no output, no
+  temporary file, the source unchanged. The window checks the same rule while you
+  type and shows a warning instead of starting a job, so the password field is
+  covered too. Nothing is replaced and nothing is written as WTF-8, because that
+  would change the user's text; valid text is byte-identical to before and every
+  existing file still extracts.
+
+- **Damaged containers are refused cheaply, while parsing.** A 264 KB PNG whose
+  `zTXt` inflates to 256 MiB used to be decompressed in full (before any size
+  check); it now stops at `MAX_INFLATE_BYTES` — 17.0 MiB and 0.03 s — and the field
+  is shown truncated with a warning instead of killing the process. The XMP limits
+  are now applied *during* the parse rather than to a finished tree: a packet with
+  70 000 elements costs 6.8 MiB and 0.03 s (it was 11.1 MiB after the tree was
+  built), and depth, element and attribute limits are proven with a tripwire on
+  `XMLParser.read`. Truncated files, chunk lengths past the end of the file, bad
+  CRCs, `.wav` files that are really PNGs and directories are all refusals with a
+  code, never a traceback, and a refused clean leaves the source byte-identical
+  with no staged sibling behind.
+
+- **Cancel and close leave nothing behind.** Cancelling mid-clean, cancelling the
+  same job eight times in a row, closing the window during a job and re-running a
+  job after a cancel are all covered: no output file, no staged temporary file, the
+  source unchanged, the worker reusable with a fresh cancel event, and
+  `shutdown()` waits for the job thread. In the window a cancelled job now puts the
+  progress bar back to zero and to determinate mode, restores the stage line, frees
+  every action button and recomputes the save button from the plan instead of
+  leaving the pre-cancel state on screen.
+
+- **The card says what it means, in the language of the window.** Three residual
+  defects in the original report: prose this program writes ("contains personal
+  properties", "a property of the packet below") stayed English inside a Russian or
+  Ukrainian card — every such sentence now carries a locale key (21 new keys in
+  en/ru/uk, values included), while data is never translated and the JSON export
+  stays English; the counter printed "unknown 0" beside a visible unknown property
+  because the packet's properties are *derived* views — they are tallied by
+  `count_derived()` and shown on their own line, with `derived_counts` added to the
+  JSON; a disabled save button kept the accent fill, because CustomTkinter only
+  greys the caption — `widgets.set_enabled()` swaps in `CLR_DISABLED_FILL` and
+  restores the accent when the button comes back; and after a clean the header
+  named the source while the numbers described the copy — `report_after` now names
+  the file that was written, and the results card opens with which file it
+  describes.
+
 - **A protected property inside an XMP packet can no longer be deleted with it.**
   The inspector looked for the text `<dc:rights>` in the packet and treated "I did
   not find a protected property" as "there is nothing to protect". RDF/XML can put
