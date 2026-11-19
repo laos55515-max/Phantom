@@ -162,3 +162,10 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
 def pytest_configure(config: pytest.Config) -> None:
     config.addinivalue_line("markers", "slow: performance tests")
     config.addinivalue_line("markers", "gui: requires a Tk display")
+    # A native crash (Tk's Aqua layer on macOS, for one) kills the interpreter
+    # before pytest can say anything; faulthandler turns the SIGSEGV into the
+    # Python stack that led to it, without every run having to remember
+    # ``-X faulthandler``.  It is a reporter, not a handler: nothing is caught.
+    import faulthandler
+
+    faulthandler.enable(all_threads=True)

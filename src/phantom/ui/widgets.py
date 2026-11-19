@@ -9,6 +9,7 @@ release only requires changes in one file (D14).
 from __future__ import annotations
 
 import logging
+import os
 import tkinter as tk
 import tkinter.font as tkfont
 import weakref
@@ -43,7 +44,17 @@ def quiet_idle_flush() -> Iterator[None]:
     The flush exists only so a scrollbar knows its own size.  During the build that
     question has one answer, and the single flush after the build gives every
     scrollbar the same one; afterwards the method is back exactly as it was.
+
+    ``PHANTOM_QUIET_FLUSH=0`` turns the batching off — the unbatched build, where
+    Tk flushes incrementally as it always did.  It exists for one question: when a
+    native crash is reported inside ``update_idletasks`` on a machine this project
+    cannot reach, running the same case both ways says whether the batching is
+    involved before anyone edits a line.
     """
+
+    if os.environ.get("PHANTOM_QUIET_FLUSH", "1") == "0":
+        yield
+        return
 
     def _no_flush(_self: Any, *_args: Any, **_kwargs: Any) -> None:
         return None

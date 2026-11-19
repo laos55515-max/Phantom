@@ -157,9 +157,22 @@ class PhantomApp:
         self._text_shortcuts: list[Any] = []
         self._result_window: ResultWindow | None = None
         self._last_window_width = 0
+        #: The one display pass the build deferred, and whether it is still owed.
+        self._layout_token: str | None = None
+        self._layout_pending = True
+        #: How many display passes this window has really run (diagnostics).
+        self._display_passes = 0
 
         self.trace.mark("init:services")
         self._configure_root()
+        # The appearance mode goes on *before* the widgets exist.  CustomTkinter
+        # notifies every registered widget when the mode actually changes, and each
+        # notification ends with a full ``update_idletasks()`` of the window — one
+        # nested event loop per widget, from inside the constructor, on the display
+        # path that native crashes live in.  Applying the mode first makes the mode
+        # already right when each widget is created, so the notification list is
+        # empty; ``_apply_theme`` later finds the mode unchanged and does nothing.
+        ctk.set_appearance_mode(T.appearance_for(self.settings.theme))
         # CustomTkinter's scrollbar flushes the whole window on every draw, and the
         # build plus the first render draw a hundred of them; each flush then pays
         # for everything laid out before it.  Nothing in this block needs a flush —
@@ -178,7 +191,10 @@ class PhantomApp:
             # this is the one pass that needs every widget to exist.
             with self.trace.stage("layout:adopt"):
                 self.responsive.adopt(self.root)
-        self._flush_layout()
+        # The single display pass the build deferred is *scheduled*, never entered
+        # from the constructor: see _flush_layout for why that distinction is the
+        # difference between a slow first frame and a native crash.
+        self._schedule_first_layout()
         # Anything that is useful but not needed for the first frame waits for
         # the event loop, so the window is on screen before it happens.
         self.root.after_idle(self._after_first_frame)
@@ -241,12 +257,65 @@ class PhantomApp:
             "seconds": C.CLIPBOARD_CLEAR_SECONDS,
         }
 
-    def _flush_layout(self) -> None:
-        """One idle flush after the build, instead of one per scrollbar draw."""
+    def _schedule_first_layout(self) -> None:
+        """Ask the event loop for the display pass the build deferred.
+
+        ``after_idle`` and not a direct call: the pass then runs as a loop task,
+        like every other repaint, instead of as a nested event loop inside a
+        constructor (see :meth:`_flush_layout`).
+        """
+        if self._layout_token is not None:
+            return
+        self._layout_token = self.root.after_idle(self._run_first_layout)
+
+    def _run_first_layout(self) -> None:
+        """The idle callback behind :meth:`_schedule_first_layout`."""
+        self._layout_token = None
+        self._flush_layout()
+
+    def _flush_layout(self) -> bool:
+        """One display pass — from the loop, and only for a window that is on screen.
+
+        ``update idletasks`` runs Tk's *display* idle handlers, and on macOS (Aqua)
+        that is where native crashes live: a pass for a toplevel that was never
+        mapped — ``withdraw`` leaves no NSWindow to draw into — took the whole
+        interpreter down with SIGSEGV inside ``update_idletasks`` under Tk 9.1, and
+        Tk's own tracker carries open Aqua tickets about idle-task and unretained
+        window handling.  Two rules follow, and both are about never asking Tk for
+        pixels it cannot produce:
+
+        * the pass is never entered from ``__init__``.  A widget tree that is still
+          being built has nothing to display yet, and a nested event loop in a
+          constructor turns a display bug into a start-up crash;
+        * a window that is not viewable is never asked for one: nothing can be
+          drawn, so the request is remembered and the first ``<Map>`` runs it
+          (:meth:`_on_root_mapped`).
+
+        Returns whether the pass really ran.
+        """
         try:
+            if not self.root.winfo_viewable():
+                self._layout_pending = True
+                return False
             self.root.update_idletasks()
         except Exception as exc:  # noqa: BLE001 - a headless Tk must not stop the launch
             LOGGER.debug("idle flush skipped: %s", exc)
+            return False
+        self._layout_pending = False
+        self._display_passes += 1
+        return True
+
+    def _on_root_mapped(self, event: Any) -> None:
+        """A window that has just been mapped owes the build its display pass.
+
+        Scheduled, not run here: the pass is never entered from inside a Tk event
+        handler or a constructor, only from a task of its own.
+        """
+        if getattr(event, "widget", None) is not self.root:
+            return
+        if not self._layout_pending:
+            return
+        self._schedule_first_layout()
 
     def _configure_root(self) -> None:
         self.root.title(self._t("window_title"))
@@ -264,6 +333,9 @@ class PhantomApp:
         # A child's <Configure> reaches the toplevel's bind tags too, so the
         # handler filters on the event's widget before doing anything.
         self.root.bind("<Configure>", self._on_window_resize, add="+")
+        # The display pass the build deferred waits for the first mapping; until
+        # then the window has no native surface to draw on (see _flush_layout).
+        self.root.bind("<Map>", self._on_root_mapped, add="+")
 
     def _build(self) -> None:
         self._build_header()
@@ -2213,14 +2285,19 @@ class PhantomApp:
         return "break"
 
     def refresh_window(self) -> None:
-        """macOS-only redraw nudge; never called on Windows/Linux (D14)."""
-        if not T.IS_MACOS:
-            return
-        try:
-            self.root.update_idletasks()
-            self.root.lift()
-        except Exception as exc:  # noqa: BLE001 - pragma: no cover, macOS only
-            LOGGER.debug("macOS redraw skipped: %s", exc)
+        """Bring the window forward and give it its display pass, on every platform.
+
+        macOS additionally needs ``lift()``: a window the window server has not
+        brought forward yet paints late.  The pass itself goes through
+        :meth:`_flush_layout`, so it is skipped for a window that is not on screen
+        instead of forcing Tk to display one that has no surface.
+        """
+        if T.IS_MACOS:
+            try:
+                self.root.lift()
+            except Exception as exc:  # noqa: BLE001 - pragma: no cover, macOS only
+                LOGGER.debug("macOS lift skipped: %s", exc)
+        self._flush_layout()
 
     def _on_close(self) -> None:
         if self.worker.busy:
@@ -2242,6 +2319,9 @@ class PhantomApp:
         if self._clipboard_token is not None:
             self.root.after_cancel(self._clipboard_token)
             self._clipboard_token = None
+        if self._layout_token is not None:
+            self.root.after_cancel(self._layout_token)
+            self._layout_token = None
         self._forget_clipboard()
         if self._result_window is not None:
             self._result_window.close()
@@ -2286,13 +2366,11 @@ def main(trace: StartupTrace | None = None) -> int:
         trace.log_summary()
 
     root.bind("<Map>", on_map, add="+")
+    # Painting once before the loop is what makes the first frame the *first* thing
+    # the user sees.  It goes through the same guard the window uses everywhere
+    # else: a window that is not on screen yet keeps the request and runs it on the
+    # <Map> event instead of asking Tk to display a surface it does not have.
     app.refresh_window()
-    try:
-        # Painting once before the loop is what makes the first frame the *first*
-        # thing the user sees, instead of an empty window that fills in later.
-        root.update_idletasks()
-    except Exception as exc:  # noqa: BLE001 - a headless Tk must not stop the launch
-        LOGGER.debug("first layout pass skipped: %s", exc)
     trace.mark("first_frame")
     trace.mark("mainloop")
     root.mainloop()

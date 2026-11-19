@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import threading
 import time
+from contextlib import suppress
 from pathlib import Path
 
 import pytest
@@ -142,7 +143,12 @@ def app(tmp_path: Path, isolated_settings: Path, monkeypatch: pytest.MonkeyPatch
 
     ctk.set_default_color_theme("blue")
     root = ctk.CTk()
-    root.withdraw()
+    # The window is *mapped*, the way a real launch leaves it: a withdrawn toplevel
+    # has no native surface, and Tk 9.1 on macOS segfaults in its display idle pass
+    # for exactly that state (see PhantomApp._flush_layout).  A test that needs a
+    # hidden window withdraws it itself; a test that needs a mapped one no longer
+    # has to remember to deiconify first.
+    root.deiconify()
     instance = PhantomApp(
         root,
         settings_store=SettingsStore(path=isolated_settings / "settings.json"),
@@ -152,7 +158,9 @@ def app(tmp_path: Path, isolated_settings: Path, monkeypatch: pytest.MonkeyPatch
     try:
         instance.worker.shutdown(timeout=2)
     finally:
-        root.destroy()
+        # A test may have closed the window itself; destroying it twice is normal.
+        with suppress(Exception):
+            root.destroy()
 
 
 def test_clipboard_timer_clears_the_secret_natively(app, monkeypatch) -> None:
@@ -2085,14 +2093,16 @@ def test_a_whole_window_builds_its_fonts_once(app, tmp_path: Path) -> None:
 
     W.reset_font_cache()
     root = ctk.CTk()
-    root.withdraw()
+    # Mapped, like a launch: the app deliberately never forces a display pass on a
+    # window that is not on screen, so a hidden root here would measure nothing.
+    root.deiconify()
     try:
         PhantomApp(
             root,
             settings_store=SettingsStore(path=tmp_path / "fonts" / "settings.json"),
             dnd=DndProvider(),
         )
-        root.update_idletasks()
+        root.update()
 
         families = W._FAMILIES[root]
         fonts = W._FONTS[root]
@@ -2101,6 +2111,188 @@ def test_a_whole_window_builds_its_fonts_once(app, tmp_path: Path) -> None:
 
     assert len(families) > 0, "the font list was never read"
     assert len(fonts) <= 14, f"{len(fonts)} font objects for one window: {sorted(fonts)}"
+
+
+# ---------------------------------------------------------------------------
+# the display pass: never from the constructor, never for a window that is hidden
+# ---------------------------------------------------------------------------
+def _build(tmp_path: Path, *, map_window: bool):
+    """A second window, built the way a launch builds one."""
+    import customtkinter as ctk
+
+    from phantom.ui.app import PhantomApp
+    from phantom.ui.dnd import DndProvider
+    from phantom.ui.settings import SettingsStore
+
+    ctk.set_default_color_theme("blue")
+    (tmp_path).mkdir(parents=True, exist_ok=True)
+    root = ctk.CTk()
+    if map_window:
+        root.deiconify()
+    instance = PhantomApp(
+        root,
+        settings_store=SettingsStore(path=tmp_path / "settings.json"),
+        dnd=DndProvider(),
+    )
+    return root, instance
+
+
+def test_the_build_never_enters_the_event_loop(app, tmp_path: Path) -> None:
+    """The display pass is scheduled, not entered from ``__init__``.
+
+    It was a direct ``update_idletasks()`` at the end of the constructor, and that
+    is where macOS died: a nested event loop inside a half-built window tree, on a
+    machine where Tk 9.1 was asked to display a toplevel that had no native surface.
+    """
+    real = type(app)._flush_layout
+    passes: list[bool] = []
+
+    def record(self, *args, **kwargs):
+        passes.append(True)
+        return real(self, *args, **kwargs)
+
+    type(app)._flush_layout = record
+    try:
+        root, instance = _build(tmp_path / "deferred", map_window=True)
+    finally:
+        type(app)._flush_layout = real
+    try:
+        assert passes == [], "the constructor ran a display pass of its own"
+        assert instance._layout_token is not None, "no pass was scheduled either"
+        assert instance.trace.at("init:done") is not None
+
+        root.update()
+
+        assert passes, "the scheduled pass never ran"
+        assert instance._display_passes >= 1
+        assert instance._layout_token is None
+    finally:
+        instance.worker.shutdown(timeout=2)
+        root.destroy()
+
+
+def test_building_a_dark_window_runs_no_display_pass_at_all(tmp_path: Path) -> None:
+    """A theme change used to flush the half-built window once per widget.
+
+    CustomTkinter notifies every registered widget when the appearance mode really
+    changes, and each notification ends with a full ``update_idletasks()``.  With
+    the mode applied after the build, a Dark theme on a Light desktop meant ~120
+    nested event loops inside the constructor — the same native path the macOS
+    crash came from, once per widget.
+    """
+    import tkinter as tk
+
+    from phantom.ui.settings import SettingsStore
+
+    store = SettingsStore(path=tmp_path / "dark" / "settings.json")
+    saved = store.load()
+    saved.theme = "Dark"
+    store.save(saved)
+
+    passes: list[int] = []
+    real = tk.Frame.update_idletasks
+
+    def counting(self, *args, **kwargs):
+        passes.append(1)
+        return real(self, *args, **kwargs)
+
+    tk.Frame.update_idletasks = counting
+    try:
+        root, instance = _build(tmp_path / "dark", map_window=True)
+    finally:
+        tk.Frame.update_idletasks = real
+    try:
+        assert passes == [], (
+            f"{len(passes)} display passes were run while the window was being built"
+        )
+        assert instance.settings.theme == "Dark"
+        assert ctk_mode() == "Dark"
+    finally:
+        instance.worker.shutdown(timeout=2)
+        root.destroy()
+        # The tracker is class-level: a test that switches the mode must switch it
+        # back, or every test that runs after it inherits a dark window.
+        import customtkinter as ctk
+
+        ctk.set_appearance_mode("System")
+
+
+def ctk_mode() -> str:
+    import customtkinter as ctk
+
+    return str(ctk.get_appearance_mode())
+
+
+def test_a_hidden_window_is_never_asked_to_display(tmp_path: Path) -> None:
+    """A withdrawn toplevel has no surface: the request waits for the mapping."""
+    root, instance = _build(tmp_path / "hidden", map_window=False)
+    try:
+        for _ in range(3):
+            root.update()
+
+        assert instance._display_passes == 0, "a hidden window was displayed anyway"
+        assert instance._layout_pending is True, "the pass was forgotten, not deferred"
+
+        root.deiconify()
+        root.update()
+
+        assert instance._display_passes == 1, "the mapping did not run the owed pass"
+        assert instance._layout_pending is False
+    finally:
+        instance.worker.shutdown(timeout=2)
+        root.destroy()
+
+
+def test_a_second_mapping_does_not_repeat_the_pass(tmp_path: Path) -> None:
+    """One owed pass, one run: resizing or re-mapping must not restart the queue."""
+    root, instance = _build(tmp_path / "once", map_window=False)
+    try:
+        root.deiconify()
+        root.update()
+        first = instance._display_passes
+        root.withdraw()
+        root.update()
+        root.deiconify()
+        root.update()
+
+        assert instance._display_passes == first, "the build's pass was repeated"
+    finally:
+        instance.worker.shutdown(timeout=2)
+        root.destroy()
+
+
+def test_windows_survive_being_built_and_destroyed_repeatedly(tmp_path: Path) -> None:
+    """Five windows in a row: no crash, no leaked callbacks, no growing font cache."""
+    from phantom.ui import widgets as W
+
+    W.reset_font_cache()
+    fonts: list[int] = []
+    for index in range(5):
+        root, instance = _build(tmp_path / f"cycle{index}", map_window=True)
+        try:
+            root.update()
+            fonts.append(len(W._FONTS.get(root, {})))
+        finally:
+            instance.worker.shutdown(timeout=2)
+            instance._on_close()
+        assert instance._layout_token is None
+        assert instance._poll_token is None
+        assert instance._clipboard_token is None
+
+    assert max(fonts) <= 14, f"the font cache grew per window: {fonts}"
+
+
+def test_closing_the_window_leaves_no_callbacks_of_its_own(app) -> None:
+    """Every token this window armed is cancelled before the root is destroyed."""
+    tokens = ("_poll_token", "_clipboard_token", "_stage_tick_token", "_anim_token",
+              "_theme_token", "_layout_token")
+    app.root.update()
+    assert app._layout_token is None
+
+    app._on_close()
+
+    for name in tokens:
+        assert getattr(app, name) is None, f"{name} survived the window"
 
 
 def test_the_window_leaves_tk_exactly_as_it_found_it(app) -> None:
