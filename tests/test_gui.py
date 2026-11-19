@@ -83,6 +83,15 @@ def dialogs(monkeypatch: pytest.MonkeyPatch) -> DialogRecorder:
     return recorder
 
 
+def _after_scripts(app) -> list[str]:
+    """The callbacks Tk says are armed, by name — for the failure message only."""
+    names = []
+    for ident in app.root.tk.call("after", "info"):
+        script = str(app.root.tk.call("after", "info", ident))
+        names.append(f"{ident}:{script[:40]}")
+    return names
+
+
 def _pump(app, seconds: float = 30.0) -> None:
     """Run the Tk event loop until no operation is in flight.
 
@@ -142,7 +151,8 @@ def _pump(app, seconds: float = 30.0) -> None:
         f"stage={app.stage_label.cget('text')!r}, "
         f"quiet={app.worker.seconds_since_progress():.0f}s, "
         f"poll_runs={getattr(app, '_poll_runs', -1)}, "
-        f"events={app.worker.operation!r}"
+        f"worker_op={app.worker.operation!r}, "
+        f"afters={_after_scripts(app)}"
     )
 
 
@@ -170,6 +180,10 @@ def app(tmp_path: Path, isolated_settings: Path, monkeypatch: pytest.MonkeyPatch
     yield instance
     try:
         instance.worker.shutdown(timeout=2)
+        # Give the collector back even if the test ended in the middle of a job:
+        # the pause is process-wide, so a leftover would follow every later test.
+        if instance._gc_paused:
+            instance._resume_collection_after_job()
     finally:
         # A test may have closed the window itself; destroying it twice is normal.
         with suppress(Exception):
@@ -1750,7 +1764,9 @@ def test_the_window_starts_at_its_saved_geometry_not_a_default(app, tmp_path: Pa
 
     store = SettingsStore(path=tmp_path / "geometry" / "settings.json")
     saved = store.load()
-    saved.window_geometry = "1040x780+40+30"
+    # Small enough to fit the 1024x720 display the macOS runner gives us, so the
+    # window manager cannot clamp it and the size below is the size we asked for.
+    saved.window_geometry = "800x600+40+30"
     store.save(saved)
 
     root = ctk.CTk()
@@ -1776,10 +1792,10 @@ def test_the_window_starts_at_its_saved_geometry_not_a_default(app, tmp_path: Pa
         root.update()
 
         assert applied, "the saved geometry was never applied"
-        restored = [(value, children) for value, children in applied if "1040x780" in value]
+        restored = [(value, children) for value, children in applied if value.startswith("800x600")]
         assert restored, f"the saved geometry was never applied: {applied!r}"
         value, children = restored[0]
-        assert value.startswith("1040x780"), f"restored geometry was {value!r}"
+        assert value.startswith("800x600"), f"restored geometry was {value!r}"
         assert children == baseline, (
             f"the geometry was applied after {children - baseline} widgets existed: "
             "the whole card tree is laid out twice"
@@ -1788,10 +1804,10 @@ def test_the_window_starts_at_its_saved_geometry_not_a_default(app, tmp_path: Pa
         shown = instance.root.geometry()
         match = re.match(r"(\d+)x(\d+)", shown)
         assert match is not None, f"unreadable geometry {shown!r}"
-        assert int(match.group(1)) == 1040, f"width was {shown!r}"
+        assert int(match.group(1)) == 800, f"width was {shown!r}"
         # A window manager may round the frame by a pixel or two; the size it was
         # given is what the test is about.
-        assert abs(int(match.group(2)) - 780) <= 2, f"height was {shown!r}"
+        assert abs(int(match.group(2)) - 600) <= 2, f"height was {shown!r}"
     finally:
         if instance is not None:
             instance.worker.shutdown(timeout=2)

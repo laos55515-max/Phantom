@@ -122,9 +122,6 @@ class PhantomApp:
         self.debouncer = Debouncer(self.root.after, self.root.after_cancel)
 
         self._gc_paused = False
-        #: Whether the collector was on *before* the first pause: an interpreter
-        #: started with ``gc.disable()`` must still have it disabled afterwards.
-        self._gc_was_enabled = True
         self._poll_token: str | None = None
         self._anim_token: str | None = None
         self._theme_token: str | None = None
@@ -1629,22 +1626,43 @@ class PhantomApp:
             return False
         self._operation = name
         self._busy = True
-        self._refresh_busy_state()
-        self._reset_progress()
-        if not silent:
-            self._set_status_key(status_key, severity="info")
-        self._pause_collection_for_job()
-        started = self.worker.start(name, job)
-        if not started:
-            self._resume_collection_after_job()
-            self._busy = False
-            self._operation = ""
+        try:
             self._refresh_busy_state()
+            self._reset_progress()
+            if not silent:
+                self._set_status_key(status_key, severity="info")
+            self._pause_collection_for_job()
+            started = self.worker.start(name, job)
+        except BaseException:
+            # Nothing is running, so nothing will ever report back: leaving _busy
+            # true here wedged the footer for good (a job that never started, a poll
+            # chain with nothing to poll).  Undo the start, then let the caller see
+            # the failure.
+            self._abandon_start()
+            raise
+        if not started:
+            self._abandon_start()
             return False
         self._operation_started = time.monotonic()
         self._ensure_stage_tick()
         self._ensure_polling()
         return True
+
+    #: Whether the collector is being held down for some job in this process, and
+    #: whether it was on before the first pause.  Class level on purpose: an
+    #: interpreter started with ``gc.disable()`` must still have it disabled
+    #: afterwards, and a second window must not read the collector *while the first
+    #: window holds it down* and conclude "it was never enabled" — the resume of that
+    #: second window would then leave it off for the rest of the session.
+    _collector_held: bool = False
+    _collector_was_enabled: bool = True
+
+    def _abandon_start(self) -> None:
+        """Undo the bookkeeping of a job that never got to run."""
+        self._resume_collection_after_job()
+        self._busy = False
+        self._operation = ""
+        self._refresh_busy_state()
 
     def _pause_collection_for_job(self) -> None:
         """Keep the cyclic collector on this thread for the length of a job.
@@ -1662,21 +1680,22 @@ class PhantomApp:
         if self._gc_paused:
             # A previous job already owns the pause.  Do not re-read the collector
             # here: it is off *because that job turned it off*, so reading it again
-            # would record "it was never enabled" and the last resume would leave
-            # the collector disabled for the rest of the session.  Chained jobs (a
+            # would record "it was never enabled" and the last resume would leave the
+            # collector disabled for the rest of the session.  Chained jobs (a
             # carrier probe, the estimate it schedules, the embed that follows) hit
             # exactly this.
             return
-        self._gc_was_enabled = gc.isenabled()
-        if not self._gc_was_enabled:
-            # Someone else (a profiler, a test, the embedding application) turned
-            # the collector off.  Own the pause anyway, so the resume stays a
-            # no-op instead of switching on something we did not switch off.
-            LOGGER.debug("collector was already disabled; leaving it that way")
-            self._gc_paused = True
-            return
-        gc.collect()
-        gc.disable()
+        if not PhantomApp._collector_held:
+            PhantomApp._collector_was_enabled = gc.isenabled()
+            PhantomApp._collector_held = True
+            if PhantomApp._collector_was_enabled:
+                gc.collect()
+                gc.disable()
+            else:
+                # Someone else (a profiler, a test, the embedding application) turned
+                # the collector off.  Own the pause anyway, so the resume stays a
+                # no-op instead of switching on something we did not switch off.
+                LOGGER.debug("collector was already disabled; leaving it that way")
         self._gc_paused = True
 
     def _resume_collection_after_job(self) -> None:
@@ -1697,7 +1716,8 @@ class PhantomApp:
             return
         self._cancel_gc_resume()
         self._gc_paused = False
-        if not self._gc_was_enabled:
+        PhantomApp._collector_held = False
+        if not PhantomApp._collector_was_enabled:
             return
         gc.enable()
         gc.collect()

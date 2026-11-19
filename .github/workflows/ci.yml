@@ -119,7 +119,7 @@ jobs:
           # annotations per step and silently drops the rest: a run with thirteen
           # failures used to report only the first five names.
           if failures:
-              joined = " || ".join(line[7:][:300] for line in failures)
+              joined = " || ".join(line[7:][:1500] for line in failures)
               print(f"::error::failing: {joined[:65000]}")
           for line in failures[:3]:
               print(f"::error::failed: {line[:400]}")
@@ -256,9 +256,24 @@ jobs:
           if fatal:
               print(f"::error::native crash: {' | '.join(line[:200] for line in fatal[:3])}")
           if failures:
-              print(f"::error::failing: {' || '.join(line[7:][:220] for line in failures)[:60000]}")
+              print(f"::error::failing: {' || '.join(line[7:][:1500] for line in failures)[:60000]}")
           for line in frames[-6:]:
               print(f"::warning::frame: {line.strip()[:400]}")
+          # A callback that raised leaves no failing test, only a traceback on
+          # stderr: without this the only evidence is a window that stopped moving.
+          noise = [
+              line
+              for line in lines
+              if "Exception in Tkinter callback" in line
+              or "Traceback (most recent call last)" in line
+              or "worker poll failed" in line
+              or "worker event" in line
+              or "operation " in line and "finished" in line
+          ]
+          for line in noise[:20]:
+              print(f"::warning::callback: {line.strip()[:900]}")
+          if noise:
+              print(f"::notice::callback-noise: {len(noise)} lines")
           for line in lines[-3:]:
               print(f"::notice::tail: {line[:900]}")
           print(f"::notice::gui-macos.log: {len(lines)} lines, {len(failures)} failing tests")
