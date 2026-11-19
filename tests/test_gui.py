@@ -7,6 +7,7 @@ pass would hide a broken Tk layer.
 
 from __future__ import annotations
 
+import re
 import threading
 import time
 from contextlib import suppress
@@ -1703,7 +1704,14 @@ def test_a_growing_paragraph_re_wraps_with_the_card(app) -> None:
 
 
 def test_the_window_starts_at_its_saved_geometry_not_a_default(app, tmp_path: Path) -> None:
-    """Geometry is restored before the widgets are built, not after them."""
+    """Geometry is restored before the widgets are built, not after them.
+
+    Asserting the reported geometry cannot work everywhere: a toplevel that has not
+    been mapped reports ``1x1`` (Aqua and X11 alike), and a mapped one reports what
+    the window manager made of it.  What the product promises is order, so that is
+    what is asserted — the geometry goes on while the root still has no children —
+    and then that the window really took it.
+    """
     import customtkinter as ctk
 
     from phantom.ui.app import PhantomApp
@@ -1716,18 +1724,45 @@ def test_the_window_starts_at_its_saved_geometry_not_a_default(app, tmp_path: Pa
     store.save(saved)
 
     root = ctk.CTk()
+    baseline = len(root.winfo_children())
+    applied: list[tuple[str, int]] = []
+    real_geometry = root.geometry
+
+    def geometry(value: str | None = None) -> str:
+        if value is not None:
+            # How many children the root had when the geometry was applied: the
+            # whole point is that the answer is zero.
+            applied.append((value, len(root.winfo_children())))
+        return real_geometry(value)
+
+    root.geometry = geometry  # type: ignore[method-assign]
+    instance = None
     try:
         instance = PhantomApp(
             root,
             settings_store=SettingsStore(path=tmp_path / "geometry" / "settings.json"),
             dnd=DndProvider(),
         )
-        # Read before any event is pumped: this is the geometry Tk was *told* to
-        # use while the widgets were being built, which is what the test is about.
-        # (Aqua reports the created size for a window that has not been mapped yet.)
+        root.update()
+
+        assert applied, "the saved geometry was never applied"
+        value, children = applied[0]
+        assert value.startswith("1040x780"), f"restored geometry was {value!r}"
+        assert children == baseline, (
+            f"the geometry was applied after {children - baseline} widgets existed: "
+            "the whole card tree is laid out twice"
+        )
+
         shown = instance.root.geometry()
-        assert shown.startswith("1040x780"), f"restored geometry was {shown!r}"
+        match = re.match(r"(\d+)x(\d+)", shown)
+        assert match is not None, f"unreadable geometry {shown!r}"
+        assert int(match.group(1)) == 1040, f"width was {shown!r}"
+        # A window manager may round the frame by a pixel or two; the size it was
+        # given is what the test is about.
+        assert abs(int(match.group(2)) - 780) <= 2, f"height was {shown!r}"
     finally:
+        if instance is not None:
+            instance.worker.shutdown(timeout=2)
         root.destroy()
 
 
