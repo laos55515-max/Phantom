@@ -262,6 +262,29 @@ All notable changes to PHANTOM are recorded here. The format follows
 
 ### Fixed
 
+- **The window can no longer stop on a job that has already finished.** Three
+  paths left the footer busy with nothing running: a job that failed between
+  setting "busy" and starting its thread kept the flag and no worker ever
+  reported back; the poll chain was re-armed only while the *worker* reported
+  busy, so a poll that failed in the gap after the last report left the window
+  stuck; and the collector pause was recorded per window, so a second window (or
+  the next job in a chain) read the collector while the first still held it down
+  and concluded "it was never enabled" — the collector then stayed off for the
+  rest of the session, which is where the GUI suite found it (`gc.isenabled()`
+  False with nothing in flight). The pause is now process-wide and given back as
+  soon as the finished job's thread is gone, an abandoned start is rolled back
+  before the error is re-raised, and the poll says in the log what it swallowed.
+
+- **The macOS window no longer crashes when it is built.** The build forced a
+  display pass from the constructor, and again for a window that was not on
+  screen yet; on Aqua both land in Tk's own idle drawing, which is where Tk's
+  open crash reports live (idle tasks that hold a window pointer the window no
+  longer owns). The pass is now scheduled for the first idle callback, a hidden
+  window's owed pass runs once when it is mapped, and the appearance mode is set
+  before the widgets exist, which removes about a hundred nested
+  `update_idletasks` calls per dark build. A real-Aqua CI job runs the GUI suite
+  on every push so this is checked where it happens, not under Xvfb.
+
 - **Text that has no UTF-8 form is refused, not quietly changed.** A lone
   surrogate (``"\ud800"``) cannot be encoded, and the failure used to surface as a
   `UnicodeEncodeError` from inside the container writer, after the carrier had
