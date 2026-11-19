@@ -162,6 +162,8 @@ class PhantomApp:
         self._layout_pending = True
         #: How many display passes this window has really run (diagnostics).
         self._display_passes = 0
+        #: The last exception the poll chain swallowed, for the tests and the log.
+        self._last_poll_error = ""
 
         self.trace.mark("init:services")
         self._configure_root()
@@ -1690,11 +1692,18 @@ class PhantomApp:
         self._poll_token = None
         try:
             self._poll_once()
-        except Exception:
+        except Exception as exc:
             LOGGER.exception("worker poll failed")
+            self._last_poll_error = f"{type(exc).__name__}: {exc}"
             self._finish_operation_ui_safely()
-            if self.worker.busy:
-                self._ensure_polling()
+        # Keep the chain alive while the window still believes an operation is in
+        # flight.  The old condition was ``worker.busy`` alone: a poll that failed
+        # while the worker was already idle left ``_busy`` true with nothing left
+        # to clear it, and the window stayed busy for ever.  Whatever the reason
+        # for the failure, the next poll either finishes the operation or reports
+        # the error again — a stuck footer with no polling is never the answer.
+        if self.worker.busy or self._busy:
+            self._ensure_polling()
 
     def _finish_operation_ui_safely(self) -> None:
         """Finish the UI bookkeeping, even if a widget has already been destroyed."""

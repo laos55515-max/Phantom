@@ -129,7 +129,11 @@ def _pump(app, seconds: float = 30.0) -> None:
     assert not (app.worker.busy or app._busy), (
         f"still busy after {seconds:.0f}s: worker={app.worker.busy}, "
         f"app={app._busy}, operation={app._operation!r}, gc={gc.isenabled()}, "
-        f"poll_token={app._poll_token!r}, armed={armed}, afters={len(pending)}"
+        f"poll_token={app._poll_token!r}, armed={armed}, afters={len(pending)}, "
+        f"poll_error={getattr(app, '_last_poll_error', '')!r}, "
+        f"status={app.status_label.cget('text')!r}, "
+        f"stage={app.stage_label.cget('text')!r}, "
+        f"quiet={app.worker.seconds_since_progress():.0f}s"
     )
 
 
@@ -1712,17 +1716,17 @@ def test_the_window_starts_at_its_saved_geometry_not_a_default(app, tmp_path: Pa
     store.save(saved)
 
     root = ctk.CTk()
-    # Mapped before it is asked: on Aqua a withdrawn toplevel reports the geometry
-    # it was created with, not the one that was restored.
-    root.deiconify()
     try:
         instance = PhantomApp(
             root,
             settings_store=SettingsStore(path=tmp_path / "geometry" / "settings.json"),
             dnd=DndProvider(),
         )
-        root.update()
-        assert instance.root.geometry().startswith("1040x780")
+        # Read before any event is pumped: this is the geometry Tk was *told* to
+        # use while the widgets were being built, which is what the test is about.
+        # (Aqua reports the created size for a window that has not been mapped yet.)
+        shown = instance.root.geometry()
+        assert shown.startswith("1040x780"), f"restored geometry was {shown!r}"
     finally:
         root.destroy()
 
