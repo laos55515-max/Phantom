@@ -315,6 +315,10 @@ def main(argv: list[str] | None = None) -> int:
         context menu use (asserted below by comparing the object graph).
         """
         state["phase"] = "action bar"
+        # A person clicks the field before selecting in it: without the focus the
+        # selection is drawn greyed by Aqua and Tk reports no ``sel`` range at all,
+        # which is why the first run of this phase copied the previous clipboard.
+        inner.focus_force()
         # A known starting point: the previous phases left text in the field, and a
         # paste inserts at the caret.
         app.clear_field_button.invoke()
@@ -337,7 +341,8 @@ def main(argv: list[str] | None = None) -> int:
         check(
             "action bar: copy selection",
             root.clipboard_get() == "action",
-            f"clipboard {len(root.clipboard_get())} chars",
+            f"clipboard {len(root.clipboard_get())} chars {root.clipboard_get()[:24]!r}, "
+            f"selection {selection()[:24]!r}",
         )
         inner.tag_add("sel", "1.11", "end")
         app.editor_cut_button.invoke()
@@ -350,7 +355,8 @@ def main(argv: list[str] | None = None) -> int:
         check(
             "action bar: select all",
             selection() == "action-bar ",
-            f"selected {len(selection())} chars",
+            f"selected {len(selection())} chars {selection()[:24]!r}, "
+            f"field {len(editor_text())} chars {editor_text()[:24]!r}",
         )
         app.editor_copy_all_button.invoke()
         check(
