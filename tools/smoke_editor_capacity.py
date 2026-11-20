@@ -329,7 +329,7 @@ def main(argv: list[str] | None = None) -> int:
             return (
                 f"button {button.cget('state')!r}, busy={app._busy}, "
                 f"worker={app.worker.busy}, undo={app._editor_can_undo}, "
-                f"redo={app._editor_can_redo}, events={app._editor_event_log}"
+                f"redo={app._editor_can_redo}"
             )
 
         def step_paste() -> None:

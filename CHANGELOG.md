@@ -811,6 +811,13 @@ out? The release also contains the scroll-router and progress work listed under
 
 ### Fixed
 
+- **Undo and redo keep working from the action bar.** Tk reports every change with
+  the same `<<Modified>>` event and says nothing about who caused it, so the event
+  an undo queues for itself arrived after the handler had re-armed "redo available"
+  and cleared that flag again: the redo button stayed grey until the next keystroke.
+  The edits the window performs itself are now counted and their events are
+  recognised as its own — a keystroke never bumps that counter, so it is always
+  treated as a keystroke (pinned by a GUI test that cuts, undoes and redoes).
 - **A long job can no longer freeze the window on a slow machine.** A worker
   thread allocates, so it can start a cyclic garbage collection, and a collection
   runs finalizers — `tkinter.font.Font.__del__` calls into Tcl, which is not

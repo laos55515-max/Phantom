@@ -1341,6 +1341,34 @@ def test_undo_and_redo_buttons_follow_the_history(app) -> None:
     assert app._editor_inner.get("1.0", "end-1c") == "undo me"
 
 
+def test_redo_survives_the_event_tk_queues_for_the_undo_itself(app) -> None:
+    """A step this window performs must not be read back as a user edit.
+
+    Tk reports every text change with the same ``<<Modified>>`` event, so an undo's
+    own event used to arrive after the handler had re-armed "redo available" and
+    clear that flag again: the redo button stayed grey until the next keystroke, and
+    clicking it did nothing.  The history here is a cut, because a delete is the
+    shape the smoke caught, and the redo is clicked with no keystroke in between.
+    """
+    inner = app._editor_inner
+    inner.insert("1.0", "cut me please")
+    app._on_text_changed()
+    _pump(app)
+    inner.tag_remove("sel", "1.0", "end")
+    inner.tag_add("sel", "1.0", "1.7")
+    app._refresh_editor_actions()
+    app.editor_cut_button.invoke()
+    assert inner.get("1.0", "end-1c") == "please"
+    _pump(app)
+    app.editor_undo_button.invoke()
+    assert inner.get("1.0", "end-1c") == "cut me please"
+    _pump(app)
+    assert app._editor_can_redo is True, "the undo's own event cleared redo availability"
+    assert str(app.editor_redo_button.cget("state")) == "normal"
+    app.editor_redo_button.invoke()
+    assert inner.get("1.0", "end-1c") == "please"
+
+
 def test_clear_field_keeps_the_password_and_the_carrier(app) -> None:
     app.embed_vm.set_password("keep-me-please")
     app.embed_vm.carrier_path = "/tmp/carrier.png"

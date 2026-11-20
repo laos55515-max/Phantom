@@ -252,10 +252,6 @@ class PhantomApp:
         #: event, and a leftover flag would then swallow the *user's* next keystroke.
         self._editor_programmatic_edits = 0
         self._editor_seen_edits = 0
-        #: The last handful of <<Modified>> classifications, newest last.  Only the
-        #: smoke tool reads it: an ordinary event carries no information about who
-        #: caused it, and the two ways of treating it differ by a button's state.
-        self._editor_event_log: list[str] = []
         #: ``(id(payload), len(data))`` of what the preview pane already shows, so a
         #: repaint for a language or a theme does not re-insert 200 000 characters.
         self._result_preview_key: tuple[int, int] | None = None
@@ -2016,7 +2012,6 @@ class PhantomApp:
         guarded: one user edit means one refresh, not two.
         """
         if self._modified_resetting:
-            self._log_editor_event("echo")
             return
         try:
             changed = bool(self._editor_inner.edit_modified())
@@ -2024,7 +2019,6 @@ class PhantomApp:
             LOGGER.debug("modified flag unreadable: %s", exc)
             return
         if not changed:
-            self._log_editor_event("clear")
             return
         self._modified_resetting = True
         try:
@@ -2032,14 +2026,11 @@ class PhantomApp:
         finally:
             self._modified_resetting = False
         if self._suppress_events:
-            self._log_editor_event("suppressed")
             return
         if self._editor_programmatic_edits != self._editor_seen_edits:
             # This event describes edits this window already committed and counted.
             self._editor_seen_edits = self._editor_programmatic_edits
-            self._log_editor_event("own")
             return
-        self._log_editor_event("user")
         self._mark_editor_dirty()
         self._editor_can_undo = True
         self._editor_can_redo = False
@@ -2049,10 +2040,6 @@ class PhantomApp:
         # the user stops, by `_commit_editor`.
         self._refresh_embed_state()
         self.debouncer.schedule(self._commit_editor)
-
-    def _log_editor_event(self, kind: str) -> None:
-        self._editor_event_log.append(kind)
-        del self._editor_event_log[:-8]
 
     def _mark_programmatic_edit(self) -> None:
         """Say that this window edited the field itself, so its event is expected."""
