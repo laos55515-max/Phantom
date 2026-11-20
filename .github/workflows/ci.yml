@@ -291,6 +291,16 @@ jobs:
           for line in lines[-3:]:
               print(f"::notice::tail: {line[:900]}")
           print(f"::notice::gui-macos.log: {len(lines)} lines, {len(failures)} failing tests")
+          # The editor matrix: every ok/FAIL line the diagnostic printed, in full.
+          matrix = [
+              line.strip()
+              for line in lines
+              if line.strip().endswith(" chars")
+              or " ok  " in line
+              or " FAIL " in line
+              or line.strip().startswith(("debug:", "PROBLEM", "WATCHDOG", "SUMMARY"))
+          ]
+          print(f"::warning::editor matrix ({len(matrix)} lines): {' ¦ '.join(matrix)[:12000]}")
           PY
           if [ "${{ steps.gui.outcome }}" != "success" ]; then
             echo "macOS GUI smoke tests failed, timed out or crashed"
@@ -404,7 +414,7 @@ jobs:
           for report in reports[-2:]:
               print(f"::notice::{report.name}: {report.read_text(errors='replace')[:2000]}")
 
-          for name in ("tk9-smoke.log", "gui-tk9.log"):
+          for name in ("tk9-smoke.log", "gui-tk9.log", "editor-diagnose.log"):
               path = pathlib.Path(name)
               if not path.exists():
                   print(f"::notice::{name}: missing")
