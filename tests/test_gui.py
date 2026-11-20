@@ -3133,40 +3133,68 @@ def _modifier() -> str:
     return "Command" if T.IS_MACOS else "Control"
 
 
-def _key(app, sequence: str, *, settle_ms: int = 150, timeout: float = 5.0) -> None:
-    """Press a key the way a user does: focus, then a generated event.
+def _probe_key_delivery(app, inner) -> list[str]:
+    """A witness binding: did *any* key event reach this widget's bind tags?"""
+    seen: list[str] = []
+    inner.bind("<KeyPress>", lambda _event: seen.append("press"), add="+")
+    return seen
 
-    The event is generated from inside a Tk callback and the *loop* is run until the
-    event has been delivered and its effects pumped.  Generating it from script level
-    and calling ``update()`` afterwards looks equivalent and is not: on Aqua, Tk
-    routes a generated key event to the display's focus window, and that role only
-    exists inside a running loop.  Measured on macOS: script-level generation (with
-    or without ``update()``) delivered nothing, the same event delivered from a
-    callback in a loop arrived every time — which is how the application receives it.
+
+def _key(app, sequence: str, *, settle_ms: int = 150, timeout: float = 5.0) -> None:
+    """Press a key the way a user does, and prove it arrived.
+
+    A generated key event is only delivered to a widget Tk considers reachable: it
+    routes the event to the display's focus window, and a CI runner has no active
+    application to give one out — the same event then vanishes without a trace.  The
+    delivery is therefore attempted in three ways, from inside the loop (never with
+    ``update()``), and a witness binding on the widget decides which one worked:
+
+    * the widget is focused and the event dispatched with ``when="now"``;
+    * the same after the *toplevel* is lifted and focused, which is what an Aqua
+      window needs before it may hold the focus at all;
+    * the event queued at the tail with ``when="tail"``, for a Tk that insists on
+      routing it through the queue.
+
+    If none of them reaches the widget, the test says so instead of asserting on a
+    keystroke that never happened.
     """
     inner = _editor(app)
-    pressed: list[str] = []
+    seen = _probe_key_delivery(app, inner)
 
-    def press() -> None:
-        inner.focus_force()
-        # when="now": dispatch to *this* widget's bind tags instead of asking Tk to
-        # route a queued key event to the display's focus window.  A user's key goes
-        # through the routing path; a test that has no active application on the
-        # runner has no focus window to route to, and the event vanished silently.
-        inner.event_generate(sequence, when="now")
-        pressed.append(sequence)
-        app.root.after(settle_ms, app.root.quit)
+    def attempt(setup, *, when: str) -> str:
+        delivered: list[str] = []
 
-    def guard() -> None:
-        if not pressed:
+        def press() -> None:
+            setup()
+            inner.event_generate(sequence, when=when)
+            delivered.append(sequence)
+            app.root.after(settle_ms, app.root.quit)
+
+        def guard() -> None:
             app.root.quit()
 
-    app.root.after(10, press)
-    guard_id = app.root.after(int(timeout * 1000), guard)
-    app.root.mainloop()
-    with suppress(Exception):
-        app.root.after_cancel(guard_id)
-    assert pressed, f"{sequence} was never delivered: the loop did not run the callback"
+        app.root.after(10, press)
+        guard_id = app.root.after(int(timeout * 1000), guard)
+        app.root.mainloop()
+        with suppress(Exception):
+            app.root.after_cancel(guard_id)
+        return f"{when} {'delivered' if seen else 'lost'}"
+
+    def focus_widget() -> None:
+        inner.focus_force()
+
+    def focus_toplevel() -> None:
+        app.root.lift()
+        app.root.focus_force()
+        inner.focus_force()
+
+    tried = [attempt(focus_widget, when="now")]
+    if not seen:
+        tried.append(attempt(focus_toplevel, when="now"))
+    if not seen:
+        tried.append(attempt(focus_toplevel, when="tail"))
+    assert seen, f"{sequence} never reached the editor ({'; '.join(tried)})"
+
 
 def _type(app, text: str) -> None:
     """Put text in the editor as if typed (a paste would be a different test)."""
@@ -3438,7 +3466,7 @@ def test_an_edit_without_a_key_still_reaches_the_model(app) -> None:
     inner.insert("1.0", "dropped in by a menu")
     app.root.update()
     assert app.embed_vm.text == "dropped in by a menu"
-    assert "16" in app.char_label.cget("text")
+    assert "20" in app.char_label.cget("text")
 
     inner.delete("1.0", "end")
     app.root.update()
