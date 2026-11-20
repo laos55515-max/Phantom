@@ -39,6 +39,7 @@ import time
 import tkinter as tk
 import traceback
 from collections.abc import Callable
+from typing import Any
 
 SMALL = 120
 MEDIUM = 6_000
@@ -313,91 +314,131 @@ def main(argv: list[str] | None = None) -> int:
         dispatch exactly like a mouse click, so what this phase proves is that the
         widget is wired — the handler behind it is the same one the hotkey and the
         context menu use (asserted below by comparing the object graph).
+
+        Every step waits for the loop to go idle before the next click.  An edit
+        starts a size estimate and every action button is grey while one runs, so
+        two clicks in a row without waiting is a click on a disabled button — which
+        is what the first two runs of this phase measured.
         """
         state["phase"] = "action bar"
-        # A person clicks the field before selecting in it: without the focus the
-        # selection is drawn greyed by Aqua and Tk reports no ``sel`` range at all,
-        # which is why the first run of this phase copied the previous clipboard.
+        # A person clicks the field before selecting in it.
         inner.focus_force()
-        # A known starting point: the previous phases left text in the field, and a
-        # paste inserts at the caret.
-        app.clear_field_button.invoke()
-        inner.tag_remove("sel", "1.0", "end")
-        clip_put("action-bar paste")
-        app.editor_paste_button.invoke()
-        check(
-            "action bar: paste",
-            editor_text() == "action-bar paste" and app.embed_vm.text == "action-bar paste",
-            f"editor {len(editor_text())} chars, model {len(app.embed_vm.text)} chars",
-        )
-        check(
-            "action bar: bar and hotkeys share one clipboard object",
-            app._editor_action_api() is app._editor_shortcuts.actions,
-            "same ClipboardActions instance",
-        )
-        inner.tag_add("sel", "1.0", "1.6")
-        app._refresh_editor_actions()
-        app.editor_copy_button.invoke()
-        check(
-            "action bar: copy selection",
-            root.clipboard_get() == "action",
-            f"clipboard {len(root.clipboard_get())} chars {root.clipboard_get()[:24]!r}, "
-            f"selection {selection()[:24]!r}",
-        )
-        inner.tag_add("sel", "1.11", "end")
-        app.editor_cut_button.invoke()
-        check(
-            "action bar: cut",
-            editor_text() == "action-bar " and app.embed_vm.text == "action-bar ",
-            f"editor {editor_text()!r}",
-        )
-        app.editor_select_all_button.invoke()
-        check(
-            "action bar: select all",
-            selection() == "action-bar ",
-            f"selected {len(selection())} chars {selection()[:24]!r}, "
-            f"field {len(editor_text())} chars {editor_text()[:24]!r}",
-        )
-        app.editor_copy_all_button.invoke()
-        check(
-            "action bar: copy all",
-            root.clipboard_get() == "action-bar ",
-            f"clipboard {root.clipboard_get()!r}",
-        )
-        # Undo and redo change the payload, so each one starts a size estimate and
-        # every action button is disabled while it runs.  The chain has to let the
-        # loop finish that job, exactly like a person clicking twice would.
-        def after_undo() -> None:
+
+        def state_of(button: Any) -> str:
+            """What the action bar believed *before* the click in this step."""
+            return (
+                f"button {button.cget('state')!r}, busy={app._busy}, "
+                f"worker={app.worker.busy}, undo={app._editor_can_undo}, "
+                f"redo={app._editor_can_redo}, events={app._editor_event_log}"
+            )
+
+        def step_paste() -> None:
+            # A known starting point: the previous phases left text in the field, and
+            # a paste inserts at the caret.
+            app.clear_field_button.invoke()
+            inner.tag_remove("sel", "1.0", "end")
+            clip_put("action-bar paste")
+            before = state_of(app.editor_paste_button)
+            app.editor_paste_button.invoke()
+            check(
+                "action bar: paste",
+                editor_text() == "action-bar paste"
+                and app.embed_vm.text == "action-bar paste",
+                f"editor {len(editor_text())} chars, model {len(app.embed_vm.text)} chars, "
+                f"before the click: {before}",
+            )
+            check(
+                "action bar: bar and hotkeys share one clipboard object",
+                app._editor_action_api() is app._editor_shortcuts.actions,
+                "same ClipboardActions instance",
+            )
+
+        def step_copy() -> None:
+            inner.tag_add("sel", "1.0", "1.6")
+            app._refresh_editor_actions()
+            before = state_of(app.editor_copy_button)
+            app.editor_copy_button.invoke()
+            got = root.clipboard_get()
+            check(
+                "action bar: copy selection",
+                got == "action",
+                f"clipboard {len(got)} chars {got[:24]!r}, selection {selection()[:24]!r}, "
+                f"before the click: {before}",
+            )
+
+        def step_cut() -> None:
+            inner.tag_add("sel", "1.11", "end-1c")
+            app._refresh_editor_actions()
+            before = state_of(app.editor_cut_button)
+            app.editor_cut_button.invoke()
+            check(
+                "action bar: cut",
+                editor_text() == "action-bar " and app.embed_vm.text == "action-bar ",
+                f"editor {editor_text()!r}, model {app.embed_vm.text!r}, "
+                f"before the click: {before}",
+            )
+
+        def step_select_all() -> None:
+            before = state_of(app.editor_select_all_button)
+            app.editor_select_all_button.invoke()
+            check(
+                "action bar: select all",
+                selection() == "action-bar ",
+                f"selected {len(selection())} chars {selection()[:24]!r}, "
+                f"field {len(editor_text())} chars {editor_text()[:24]!r}, "
+                f"before the click: {before}",
+            )
+
+        def step_copy_all() -> None:
+            # The field is selected at this point, so a plain copy would be the
+            # selection: copy-all has to reach the whole payload anyway.
+            inner.tag_remove("sel", "1.0", "end")
+            before = state_of(app.editor_copy_all_button)
+            app.editor_copy_all_button.invoke()
+            got = root.clipboard_get()
+            check(
+                "action bar: copy all",
+                got == "action-bar ",
+                f"clipboard {len(got)} chars {got[:24]!r}, before the click: {before}",
+            )
+
+        def step_undo() -> None:
+            before = state_of(app.editor_undo_button)
+            app.editor_undo_button.invoke()
             check(
                 "action bar: undo",
                 editor_text() == "action-bar paste",
-                f"editor {editor_text()!r}",
+                f"editor {editor_text()!r}, before the click: {before}",
             )
-            # Direct call, and the reason for it: the action bar's availability is
-            # recomputed on every state change, but this tool may have consumed the
-            # last refresh already.  Forcing it here keeps the check about the button
-            # and the redo history, and the report below prints what the state was.
+
+        def step_redo() -> None:
             app._refresh_editor_actions()
-            state = (
-                f"button {app.editor_redo_button.cget('state')!r}, "
-                f"can_redo={app._editor_can_redo}, busy={app._busy}, "
-                f"worker={app.worker.busy}, undo={app._editor_can_undo}, "
-                f"events={app._editor_event_log}"
-            )
+            before = state_of(app.editor_redo_button)
             app.editor_redo_button.invoke()
+            check(
+                "action bar: redo",
+                editor_text() == "action-bar ",
+                f"editor {editor_text()!r}, before the click: {before}",
+            )
 
-            def after_redo() -> None:
-                check(
-                    "action bar: redo",
-                    editor_text() == "action-bar ",
-                    f"editor {editor_text()!r} before the click: {state}",
-                )
+        steps: list[Callable[[], None]] = [
+            step_paste,
+            step_copy,
+            step_cut,
+            step_select_all,
+            step_copy_all,
+            step_undo,
+            step_redo,
+        ]
+
+        def run(index: int = 0) -> None:
+            if index >= len(steps):
                 root.after(120, next_phase)
+                return
+            steps[index]()
+            settle(idle(), lambda: run(index + 1))
 
-            settle(idle(), after_redo)
-
-        app.editor_undo_button.invoke()
-        settle(idle(), after_undo)
+        run()
 
     def phase_result_actions() -> None:
         """The result pane: select, copy the selection, copy *everything*, save TXT.
