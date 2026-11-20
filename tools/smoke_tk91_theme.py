@@ -150,21 +150,27 @@ def main(argv: list[str] | None = None) -> int:
         state["asked"] = width
         root.geometry(f"{width}x{height}")
 
-        def settle() -> None:
+        def settle(tries: int = 0) -> None:
             served = beats[0] - started
             got = (root.winfo_width(), root.winfo_height())
-            clamped = "" if (got[0], got[1]) == (width, height) else " (clamped by the WM)"
-            say(
-                f"resize {index}: asked {width}x{height}, got {got[0]}x{got[1]}{clamped}, "
-                f"frames served between = {served}"
-            )
-            if served < 1:
-                problems.append(f"resize {index}: the loop served no beat at all")
             passes = (
                 sum(row.reflows for row in app.responsive.flows() if not row.suspended)
                 - reflows
             )
             moved = last_got is None or got[0] != last_got
+            # One resize blocks this build's loop for hundreds of milliseconds, so the
+            # owed pass can be queued behind Tk's own work when the next step is due.
+            # Give the loop another turn before calling it a missing pass.
+            if moved and visible and passes < 1 and tries < 3:
+                root.after(args.resize_gap, settle, tries + 1)
+                return
+            clamped = "" if (got[0], got[1]) == (width, height) else " (clamped by the WM)"
+            say(
+                f"resize {index}: asked {width}x{height}, got {got[0]}x{got[1]}{clamped}, "
+                f"frames served between = {served}, layout passes = {passes}"
+            )
+            if served < 1:
+                problems.append(f"resize {index}: the loop served no beat at all")
             state["width"] = got[0]
             if moved and visible and passes < 1:
                 problems.append(
