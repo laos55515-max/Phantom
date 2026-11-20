@@ -32,6 +32,11 @@ import time
 import tkinter as tk
 import traceback
 
+#: Sizes to walk through, one per callback.  All of them fit the smallest display a
+#: CI runner offers (~1024x720): a request the window manager clamps away produces no
+#: <Configure>, so a series of impossible sizes would measure nothing at all.
+SIZES = [(980, 700), (1024, 720), (1000, 710), (980, 720), (1024, 700), (1000, 720)]
+
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -84,6 +89,9 @@ def main(argv: list[str] | None = None) -> int:
     last_beat = [time.monotonic()]
     worst_gap = [0.0]
     problems: list[str] = []
+    #: What the window took, step by step: a clamped request must not be read as a
+    #: layout that failed to happen.
+    state: dict[str, int | None] = {"width": None, "asked": None}
 
     def beat() -> None:
         now = time.monotonic()
@@ -112,26 +120,39 @@ def main(argv: list[str] | None = None) -> int:
             close()
             root.after(200, root.destroy)
             return
-        width = 1040 + (index % 4) * 60
-        height = 760 + (index % 3) * 40
+        # Sizes the window can really take: this display is small, and a request the
+        # window manager clamps away produces no <Configure> at all, which would make
+        # the whole series a measurement of nothing.
+        width = SIZES[index % len(SIZES)][0]
+        height = SIZES[index % len(SIZES)][1]
         started = beats[0]
         reflows = sum(row.reflows for row in app.responsive.flows())
+        last_got = state["width"]
+        state["asked"] = width
         root.geometry(f"{width}x{height}")
 
         def settle() -> None:
             served = beats[0] - started
-            got = f"{root.winfo_width()}x{root.winfo_height()}"
+            got = (root.winfo_width(), root.winfo_height())
+            clamped = "" if (got[0], got[1]) == (width, height) else " (clamped by the WM)"
             say(
-                f"resize {index}: asked {width}x{height}, got {got}, "
+                f"resize {index}: asked {width}x{height}, got {got[0]}x{got[1]}{clamped}, "
                 f"frames served between = {served}"
             )
             if served < 5:
                 problems.append(f"resize {index}: the loop served only {served} beats")
             passes = sum(row.reflows for row in app.responsive.flows()) - reflows
-            if passes < 1:
+            moved = last_got is None or got[0] != last_got
+            state["width"] = got[0]
+            if moved and passes < 1:
                 problems.append(
-                    f"resize {index}: the visible tab was not laid out at all "
-                    f"({passes} passes)"
+                    f"resize {index}: the width changed and the visible tab was not "
+                    f"laid out at all ({passes} passes)"
+                )
+            if passes > 2 * len(app.responsive.flows()):
+                problems.append(
+                    f"resize {index}: {passes} passes for one size change "
+                    f"({len(app.responsive.flows())} rows)"
                 )
             resize_series(index + 1)
 
@@ -161,7 +182,15 @@ def main(argv: list[str] | None = None) -> int:
         root.after(delay, tab)
         delay += 150
 
-    root.after(delay, resize_series)
+    def start_resizes() -> None:
+        # The heartbeat is only meaningful over the resize series: the build and the
+        # theme rounds are not what this measures.
+        last_beat[0] = time.monotonic()
+        worst_gap[0] = 0.0
+        beats[0] = 0
+        resize_series(0)
+
+    root.after(delay, start_resizes)
 
     try:
         root.mainloop()

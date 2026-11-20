@@ -2104,15 +2104,15 @@ def test_a_resize_burst_owes_one_layout_pass(app) -> None:
         calls.append(1)
         return real(*args, **kwargs)
 
-    app.responsive.refit_flows = counted  # type: ignore[method-assign]
     try:
+        app.responsive.refit_flows = counted  # type: ignore[method-assign]
         for width in range(1100, 1300, 20):
             app.root.event_generate("<Configure>", width=width, height=820)
         assert app._refit_token is not None, "the burst was not coalesced into one pass"
+
+        app.root.update()
     finally:
         app.responsive.refit_flows = real  # type: ignore[method-assign]
-
-    app.root.update()
 
     assert app._resize_events >= events + 5, "the events never reached the handler"
     assert len(calls) == 1, f"{len(calls)} refit passes for one burst"
@@ -2192,8 +2192,13 @@ def test_a_hidden_tab_is_laid_out_when_it_is_opened(app) -> None:
 
     app._show_tab("metadata")
 
-    for row in hidden:
+    opened = [row for row in app.responsive.flows() if not row.suspended]
+    assert opened, "the tab that was opened has no flow rows"
+    for row in opened:
         assert row.reflows > counts[id(row)], "opening the tab did not lay it out"
+    for row in hidden:
+        if row.suspended:
+            assert row.reflows == counts[id(row)], "a tab that is still hidden was laid out"
 
 
 def test_a_language_switch_lays_out_every_tab(app) -> None:
