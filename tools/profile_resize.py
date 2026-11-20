@@ -35,8 +35,8 @@ from typing import Any
 
 #: Widths the series walks through, all above the window's 980 px minimum and
 #: below the runner's screen, both directions, with a fullscreen round at the end.
-WIDTHS = [1120, 1060, 1000, 1040, 1100, 1180, 1240, 1180, 1120, 1060, 1000, 1140]
-HEIGHTS = [780, 800, 820, 800, 780, 760, 780, 800, 820, 800, 780, 900]
+WIDTHS = [1024, 900, 800, 700, 620, 700, 820, 940, 1024, 900, 780, 660]
+HEIGHTS = [720, 700, 680, 640, 600, 640, 680, 700, 720, 700, 660, 620]
 
 
 class Numbers:
@@ -101,11 +101,16 @@ def instrument(numbers: Numbers) -> None:
 
     def reflow(self: Any, *args: Any, **kwargs: Any) -> Any:
         numbers.reflow += 1
+        before = tuple(getattr(self, "_layout", ()))
         started = time.perf_counter()
         try:
             result = original_reflow(self, *args, **kwargs)
         finally:
             numbers.seconds_resize += time.perf_counter() - started
+        # The breakpoints are what the window paints: unchanged means the pass was
+        # pure arithmetic, changed means children really moved.
+        if tuple(getattr(self, "_layout", ())) != before:
+            numbers.layout_changes += 1
         return result
 
     FlowRow.reflow = reflow  # type: ignore[method-assign]
@@ -132,13 +137,23 @@ def run(label: str, steps: int, gap: int, watchdog: float = 45.0) -> int:
     from phantom.ui.app import PhantomApp
 
     numbers = Numbers()
+    # Before the window exists: Tk's own ``<Configure>`` binding captures the *bound*
+    # method, so wrapping the class method afterwards counts nothing.
+    instrument(numbers)
     root = ctk.CTk()
     app = PhantomApp(root)
-    instrument(numbers)
     rows = len(app.responsive.flows())
     say = lambda what: print(what, flush=True)  # noqa: E731
 
     say(f"built: tk {tk.TkVersion}, tcl {tk.TclVersion}, flow rows {rows}")
+    # The product's minimum is 980x720 and this display is barely larger, so a series
+    # that respects it never changes a single breakpoint and would measure nothing.
+    # The minimum is lowered for the measurement only; the product's stays as it is.
+    try:
+        root.minsize(560, 460)
+        say("minimum lowered to 560x460 for the series (the product keeps 980x720)")
+    except tk.TclError as exc:  # pragma: no cover - platform dependent
+        say(f"cannot lower the minimum: {exc}")
 
     # A heartbeat: the loop should serve it every 10 ms, so the longest gap is the
     # freeze a user would feel.  Scheduled before anything is measured.
@@ -277,7 +292,14 @@ def run(label: str, steps: int, gap: int, watchdog: float = 45.0) -> int:
                 f"handler_ms={values['handler_ms']:.1f} pass_ms={values['pass_ms']:.1f}",
                 flush=True,
             )
-        app._on_close()
+        # Not ``_on_close``: it asks a modal question when a job is running, and a
+        # modal dialog in CI waits for a click nobody makes.
+        for token_name in ("_refit_token", "_layout_token", "_poll_token", "_theme_token"):
+            token = getattr(app, token_name, None)
+            if token is not None:
+                with contextlib.suppress(tk.TclError):
+                    root.after_cancel(token)
+                setattr(app, token_name, None)
         root.after(120, root.destroy)
 
     # The build is not the subject: start counting once the window has settled.

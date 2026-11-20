@@ -427,16 +427,19 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements-dev.txt
       - name: Profile this branch, then the tree the owner tested
+        timeout-minutes: 5
         run: |
           set -o pipefail
           export PYTHONPATH=src
-          python -u tools/profile_resize.py --label after --steps 6 --watchdog 40 2>&1 \
+          python -u tools/profile_resize.py --label after --steps 12 --watchdog 40 2>&1 \
             | tee profile-after.log || echo "::warning::the after run did not exit cleanly"
           mkdir -p /tmp/before
           git archive 445a5cb | tar -x -C /tmp/before
           PYTHONPATH=/tmp/before/src python -u tools/profile_resize.py \
-            --label before --steps 6 --watchdog 40 2>&1 \
+            --label before --steps 12 --watchdog 40 2>&1 \
             | tee profile-before.log || echo "::warning::the before run did not exit cleanly"
+          tail -25 profile-after.log
+          tail -25 profile-before.log
       - name: The numbers
         if: always()
         run: |
