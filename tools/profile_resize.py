@@ -109,8 +109,9 @@ def instrument(numbers: Numbers) -> None:
 
     FlowRow.reflow = reflow  # type: ignore[method-assign]
 
-    original_grid = tk.Misc.grid
-    original_forget = tk.Misc.grid_forget
+    # ``grid`` lives on the ``Grid`` mixin every widget inherits, not on Misc.
+    original_grid = tk.Grid.grid
+    original_forget = tk.Grid.grid_forget
 
     def grid(self: Any, *args: Any, **kwargs: Any) -> Any:
         numbers.grid += 1
@@ -120,8 +121,8 @@ def instrument(numbers: Numbers) -> None:
         numbers.grid_forget += 1
         return original_forget(self, *args, **kwargs)
 
-    tk.Misc.grid = grid  # type: ignore[method-assign]
-    tk.Misc.grid_forget = grid_forget  # type: ignore[method-assign]
+    tk.Grid.grid = grid  # type: ignore[method-assign]
+    tk.Grid.grid_forget = grid_forget  # type: ignore[method-assign]
 
 
 def run(label: str, steps: int, gap: int) -> int:

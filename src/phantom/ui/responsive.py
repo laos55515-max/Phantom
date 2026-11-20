@@ -288,6 +288,19 @@ class FlowRow(ctk.CTkFrame):  # type: ignore[misc]
         self._layout: tuple[tuple[int, int], ...] = ()
         self._bound_width = 0
         self._columns = 0
+        # Measured once per caption change, not once per resize: ``_item_width``
+        # reaches into Tk for labels (``winfo_reqwidth``), and a drag-resize used to
+        # pay for every child of every row on every step.
+        self._widths: list[int] = []
+        self._cells: list[tuple[int, int]] = []
+        self._minsizes: list[int] = []
+        # A row inside a tab nobody is looking at: remember that it owes a pass and
+        # make it when the tab is opened, instead of laying out hidden widgets.
+        self.suspended = False
+        self._dirty = False
+        # Diagnostics the tests read: passes that did arithmetic, children re-placed.
+        self.reflows = 0
+        self.placements = 0
         self.bind("<Configure>", self._on_configure, add="+")
 
     # -- content --------------------------------------------------------
@@ -299,8 +312,19 @@ class FlowRow(ctk.CTkFrame):  # type: ignore[misc]
         """Append a child; it is placed on the next line when it no longer fits."""
         self._items.append(widget)
         self._layout = ()
-        self.reflow()
+        self._cells = []
+        self._widths = []
+        self.reflow(force=True)
         return widget
+
+    def mark_dirty(self) -> None:
+        """This row owes a pass; it runs when the row is next shown."""
+        self._dirty = True
+
+    def redraw_now(self, *, force: bool = False) -> tuple[tuple[int, int], ...]:
+        """Place the children now, whatever the visible-tab rule says."""
+        self.suspended = False
+        return self.reflow(force=force)
 
     def rows(self) -> int:
         return row_count(self._layout)
@@ -311,6 +335,12 @@ class FlowRow(ctk.CTkFrame):  # type: ignore[misc]
         if abs(width - self._bound_width) < 2:
             return
         self._bound_width = width
+        if self.suspended:
+            # A tab nobody is looking at resizes exactly like the visible one, and
+            # laying it out costs the same.  The breakpoints are recorded; the work
+            # waits for the moment the tab is opened.
+            self._dirty = True
+            return
         self.reflow(available=width)
 
     def _item_width(self, widget: Any) -> int:
@@ -324,28 +354,51 @@ class FlowRow(ctk.CTkFrame):  # type: ignore[misc]
         except Exception:  # noqa: BLE001 - pragma: no cover, Tk dependent
             return 0
 
-    def reflow(self, *, available: int | None = None) -> tuple[tuple[int, int], ...]:
-        """Re-place the children for ``available`` pixels (default: current width)."""
+    def reflow(
+        self, *, available: int | None = None, force: bool = False
+    ) -> tuple[tuple[int, int], ...]:
+        """Re-place the children for ``available`` pixels (default: current width).
+
+        ``force`` re-measures the children; without it the widths measured for the
+        current captions are reused, which is what makes a resize cheap.  A pass
+        whose breakpoints did not change touches no widget at all, and a pass that
+        did change them moves only the children whose cell changed — ``grid``
+        re-places a widget, so there is nothing to forget first.
+        """
         width = self._bound_width if available is None else int(available)
         if width <= 1:
             return self._layout
-        widths = [self._item_width(item) for item in self._items]
-        if not widths:
+        if not self._items:
             return self._layout
+        if force or len(self._widths) != len(self._items):
+            self._widths = [self._item_width(item) for item in self._items]
+        widths = self._widths
         scaling = widget_scaling(self) or 1.0
         layout = flow_rows(widths, int(width / scaling), self._gap)
+        self.reflows += 1
+        self._dirty = False
         if layout == self._layout:
             return self._layout
-        for item in self._items:
-            item.grid_forget()
-        columns = row_count(layout) and max(column for _row, column in layout) + 1
-        for column in range(columns or 1):
+        columns = max((column for _row, column in layout), default=-1) + 1
+        while len(self._minsizes) < columns:
+            self._minsizes.append(-1)
+        for column in range(columns):
             widest = max(
                 (widths[index] for index, (_row, col) in enumerate(layout) if col == column),
                 default=0,
             )
-            self.grid_columnconfigure(column, minsize=widest)
+            if self._minsizes[column] != widest:
+                self.grid_columnconfigure(column, minsize=widest)
+                self._minsizes[column] = widest
+        for column in range(columns, len(self._minsizes)):
+            if self._minsizes[column] != 0:
+                self.grid_columnconfigure(column, minsize=0)
+                self._minsizes[column] = 0
+        if len(self._cells) != len(layout):
+            self._cells = [(-1, -1)] * len(layout)
         for index, (row, column) in enumerate(layout):
+            if self._cells[index] == (row, column):
+                continue
             self._items[index].grid(
                 row=row,
                 column=column,
@@ -353,6 +406,8 @@ class FlowRow(ctk.CTkFrame):  # type: ignore[misc]
                 padx=(self._gap if column else 0, 0),
                 pady=(self._row_gap if row else 0, 0),
             )
+            self._cells[index] = (row, column)
+            self.placements += 1
         self._layout = layout
         self._columns = columns
         return layout
@@ -378,6 +433,13 @@ class Responsive:
         self._groups: list[tuple[Any, list[Any], int]] = []
         self._adopted: int = 0
         self._root: Any = None
+        # Every flow row with the chain of widgets above it, collected in the one
+        # walk ``adopt`` already does.  A resize used to walk the whole tree again
+        # to find them, on every ``<Configure>``.
+        self._flows: list[tuple[FlowRow, tuple[Any, ...]]] = []
+        self._active: Any = None
+        # Diagnostics the tests read: tree walks that had to happen.
+        self.walks = 0
 
     @property
     def labels(self) -> int:
@@ -388,6 +450,7 @@ class Responsive:
         """Register every label built with ``_phantom_autowrap`` under ``root``."""
         self._root = root
         groups: dict[Any, list[Any]] = {}
+        chains: dict[Any, tuple[Any, ...]] = {root: (root,)}
         stack = [root]
         while stack:
             widget = stack.pop()
@@ -397,6 +460,9 @@ class Responsive:
                 LOGGER.debug("no children on %r: %s", widget, exc)
                 children = []
             for child in children:
+                chains[child] = (*chains.get(widget, ()), child)
+                if isinstance(child, FlowRow):
+                    self._flows.append((child, chains[child]))
                 if getattr(child, "_phantom_autowrap", None) is not None:
                     groups.setdefault(child.master, []).append(child)
                 stack.append(child)
@@ -444,11 +510,19 @@ class Responsive:
                 self._apply(index, target)
 
     def flows(self, root: Any = None) -> list[FlowRow]:
-        """Every :class:`FlowRow` in the window, for a forced re-flow."""
-        start = self._root if root is None else root
+        """Every :class:`FlowRow` in the window, for a forced re-flow.
+
+        With no argument this is the list ``adopt`` collected; passing a widget
+        walks that subtree, which is only needed when something was built after
+        the window was adopted.
+        """
+        if root is None:
+            return [row for row, _chain in self._flows]
+        start = root
         found: list[FlowRow] = []
         if start is None:
             return found
+        self.walks += 1
         stack = [start]
         while stack:
             widget = stack.pop()
@@ -460,7 +534,30 @@ class Responsive:
                 LOGGER.debug("cannot walk %r: %s", widget, exc)
         return found
 
-    def refit_flows(self) -> None:
-        """Ask every flow row in the window to re-check its line breaks."""
-        for widget in self.flows():
-            widget.reflow()
+    def bind_active(self, active: Any) -> None:
+        """Say which tab is on screen; rows under any other tab stop re-flowing.
+
+        Hiding is not free in Tk: a tab that is stacked behind another one still
+        resizes, still gets its ``<Configure>``, and used to be laid out on every
+        step of a drag-resize.  Nothing of it can be seen, so the pass waits for
+        the tab to be opened — and opening it forces one (``refit_flows``).
+        """
+        self._active = active
+        for row, chain in self._flows:
+            row.suspended = active is not None and active not in chain
+            if row.suspended:
+                row.mark_dirty()
+
+    def refit_flows(self, *, force: bool = False, all_tabs: bool = False) -> None:
+        """Ask every visible flow row to re-check its line breaks, once.
+
+        ``force`` re-measures the children — the captions changed (a language
+        switch), so the widths did too.  ``all_tabs`` includes the tabs that are
+        not on screen, for the same reason: their new captions need laying out
+        before they are opened, and a language switch is rare enough to pay for it.
+        """
+        for row, _chain in self._flows:
+            if row.suspended and not all_tabs:
+                row.mark_dirty()
+                continue
+            row.reflow(force=force)

@@ -170,6 +170,12 @@ class PhantomApp:
         self._text_shortcuts: list[Any] = []
         self._result_window: ResultWindow | None = None
         self._last_window_width = 0
+        #: The one refit a burst of ``<Configure>`` events owes (see _schedule_refit).
+        self._refit_token: str | None = None
+        #: How many refit passes ran and how many ``<Configure>`` events asked for
+        #: one (diagnostics: a resize burst must cost one pass, not one per event).
+        self._refit_passes = 0
+        self._resize_events = 0
         #: The one display pass the build deferred, and whether it is still owed.
         self._layout_token: str | None = None
         self._layout_pending = True
@@ -1051,19 +1057,43 @@ class PhantomApp:
         self._render_tab_labels()
         self._render_format_labels()
         self.binder.apply()
-        # Captions changed, so their measured widths did too: re-wrap the rows
-        # and the paragraphs before the next frame is drawn.
-        self.responsive.refit_flows()
+        # Captions changed, so their measured widths did too: re-measure the rows
+        # (``force``), re-wrap the paragraphs, and lay out every tab at once — a
+        # tab that was resized while it was hidden owes a pass too.
+        self.responsive.refit_flows(force=True, all_tabs=True)
         self.responsive.rewrap()
 
     def _on_window_resize(self, event: Any) -> None:
-        """One place that reacts to the window size, debounced to real changes."""
+        """One place that reacts to the window size: one pass per burst, not per event.
+
+        A drag-resize, a zoom and the fullscreen transition all deliver a stream of
+        ``<Configure>`` events — Aqua sends one per frame, and each one used to walk
+        the widget tree and re-flow every row synchronously, inside the event that
+        was supposed to be painting.  The work is the same for all of them, so only
+        the last size of a burst matters: the first event schedules one pass on the
+        idle queue and every event after it just moves the number.  ``after_idle``
+        is Tk's own queue — not ``update idletasks``, which is not called here (and
+        cannot be, on Aqua under Tk 9).
+        """
         if getattr(event, "widget", None) is not self.root:
             return
         width = int(getattr(event, "width", 0) or 0)
         if abs(width - self._last_window_width) < 4:
             return
         self._last_window_width = width
+        self._schedule_refit()
+
+    def _schedule_refit(self) -> None:
+        """Owe one layout pass to the idle queue; a burst of events owes one."""
+        self._resize_events += 1
+        if self._refit_token is not None:
+            return
+        self._refit_token = self.root.after_idle(self._run_refit)
+
+    def _run_refit(self) -> None:
+        """The idle callback behind :meth:`_schedule_refit`."""
+        self._refit_token = None
+        self._refit_passes += 1
         self.responsive.refit_flows()
 
     def _render_format_labels(self) -> None:
@@ -1441,6 +1471,10 @@ class PhantomApp:
             ident = "embed"
         self.current_tab = ident
         self.tab_frames[ident].tkraise()
+        # The tab that was hidden while the window was resized owes its pass, and
+        # this is the moment it can be seen: pay it before the frame is painted.
+        self.responsive.bind_active(self.tab_frames[ident])
+        self.responsive.refit_flows()
         self.settings.last_tab = ident
         if ident == "extract":
             self.extract_pwd.focus_set()
@@ -2440,6 +2474,9 @@ class PhantomApp:
         if self._layout_token is not None:
             self.root.after_cancel(self._layout_token)
             self._layout_token = None
+        if self._refit_token is not None:
+            self.root.after_cancel(self._refit_token)
+            self._refit_token = None
         # The remaining timers die with the interpreter anyway, but a callback that
         # fires between destroy() and exit still reaches widgets that are gone.
         self._cancel_gc_resume()
