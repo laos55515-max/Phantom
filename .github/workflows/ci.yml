@@ -602,8 +602,16 @@ jobs:
           failed = [line for line in lines if line.startswith(("FAILED ", "ERROR "))]
           if failed:
               print(f"::error::failing: {' || '.join(line[7:] for line in failed)[:4000]}")
-          tail = [line.strip() for line in lines[-18:] if line.strip()]
-          print(f"::error::last-{len(lines)}-lines: {' ¦ '.join(tail)[:4000]}")
+          # The dump's own first lines name the crashing thread and its frames; the
+          # tail is nothing but pytest's main thread waiting for the test.  Quote
+          # every line that mentions our code, plus the crash line itself.
+          tail = [
+              line.strip()
+              for line in lines
+              if "test_gui.py" in line or "Fatal" in line or "Current thread" in line
+              or "phantom/" in line
+          ]
+          print(f"::error::crash-{len(lines)}: {' ¦ '.join(tail)[:4500]}")
           PY
 
   benchmark:
