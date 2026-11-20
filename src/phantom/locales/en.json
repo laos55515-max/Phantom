@@ -104,6 +104,7 @@
   "ft_secret": "Files",
   "header_subtitle": "PNG · WAV · FLAC  ·  {cipher}  ·  {kdf}  ·  LSB MATCHING (±1)",
   "header_title": "P H A N T O M",
+  "hint_long_line": "The field holds a line longer than {limit} characters: word wrap is off so typing stays fast. The text is unchanged.",
   "info_file_saved_m": "Extracted file saved:\n\n{path}",
   "info_file_saved_t": "File saved",
   "info_success_m": "Data encrypted and embedded.\n\n{path}",

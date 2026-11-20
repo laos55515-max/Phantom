@@ -3133,32 +3133,36 @@ def _modifier() -> str:
     return "Command" if T.IS_MACOS else "Control"
 
 
-def _key(app, sequence: str, *, timeout: float = 5.0) -> None:
+def _key(app, sequence: str, *, settle_ms: int = 150, timeout: float = 5.0) -> None:
     """Press a key the way a user does: focus, then a generated event.
 
-    The event is generated *from inside* a Tk callback and the loop is pumped until
-    it has been delivered.  Generating it from script level and calling ``update()``
-    afterwards looks equivalent and is not: on Aqua, Tk routes a generated key event
-    to the display's focus window, and only while the loop is running does the
-    window the test just focused hold that role.  Measured on macOS: script-level
-    generation delivered nothing at all, the same event from an ``after`` callback
-    delivered every time.
+    The event is generated from inside a Tk callback and the *loop* is run until the
+    event has been delivered and its effects pumped.  Generating it from script level
+    and calling ``update()`` afterwards looks equivalent and is not: on Aqua, Tk
+    routes a generated key event to the display's focus window, and that role only
+    exists inside a running loop.  Measured on macOS: script-level generation (with
+    or without ``update()``) delivered nothing, the same event delivered from a
+    callback in a loop arrived every time — which is how the application receives it.
     """
     inner = _editor(app)
-    delivered: list[str] = []
+    pressed: list[str] = []
 
     def press() -> None:
         inner.focus_force()
         inner.event_generate(sequence)
-        delivered.append(sequence)
+        pressed.append(sequence)
+        app.root.after(settle_ms, app.root.quit)
 
-    app.root.after(20, press)
-    deadline = time.monotonic() + timeout
-    while not delivered and time.monotonic() < deadline:
-        app.root.update()
-    # A second turn, so the event Tk queued is dispatched and its effects applied.
-    app.root.update()
+    def guard() -> None:
+        if not pressed:
+            app.root.quit()
 
+    app.root.after(10, press)
+    guard_id = app.root.after(int(timeout * 1000), guard)
+    app.root.mainloop()
+    with suppress(Exception):
+        app.root.after_cancel(guard_id)
+    assert pressed, f"{sequence} was never delivered: the loop did not run the callback"
 
 def _type(app, text: str) -> None:
     """Put text in the editor as if typed (a paste would be a different test)."""
@@ -3377,3 +3381,38 @@ def test_the_editor_accepts_scripts_the_world_writes_in(app) -> None:
         _type(app, sample)
         assert app.embed_text.get("1.0", "end-1c") == sample
         assert app.embed_vm.text == sample, "no trimming, no normalisation"
+
+
+def test_one_huge_line_turns_word_wrap_off_without_touching_the_text(app) -> None:
+    """Tk's word wrap costs seconds per 100 000-character line; typing cannot pay it.
+
+    Measured in CI: 260 000 characters in document lines insert in 29 ms, one
+    120 000-character line in 13.6 s.  The editor stops wrapping that line and says
+    so — the text is never split, trimmed or truncated.
+    """
+    from phantom.core import constants as C
+
+    line = "x" * (C.EDITOR_WRAP_LINE_LIMIT + 5_000)
+    _type(app, line)
+
+    from phantom.ui.widgets import inner_text_widget
+
+    inner = inner_text_widget(app.embed_text)
+    assert str(inner.cget("wrap")) == "none"
+    assert app.line_hint.winfo_ismapped() or app.line_hint.cget("text")
+    assert str(C.EDITOR_WRAP_LINE_LIMIT) in app.line_hint.cget("text")
+    assert app.embed_text.get("1.0", "end-1c") == line, "the text is not the field's layout"
+
+    app.clear_field_button.invoke()
+    assert str(inner.cget("wrap")) == "word", "wrapping comes back with the short field"
+
+
+def test_document_lines_keep_word_wrap(app) -> None:
+    from phantom.core import constants as C
+
+    line = "y" * (C.EDITOR_WRAP_LINE_LIMIT - 1_000)
+    _type(app, "\n".join([line] * 3))
+
+    from phantom.ui.widgets import inner_text_widget
+
+    assert str(inner_text_widget(app.embed_text).cget("wrap")) == "word"

@@ -204,6 +204,8 @@ class PhantomApp:
         self._estimate_failed = False
         #: The panel's last snapshot (tests and the button's enabled state read it).
         self.capacity_report: CapacityReport | None = None
+        #: Whether the editor is word-wrapping right now (see _sync_editor_wrap).
+        self._editor_wrapping = True
 
         self.trace.mark("init:services")
         if DISPLAY_PASSES_UNSAFE:
@@ -562,6 +564,9 @@ class PhantomApp:
         self.clear_field_button.pack(side="right", padx=(12, 0))
         self.binder.bind(self.clear_field_button, "btn_clear_field")
         self.counter_row.pack(fill="x", padx=18, pady=(2, 12))
+        self.line_hint = hint_label(payload_card, self.root, "", wrap=620)
+        self.line_hint.pack(fill="x", padx=18, pady=(0, 8))
+        self.line_hint.pack_forget()
 
         self.file_frame = ctk.CTkFrame(payload_card, fg_color="transparent")
         self.secret_button = secondary_button(
@@ -1366,6 +1371,36 @@ class PhantomApp:
             failed=self._estimate_failed,
         )
 
+    def _sync_editor_wrap(self) -> None:
+        """Turn word wrap off for a single line long enough to cost Tk seconds.
+
+        This is a display decision and nothing else: the text stays byte for byte
+        what the user typed.  Tk's word wrap is what gets slow (13.6 s for one
+        120 000-character line on 8.6, 75 s for 260 000 on 9.1 — against 29 ms for
+        the same amount of text broken into lines), so the editor stops wrapping
+        that line and says why in the hint under the counters.
+        """
+        text = self.embed_vm.text
+        too_long = len(text) > C.EDITOR_WRAP_LINE_LIMIT and any(
+            len(line) > C.EDITOR_WRAP_LINE_LIMIT for line in text.split("\n")
+        )
+        if too_long == (not self._editor_wrapping):
+            return
+        self._editor_wrapping = not too_long
+        editor = CTkAdapter.inner_textbox(self.embed_text) or self.embed_text
+        try:
+            editor.configure(wrap="word" if self._editor_wrapping else "none")
+        except Exception as exc:  # noqa: BLE001 - Tk dependent, never fatal
+            LOGGER.debug("wrap mode not changed: %s", exc)
+            return
+        if self._editor_wrapping:
+            self.line_hint.pack_forget()
+        else:
+            self.line_hint.configure(
+                text=self.i18n.t("hint_long_line", limit=C.EDITOR_WRAP_LINE_LIMIT)
+            )
+            self.line_hint.pack(fill="x", padx=18, pady=(0, 8))
+
     def _clear_field(self) -> None:
         """Empty the payload field — and nothing else.
 
@@ -1385,6 +1420,7 @@ class PhantomApp:
             self.embed_text.delete("1.0", "end")
         finally:
             self._suppress_events = False
+        self._sync_editor_wrap()
         self._refresh_embed_state()
         self._refresh_embed_ready()
         self.embed_text.focus_set()
@@ -1648,6 +1684,7 @@ class PhantomApp:
         if self._suppress_events:
             return
         self.embed_vm.set_text(self.embed_text.get("1.0", "end-1c"))
+        self._sync_editor_wrap()
         self._invalidate_estimate()
         self._refresh_embed_state()
         self.debouncer.schedule(self._start_estimate)

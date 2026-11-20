@@ -210,6 +210,13 @@ WORKER_POLL_MS: Final = 40
 STAGE_TICK_MS: Final = 1000
 ANIMATION_TICK_MS: Final = 16
 DEBOUNCE_MS: Final = 320
+#: Longest single *line* the editor keeps word-wrapped.  Tk lays a line out for
+#: display, and the cost of word wrap grows faster than the line: measured in CI on
+#: Tk 8.6.16, inserting 260 000 characters broken into document lines took 29 ms,
+#: while one 120 000-character line took 13.6 s and one 260 000-character line took
+#: 75 s on 9.1.0.  Above this length the editor switches to ``wrap="none"`` and says
+#: so: the text itself is never touched, split or truncated — only how it is drawn.
+EDITOR_WRAP_LINE_LIMIT: Final = 20_000
 WATCHDOG_SECONDS: Final = 90.0
 SETTINGS_SCHEMA_VERSION: Final = 2
 

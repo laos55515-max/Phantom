@@ -67,6 +67,19 @@ def _wrapped(size: int) -> str:
     return body[:size]
 
 
+def _clipboard_diff(payload: str, back: str) -> str:
+    """Where the clipboard handed something different back — and what it was."""
+    if payload == back:
+        return "identical"
+    shared = min(len(payload), len(back))
+    where = next((index for index in range(shared) if payload[index] != back[index]), shared)
+    return (
+        f"first difference at {where}: payload {payload[where : where + 14]!r} vs "
+        f"clipboard {back[where : where + 14]!r}; clipboard tail {back[-14:]!r}; "
+        f"{len(back) - len(payload)} characters more"
+    )
+
+
 def _carrier(directory: str, name: str, size: tuple[int, int]) -> str:
     from PIL import Image
 
@@ -85,6 +98,7 @@ def main(argv: list[str] | None = None) -> int:
 
     import customtkinter as ctk
 
+    from phantom.core import constants as C
     from phantom.ui.app import PhantomApp
 
     started = time.monotonic()
@@ -153,7 +167,8 @@ def main(argv: list[str] | None = None) -> int:
         check(
             f"clipboard round-trip {name}",
             handed_back == payload,
-            f"put {len(payload)} chars, got {len(handed_back)} back",
+            f"put {len(payload)} chars, got {len(handed_back)} back — "
+            + _clipboard_diff(payload, handed_back),
         )
         before = len(editor_text())
         started_at = time.monotonic()
@@ -169,15 +184,51 @@ def main(argv: list[str] | None = None) -> int:
 
         def verify() -> None:
             got = editor_text()
+            # What the app owes the user is that the *whole clipboard* arrives: the
+            # pasteboard itself may hand back a converted string, which is Tk's
+            # business and is reported above, not silently folded into this check.
             check(
                 f"paste {name} ({len(payload)} chars)",
-                len(got) == before + len(payload) and payload in got,
-                f"editor {len(got)} chars (expected {before + len(payload)}), "
+                len(got) == before + len(handed_back) and got.endswith(handed_back),
+                f"editor {len(got)} chars (expected {before + len(handed_back)}), "
                 f"{spent * 1000:.0f} ms",
             )
+            if len(payload) > C.EDITOR_WRAP_LINE_LIMIT:
+                inner_widget = (
+                    app.embed_text._textbox
+                    if hasattr(app.embed_text, "_textbox")
+                    else app.embed_text
+                )
+                wrapping = str(inner_widget.cget("wrap"))
+                one_line = max(len(line) for line in payload.split("\n"))
+                check(
+                    f"wrap after {name}",
+                    (wrapping == "none") == (one_line > C.EDITOR_WRAP_LINE_LIMIT),
+                    f"wrap is {wrapping!r}, longest line {one_line} chars",
+                )
             next_phase()
 
         root.after(120, verify)
+
+    def phase_clipboard_types() -> None:
+        state["phase"] = "clipboard types"
+        samples = (
+            ("ascii", "abcdefghij" * 400),
+            ("cyrillic", "їїїґ українська" * 400),
+            ("emoji", "👩‍👩‍👧‍👦🇺🇦" * 200),
+            ("dashes", "a — b – c" * 500),
+            ("code", ("def f(x):\n    return x + 1  # comment\n" * 200)),
+        )
+        for name, payload in samples:
+            clip_put(payload)
+            back = root.clipboard_get()
+            check(
+                f"clipboard keeps {name} text",
+                back == payload,
+                f"put {len(payload)} chars, got {len(back)} — "
+                + _clipboard_diff(payload, back),
+            )
+        next_phase()
 
     def phase_paste_over_selection() -> None:
         state["phase"] = "paste over selection"
@@ -384,6 +435,7 @@ def main(argv: list[str] | None = None) -> int:
         lambda: phase_paste("medium", _text(MEDIUM)),
         lambda: phase_paste("large with line breaks", _wrapped(LARGE), budget=20.0),
         lambda: phase_paste("one 120 000-char line", _text(ONE_LINE), budget=60.0),
+        phase_clipboard_types,
         phase_select_all,
         phase_paste_over_selection,
         phase_clear_field,

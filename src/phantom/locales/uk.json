@@ -104,6 +104,7 @@
   "ft_secret": "Файли",
   "header_subtitle": "PNG · WAV · FLAC  ·  {cipher}  ·  {kdf}  ·  LSB MATCHING (±1)",
   "header_title": "P H A N T O M",
+  "hint_long_line": "У полі рядок довший за {limit} символів: перенесення слів вимкнено, щоб введення лишалося швидким. Текст не змінено.",
   "info_file_saved_m": "Видобутий файл збережено:\n\n{path}",
   "info_file_saved_t": "Файл збережено",
   "info_success_m": "Дані зашифровано та вбудовано.\n\n{path}",
