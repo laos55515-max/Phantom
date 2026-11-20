@@ -606,15 +606,13 @@ class TextShortcuts:
                     ("menu_redo", self.redo),
                     (SEPARATOR, self.undo),
                     ("menu_cut", self.cut),
+                    ("menu_copy", self.copy),
                     ("menu_paste", self.paste),
                 ]
             )
-        commands.extend(
-            [
-                ("menu_copy", self.copy),
-                ("menu_select_all", self.select_all),
-            ]
-        )
+        else:
+            commands.append(("menu_copy", self.copy))
+        commands.append(("menu_select_all", self.select_all))
         if self.clear_handler is not None:
             commands.append((SEPARATOR, self.undo))
             commands.append(("menu_clear", self.clear))

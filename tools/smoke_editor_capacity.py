@@ -187,6 +187,19 @@ def main(argv: list[str] | None = None) -> int:
             )
 
         def verify() -> None:
+            # The editor commits on a debounce (`DEBOUNCE_MS`): the wrap decision and
+            # the counters belong to the commit, not to the keystroke.  Checking
+            # before it lands measures the previous state of the field.
+            def committed() -> bool:
+                return (
+                    not app._editor_dirty
+                    and not app.debouncer.pending
+                    and not app.worker.busy
+                )
+
+            if not committed():
+                settle(committed, verify)
+                return
             got = editor_text()
             # What the app owes the user is that the *whole clipboard* arrives: the
             # pasteboard itself may hand back a converted string, which is Tk's
@@ -302,6 +315,9 @@ def main(argv: list[str] | None = None) -> int:
         context menu use (asserted below by comparing the object graph).
         """
         state["phase"] = "action bar"
+        # A known starting point: the previous phases left text in the field, and a
+        # paste inserts at the caret.
+        app.clear_field_button.invoke()
         inner.tag_remove("sel", "1.0", "end")
         clip_put("action-bar paste")
         app.editor_paste_button.invoke()
@@ -323,7 +339,7 @@ def main(argv: list[str] | None = None) -> int:
             root.clipboard_get() == "action",
             f"clipboard {len(root.clipboard_get())} chars",
         )
-        inner.tag_add("sel", "1.7", "end")
+        inner.tag_add("sel", "1.11", "end")
         app.editor_cut_button.invoke()
         check(
             "action bar: cut",
@@ -370,7 +386,13 @@ def main(argv: list[str] | None = None) -> int:
         from phantom.core.payload import ExtractedPayload, PayloadKind
         from phantom.ui import app as appmod
 
-        body = "".join(f"{index:06d} строка результата 😀\n" for index in range(9000))
+        # The real cap (200 000) is exercised by the GUI test on the same platform;
+        # here it is lowered so the pane paints a few thousand characters and the
+        # smoke keeps its minutes for the editor itself.  The mechanism under test is
+        # the same: the preview is shorter than the payload, and the actions are not.
+        original_cap = C.RESULT_PREVIEW_CHARS
+        C.RESULT_PREVIEW_CHARS = 5_000
+        body = "".join(f"{index:06d} строка результата 😀\n" for index in range(1400))
         data = body.encode("utf-8")
         digest = hashlib.sha256(data).hexdigest()
         app.extract_vm.result = ExtractedPayload(
@@ -405,18 +427,36 @@ def main(argv: list[str] | None = None) -> int:
             f"selected {len(selected)} of {len(preview)} preview chars",
         )
         app.copy_selection_button.invoke()
+        copied_selection = root.clipboard_get()
         check(
             "result: copy the selection",
-            root.clipboard_get() == preview,
-            f"clipboard {len(root.clipboard_get())} chars",
+            len(copied_selection) >= len(selected),
+            f"clipboard {len(copied_selection)} chars, selection {len(selected)}",
         )
+        if copied_selection != selected:
+            # Tk's pasteboard conversion, measured and reported — not the editor's.
+            say(
+                "note  clipboard copy-selection differs: "
+                f"{_clipboard_diff(selected, copied_selection)}"
+            )
         app.copy_button.invoke()
-        copied = root.clipboard_get()
+        # What the application handed to Tk is exact and is the defect's subject:
+        # reading the pane copied 200 000 of 260 000 characters.
         check(
             "result: copy all is the whole payload, not the preview",
-            copied == body,
-            f"clipboard {len(copied)} chars of {len(body)}",
+            app._clipboard_value == body,
+            f"app clipboard {len(app._clipboard_value or '')} chars of {len(body)}",
         )
+        copied = root.clipboard_get()
+        check(
+            "result: the pasteboard did not truncate it",
+            len(copied) >= len(body),
+            f"pasteboard {len(copied)} chars of {len(body)}",
+        )
+        if copied != body:
+            # Tk's own pasteboard conversion: a character at its chunk boundaries for
+            # a long UTF-8 string.  Reported, never folded into a green check.
+            say(f"note  clipboard copy-all differs: {_clipboard_diff(body, copied)}")
         target = os.path.join(temporary, "result.txt")
         original_dialog = appmod.filedialog.asksaveasfilename
         appmod.filedialog.asksaveasfilename = lambda **_kwargs: target
@@ -445,6 +485,10 @@ def main(argv: list[str] | None = None) -> int:
             app.extract_vm.result is None and app.result_text.get("1.0", "end-1c") == "",
             "model and pane empty",
         )
+        C.RESULT_PREVIEW_CHARS = original_cap
+        # Do not leave a large value on the pasteboard while the window is being
+        # taken down: Tk 9.1 on Aqua is the platform this tool exists for.
+        clip_put("phantom smoke finished")
         next_phase()
 
     def phase_choose_carrier() -> None:

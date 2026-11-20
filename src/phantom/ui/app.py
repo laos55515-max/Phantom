@@ -243,6 +243,10 @@ class PhantomApp:
         #: One modal per decoded result: a broken UTF-8 payload must not pop up
         #: again on every repaint of the panel.
         self._result_decode_notified = False
+        #: Set by a full reset: Tk reports the delete it just performed as one more
+        #: ``<<Modified>>`` event, and that event must not re-arm "undo available"
+        #: for a history that was just dropped.
+        self._editor_history_cleared = False
         #: ``(id(payload), len(data))`` of what the preview pane already shows, so a
         #: repaint for a language or a theme does not re-insert 200 000 characters.
         self._result_preview_key: tuple[int, int] | None = None
@@ -1690,6 +1694,11 @@ class PhantomApp:
     def _reset_editor_history(self) -> None:
         """Drop the widget's undo stack, and the snapshot that described it."""
         clip.reset_history(self.embed_text)
+        try:
+            self._editor_inner.edit_modified(False)
+        except Exception as exc:  # noqa: BLE001 - widget gone
+            LOGGER.debug("modified flag unreadable: %s", exc)
+        self._editor_history_cleared = True
         self._editor_metrics = measure_text("")
         self._editor_dirty = False
         self._editor_can_undo = False
@@ -1991,6 +2000,15 @@ class PhantomApp:
         guarded: one user edit means one refresh, not two.
         """
         if self._modified_resetting:
+            return
+        if self._editor_history_cleared:
+            # This is the event Tk queued for our own full-reset delete.  Swallow it
+            # and clear the widget's flag so nothing re-fires.
+            self._editor_history_cleared = False
+            try:
+                self._editor_inner.edit_modified(False)
+            except Exception as exc:  # noqa: BLE001 - widget gone
+                LOGGER.debug("modified flag unreadable: %s", exc)
             return
         try:
             changed = bool(self._editor_inner.edit_modified())
