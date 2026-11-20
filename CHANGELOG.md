@@ -285,6 +285,22 @@ All notable changes to PHANTOM are recorded here. The format follows
   `update_idletasks` calls per dark build. A real-Aqua CI job runs the GUI suite
   on every push so this is checked where it happens, not under Xvfb.
 
+- **Switching the theme no longer segfaults on macOS with Tcl/Tk 9.1.** One click
+  notified every registered widget, and each notification ended with its own
+  `update_idletasks` — a display pass entered from inside a Tk callback, which on
+  Aqua under Tk 9.1 kills the interpreter (exit 139). A theme change now refuses
+  every one of those passes and owes exactly one, on the idle callback; on Aqua
+  under Tk 9 the window goes further and asks Tk for no display pass at all, for the
+  whole run, because CustomTkinter also flushes from its own draws (a scrollbar, a
+  colour change) and any of them is the same crash — Tk lays out and paints in its
+  own loop a moment later, so nothing the window shows depends on it. Dark, Light
+  and System all still switch, the setting is still saved, and on macOS with the
+  bundled Tk 8.6 nothing changed: `115 passed, 3 skipped`. The Tk 9.1 CI job drives
+  the real window through two full rounds of switching, a resize, a tab switch and
+  the close button on Tk's own event loop, and reports the crash it still sees in
+  the *pytest harness* (`root.update()` from script level) without letting it decide
+  the job — see `docs/macos-aqua-crash.md` §9.
+
 - **Text that has no UTF-8 form is refused, not quietly changed.** A lone
   surrogate (``"\ud800"``) cannot be encoded, and the failure used to surface as a
   `UnicodeEncodeError` from inside the container writer, after the carrier had

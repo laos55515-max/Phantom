@@ -1,7 +1,7 @@
 # The macOS crash on window build: what it was, what changed, what is left
 
 Branch `arena/a18be16e-phantom`, PR #17 (open, not merged). Base `ba6b038`
-(`main`), head at the time of writing: `525c0cc`.
+(`main`), head at the time of writing: see the last section.
 
 Everything below was measured on a real Aqua session: the CI job `gui (macOS Aqua)`
 runs `pytest -m gui` on `macos-latest` (arm64, macOS 26.7.2, Python 3.12, bundled
@@ -44,6 +44,9 @@ Three specific things in the build produced those calls:
 | Appearance mode applied before the widgets exist | `ui/app.py` (`_apply_theme` call order) | removes ~120 nested `update_idletasks` per dark build |
 | `PHANTOM_QUIET_FLUSH=0` turns the quiet-flush batching off | `ui/widgets.py` | an A/B switch for anyone bisecting a display problem: same build, old flush behaviour |
 | Every `after` timer is cancelled on close | `ui/app.py` (`_on_close`) | a callback that fires between `destroy()` and exit reaches widgets that are gone |
+| A theme change refuses every display pass while `ctk.set_appearance_mode()` runs, and owes one afterwards | `ui/widgets.py` (`quiet_redraws`), `ui/app.py` (`_set_appearance_mode`) | one mode change used to flush the window once per widget; the last of those is the Tk 9.1 segfault (§9) |
+| On Aqua under Tk 9 the refusal is installed for the whole process and no pass is scheduled | `ui/widgets.py` (`install_quiet_display`), `ui/app.py` (`DISPLAY_PASSES_UNSAFE`) | CustomTkinter also flushes from its own draws, and `update idletasks` cannot be called at all on that combination (§9) |
+| `PHANTOM_QUIET_REDRAW=0` and `PHANTOM_QUIET_FLUSH=0` are separate switches | `ui/widgets.py` | a bisect has to be able to turn one suppression off without the other |
 
 Constraints were respected: no crypto, STC, LSB-matching or container-format
 change; no weakened metadata or integrity policy; no new feature; no refactor of
@@ -62,6 +65,22 @@ Seven regression tests, all of them asserting behaviour that the crash depended 
 - `test_closing_the_window_leaves_no_callbacks_of_its_own` — no leftover `after`s.
 - `test_a_chain_of_jobs_gives_the_collector_back` — two jobs in a row leave the
   collector enabled (see §5).
+
+And for the theme switch:
+
+- `test_a_theme_switch_refuses_every_display_pass` — one click, zero passes, one
+  repaint, one pass owed afterwards.
+- `test_switching_the_theme_six_times_keeps_the_window_alive` — six clicks in a row.
+- `test_a_hidden_window_switches_the_theme_without_a_display_pass` — withdrawn root.
+- `test_a_closed_window_never_hears_about_a_theme_change_again` — the tracker drops
+  the window when it closes.
+- `test_windows_do_not_accumulate_appearance_callbacks` — three build/close cycles
+  leave the process-global tracker where they found it.
+- `test_a_platform_that_cannot_take_a_pass_is_never_asked_for_one` — the permanent
+  refusal exists exactly where the call cannot be made, and only there.
+
+The tests that count passes ask `_passes_are_attempted()` instead of assuming a pass
+runs, so the same assertions hold on 8.6 (a pass runs) and on Aqua Tk 9 (none does).
 
 Harness work that this required:
 
@@ -89,14 +108,23 @@ The three skips are pre-existing and platform-conditional: Tk 8.6 has no
 `<TouchpadScroll>` event to compare against. No SIGSEGV, no timeout, in three
 consecutive full runs of the workflow (`44630074539`, plus two reruns of it).
 
-Other jobs on the same commit: `tests (Python 3.11)` green, `tests (Python 3.12)`
-green, `lint and types` green (ruff + `mypy src`, 60 files), `slow benchmarks`
-green (all seven slow tests).
+`gui (macOS Aqua, Tk 9.1)` — real Aqua, Homebrew `python-tk@3.12` (Tcl/Tk 9.1), the
+window driven on Tk's own loop (`tools/smoke_tk91_theme.py --trace`):
 
-Locally (no tkinter in this sandbox, so no GUI tests): `ruff check src tests` clean,
-`mypy src` clean, `pytest` headless `1682 passed, 1 skipped, 1 failed` — the failure
-is `test_100kib_in_24mp_carrier`, which is known to trip only on this machine's
-CPU/memory and is green in CI.
+```
+2.06s  built: tk 9.1, tcl 9.1, 4 children
+11.45s theme -> Dark ... 11.51s tab -> settings    (two full rounds, resize included)
+11.68s main loop finished cleanly
+```
+
+Other jobs on the same commit (`44663561489`): `tests (Python 3.11)` green,
+`tests (Python 3.12)` green, `lint and types` green (ruff + `mypy src`, 60 files),
+`slow benchmarks` green (all seven slow tests), `gui (macOS Aqua)` green (above).
+
+Locally (no tkinter in this sandbox, so no GUI tests): `ruff check src tests tools`
+clean, `mypy src` clean, `pytest` headless `1690 passed, 1 skipped, 1 failed` — the
+failure is `test_100kib_in_24mp_carrier`, which is known to trip only on this
+machine's CPU/memory and is green in CI.
 
 ## 5. Three defects found on the way, and how they were established
 
@@ -129,10 +157,11 @@ final `update()`. That is why the test now also waits for the debouncer.
 
 ## 6. Limitations
 
-- The crash reproduced on the owner's Apple Silicon machine (Tk 8.6.16) and on the
-  Aqua CI runner. It has **not** been reproduced on Tk 9.1 with a sanitizer; the
-  Tk 9 job in the workflow (`homebrew python-tk@3.12`, `continue-on-error`) is a
-  smoke test, not a proof for every Aqua build.
+- The build crash reproduced on the owner's Apple Silicon machine (Tk 8.6.16) and on
+  the Aqua CI runner. The Tk 9.1 theme crash is section 9: reproduced in CI, fixed,
+  and re-verified by driving the real window on Tk's own loop — not with a sanitizer,
+  so the *mechanism* inside Tk is inferred from the frames and Tk's own reports, not
+  observed.
 - "No crash in three consecutive runs" is evidence, not a guarantee: a native
   crash that needs a specific widget/layout state could still be hiding behind a
   different code path. `PHANTOM_QUIET_FLUSH=0` and the faulthandler dump in
@@ -176,6 +205,17 @@ ls -t ~/Library/Logs/DiagnosticReports/Python* | head -3
 ## 8. Commits
 
 ```
+2eb4301 ui: on Aqua under Tk 9 the window never asks Tk for a display pass
+d088052 ci(tk9): put src on the path, as the other Aqua job does
+37afc7c ci(tk9): gate the window, not the harness that cannot pump Tk
+a9a0766 ci: a workflow command's message ends at the first newline
+35ccfb1 ci(tk9): quote the lines that name our code, not pytest's waiting loop
+27f62b0 ci(tk9): one Aqua session per variant, because runs in one VM disagree
+a2850a6 ci(tk9): the gate goes first, the diagnostics behind it
+f70476b ui: two escapes, one for each suppression, so a bisect can tell them apart
+83495ac ci(tk9): B and D, the two variants a single VM can answer
+66a6bc7 ci(tk9): four prefixes, so "before" and "after" are both measured
+ef0a95c ci(tk9): the native backtrace goes before the step that dies
 9274d7d ui(macos): never force a display pass from the constructor or on a hidden window
 143aecb tests+ci: fix the new GUI expectations, cancel every timer on close, real macOS runner
 4fd0f88 ci(macos): macOS ships no GNU timeout; pytest-timeout and the step cap already bound the run
@@ -187,4 +227,105 @@ ec63e24 tests(gui): assert the geometry *order*, then the size the window took
 a06dc0f ui: a job that never started cannot leave the window busy
 d681bcb tests(gui): measure the event loop, and stop asking the WM for a size it refuses
 525c0cc tests(gui): wait for the job the finished one schedules
+```
+
+## 9. The Tk 9.1 theme switch: where it dies, and what the window does about it
+
+**Symptom.** On Aqua with Tcl/Tk 9.1 a *dynamic* theme switch segfaulted
+(`Fatal Python error: Segmentation fault`, exit 139). Tk 8.6 on the same machine,
+same window, same click: fine. The click itself returned; the interpreter died in
+the display pass the mode change triggers.
+
+**Entrances, measured.** Six fresh `macos-latest` VMs, one variant of the GUI suite
+each (run `44660612343`), so that no variant can be blamed on the run before it:
+
+| Variant | Died at | Frame |
+| --- | --- | --- |
+| the suite as shipped | `test_a_theme_switch_refuses_every_display_pass` | `app.root.update()` after the click |
+| theme refusal off (`PHANTOM_QUIET_REDRAW=0`) | same test | `_set_appearance_mode` → `ctk.set_appearance_mode` |
+| build batching off (`PHANTOM_QUIET_FLUSH=0`) | same test | the owed pass |
+| both off | same test | the owed pass |
+| every theme test removed (`-k "not theme"`) | `test_embed_flow_through_the_ui` | `_pump` → `app.root.update()` |
+| quiet output (`-q`, nothing else) | the same first canvas-heavy tab | `app.root.update()` |
+
+Everything that crashed, crashed in `update idletasks` — reached by CustomTkinter's
+own draws, by the schedule the theme change leaves behind, or by the harness's
+`root.update()`. The last two rows matter most: with **no theme test at all** the
+suite still dies, so the theme path was never the whole story. Tcl/Tk 9.1 on macOS
+crashes inside a display pass entered from script level while Tk is drawing, and Tk's
+own tracker carries the report that `update idletasks` no longer guarantees a display
+on Aqua under 9 at all.
+
+**What the window does.** Nothing the window draws depends on that pass: Tk lays out
+and paints in its own loop a moment after the callback that changed something
+returns. So, on Aqua under Tk 9, `PhantomApp` never asks Tk for one:
+
+- `quiet_redraws()` still refuses every `update_idletasks` issued while
+  `ctk.set_appearance_mode()` runs — one mode change used to flush the window about
+  a hundred and twenty times, once per registered widget, and the last one is fatal;
+- on Aqua under Tk 9 `install_quiet_display()` then makes that refusal **permanent
+  for the process**, because CustomTkinter flushes from its own draws too (a
+  scrollbar, a colour change) and any one of those is the same crash;
+- `_flush_layout()` schedules no pass at all there (`DISPLAY_PASSES_UNSAFE`), and the
+  owed pass from a theme change becomes a no-op instead of an entry into Tk's
+  drawing;
+- every other platform keeps the pass, unchanged, including Tk 8.6 on Aqua.
+
+The theme switch itself keeps its full behaviour — Dark, Light and System, the
+settings file, the appearance-mode tracker, the repaint of every widget.
+
+**Proof on the real platform.** The Tk 9.1 CI job now gates on the *window* rather
+than on the harness: `tools/smoke_tk91_theme.py` builds the real `PhantomApp`, then
+switches the theme Dark → Light → System, resizes, switches a tab, does it a second
+time and closes — every step an `after` callback, no `update()` anywhere, which is
+how the application runs. Run `44663561489`, job `gui (macOS Aqua, Tk 9.1)`:
+
+```
+2.06s  built: tk 9.1, tcl 9.1, 4 children
+11.45s theme -> Dark (mode now Dark)
+11.47s theme -> Light (mode now Light)
+11.47s theme -> System (mode now Light)
+11.47s resized to 1024x720+5+31
+11.47s tab -> settings
+11.49s theme -> Dark (mode now Dark)
+11.50s theme -> Light (mode now Light)
+11.51s theme -> System (mode now Light)
+11.51s resized to 1024x720+5+31
+11.51s tab -> settings
+11.51s closing
+11.68s main loop finished cleanly
+```
+
+**What is still open, stated plainly.**
+
+- The *pytest* suite still segfaults on that runner, with or without every theme
+  test, because the harness pumps Tk with `root.update()` from script level and Tk
+  9.1 on Aqua dies inside its own drawing there. That is why the suite runs beside
+  the smoke run in the Tk 9.1 job and is reported, while the smoke run decides the
+  job. It is not skipped, not xfailed and not given a longer timeout; it is simply
+  not the thing that can hold a native defect of this shape.
+- The owner's MacBook is the only machine that has the crash *outside* a CI VM. On
+  it, the commands in section 7 are the confirmation; `PHANTOM_QUIET_REDRAW=0` and
+  `PHANTOM_QUIET_FLUSH=0` still switch the two suppressions off for an A/B.
+- CustomTkinter's drag-and-drop registration logs
+  `cannot register drop target: invalid command name "tkdnd::drop_target"` on Tk 9
+  (its bundled `tkdnd` is a Tk 8 extension). It is a warning, not a crash, and the
+  window works without drag and drop.
+- Tk 8.6 on Aqua, which is what most users run, is untouched by the platform
+  branch: 115 passed, 3 skipped on the `gui (macOS Aqua)` job, and the headless
+  suite is unchanged.
+
+**If it happens again.**
+
+```bash
+# The window, driven the way the application drives it (no update() at all):
+python -X faulthandler -u tools/smoke_tk91_theme.py --trace
+
+# The suite, and the same suite with each suppression off:
+python -X faulthandler -u -m pytest -m gui -x -vv -s
+PHANTOM_QUIET_REDRAW=0 python -X faulthandler -u -m pytest -m gui -x -vv -s
+PHANTOM_QUIET_FLUSH=0  python -X faulthandler -u -m pytest -m gui -x -vv -s
+
+# Just one theme switch, no PHANTOM at all:
+python -u tools/repro_tk91_theme_crash.py --quiet
 ```
