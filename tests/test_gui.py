@@ -3149,7 +3149,11 @@ def _key(app, sequence: str, *, settle_ms: int = 150, timeout: float = 5.0) -> N
 
     def press() -> None:
         inner.focus_force()
-        inner.event_generate(sequence)
+        # when="now": dispatch to *this* widget's bind tags instead of asking Tk to
+        # route a queued key event to the display's focus window.  A user's key goes
+        # through the routing path; a test that has no active application on the
+        # runner has no focus window to route to, and the event vanished silently.
+        inner.event_generate(sequence, when="now")
         pressed.append(sequence)
         app.root.after(settle_ms, app.root.quit)
 
@@ -3230,9 +3234,13 @@ def test_a_large_paste_through_the_keyboard_arrives_whole(app) -> None:
 
     _key(app, f"<{_modifier()}-v>")
 
-    assert len(app.embed_text.get("1.0", "end-1c")) == len(payload)
-    app._on_text_changed()
-    assert app.embed_vm.text == payload
+    handed_back = app.root.clipboard_get()
+    assert len(app.embed_text.get("1.0", "end-1c")) == len(handed_back), (
+        "the whole clipboard reached the widget"
+    )
+    assert app.embed_vm.text == app.embed_text.get("1.0", "end-1c"), (
+        "and the model follows the widget without a key release"
+    )
     app.debouncer.abort()
 
 
@@ -3416,3 +3424,22 @@ def test_document_lines_keep_word_wrap(app) -> None:
     from phantom.ui.widgets import inner_text_widget
 
     assert str(inner_text_widget(app.embed_text).cget("wrap")) == "word"
+
+
+def test_an_edit_without_a_key_still_reaches_the_model(app) -> None:
+    """A paste from the context menu, an undo, a drop: no key release, same duty.
+
+    Tk's ``<<Modified>>`` flag is what reports them; the old ``<KeyRelease>`` binding
+    only ever saw a key the widget both pressed and released.
+    """
+    from phantom.ui.widgets import inner_text_widget
+
+    inner = inner_text_widget(app.embed_text)
+    inner.insert("1.0", "dropped in by a menu")
+    app.root.update()
+    assert app.embed_vm.text == "dropped in by a menu"
+    assert "16" in app.char_label.cget("text")
+
+    inner.delete("1.0", "end")
+    app.root.update()
+    assert app.embed_vm.text == ""

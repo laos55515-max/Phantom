@@ -206,6 +206,8 @@ class PhantomApp:
         self.capacity_report: CapacityReport | None = None
         #: Whether the editor is word-wrapping right now (see _sync_editor_wrap).
         self._editor_wrapping = True
+        #: True while the ``<<Modified>>`` flag is being cleared (it re-fires).
+        self._modified_resetting = False
 
         self.trace.mark("init:services")
         if DISPLAY_PASSES_UNSAFE:
@@ -544,7 +546,14 @@ class PhantomApp:
         )
         self.embed_text.pack(fill="both", expand=True)
         self._paragraph_shortcuts(self.embed_text, clear_handler=self._clear_field)
-        self.embed_text.bind("<KeyRelease>", self._on_text_changed)
+        # Tk's own "this widget's text changed" flag, not the keyboard: a paste from
+        # the context menu, an undo, a cut and a programmatic insert all move the flag,
+        # while a `<KeyRelease>` only arrives when the key and its release are both
+        # delivered to this widget — which is exactly the case a pasted block was
+        # losing, leaving the counters and the model describing the previous text.
+        self._editor_inner = CTkAdapter.inner_textbox(self.embed_text) or self.embed_text
+        self._editor_inner.bind("<<Modified>>", self._on_editor_modified)
+        self._editor_inner.edit_modified(False)
         self.embed_text.bind("<FocusOut>", self._on_text_changed)
 
         self.counter_row = ctk.CTkFrame(payload_card, fg_color="transparent")
@@ -1420,11 +1429,19 @@ class PhantomApp:
             self.embed_text.delete("1.0", "end")
         finally:
             self._suppress_events = False
+        self._reset_modified_flag()
         self._sync_editor_wrap()
         self._refresh_embed_state()
         self._refresh_embed_ready()
         self.embed_text.focus_set()
         self._set_status_key("status_field_cleared", severity="ok")
+
+    def _reset_modified_flag(self) -> None:
+        """The model already knows: stop Tk from reporting this edit as a new one."""
+        try:
+            self._editor_inner.edit_modified(False)
+        except Exception as exc:  # noqa: BLE001 - widget gone
+            LOGGER.debug("modified flag not cleared: %s", exc)
 
     def _refresh_embed_ready(self) -> None:
         """Block the embed button while the numbers are unknown or do not fit.
@@ -1679,6 +1696,28 @@ class PhantomApp:
         self.embed_vm.set_mode(mode)
         self._invalidate_estimate()
         self._refresh_all()
+
+    def _on_editor_modified(self, _event: object | None = None) -> None:
+        """Tk says the text changed; clear the flag and tell the rest of the window.
+
+        ``edit_modified(False)`` raises ``<<Modified>>`` again, so the reset is
+        guarded: one user edit means one refresh, not two.
+        """
+        if self._modified_resetting:
+            return
+        try:
+            changed = bool(self._editor_inner.edit_modified())
+        except Exception as exc:  # noqa: BLE001 - widget gone or Tk refuses
+            LOGGER.debug("modified flag unreadable: %s", exc)
+            return
+        if not changed:
+            return
+        self._modified_resetting = True
+        try:
+            self._editor_inner.edit_modified(False)
+        finally:
+            self._modified_resetting = False
+        self._on_text_changed()
 
     def _on_text_changed(self, _event: object | None = None) -> None:
         if self._suppress_events:
