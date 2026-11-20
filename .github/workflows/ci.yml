@@ -321,6 +321,9 @@ jobs:
         run: |
           . .venv-tk9/bin/activate
           set -o pipefail
+          # The other Aqua job gets `phantom` on the path the same way: PYTHONPATH=src,
+          # so the smoke run and the suite import exactly the checked-out tree.
+          export PYTHONPATH=src
           python -X faulthandler -u tools/smoke_tk91_theme.py --trace 2>&1 | tee tk9-smoke.log
 
       - name: The pytest suite, for the record
@@ -328,6 +331,7 @@ jobs:
         run: |
           . .venv-tk9/bin/activate
           set -o pipefail
+          export PYTHONPATH=src
           python -X faulthandler -u -m pytest -m gui -v --durations=20 \
             --timeout=120 --timeout-method=thread -o faulthandler_timeout=120 2>&1 \
             | tee gui-tk9.log
