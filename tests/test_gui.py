@@ -459,6 +459,48 @@ def test_a_resize_after_a_theme_switch_still_fits_every_caption(app) -> None:
     assert not problems, "\n".join(problems)
 
 
+def test_a_closed_window_never_hears_about_a_theme_change_again(app) -> None:
+    """CustomTkinter's notification list must not keep a closed window's widgets.
+
+    ``AppearanceModeTracker`` holds one bound method per widget and only lets go in
+    ``CTkAppearanceModeBaseClass.destroy()``, which ``Tk.destroy()`` never calls for
+    the children — so the next theme change repaints widgets whose Tcl commands are
+    gone.  On Aqua under Tcl/Tk 9.1 that segfaults; here it would at best be a wall
+    of TclError that the tracker swallows.
+    """
+    import customtkinter as ctk
+    from customtkinter.windows.widgets.appearance_mode import AppearanceModeTracker
+
+    from phantom.ui import widgets as W
+
+    root = app.root
+
+    def belonging() -> list[object]:
+        found = []
+        for callback in list(AppearanceModeTracker.callback_list):
+            owner = getattr(callback, "__self__", None)
+            if owner is None:
+                continue
+            try:
+                belongs = owner._root() is root
+            except Exception:  # noqa: BLE001 - a widget with no tree left
+                belongs = False
+            if belongs:
+                found.append(callback)
+        return found
+
+    assert len(belonging()) > 50, "the window registered almost nothing"
+
+    app._on_close()
+
+    assert belonging() == [], "the closed window is still in the notification list"
+    # Idempotent: the <Destroy> safety net calls it a second time.
+    assert W.release_appearance_callbacks(root) == 0
+    # And a theme change after the window is gone is a no-op, not a crash.
+    with W.quiet_redraws():
+        ctk.set_appearance_mode("Dark" if ctk.get_appearance_mode() == "Light" else "Light")
+
+
 def test_closing_right_after_a_theme_switch_leaves_no_timer(app) -> None:
     """The pass a theme change owes is cancelled with every other timer."""
     _switch_appearance(app)

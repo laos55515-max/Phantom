@@ -342,6 +342,30 @@ jobs:
           . .venv-tk9/bin/activate
           python -X faulthandler -u tools/repro_tk91_theme_crash.py --quiet \
             --toggles 6 --delay 200 2>&1 | tee repro-quiet.log
+      - name: Which widget kind crashes (Aqua, Tk 9.x)
+        id: bisect
+        continue-on-error: true
+        timeout-minutes: 10
+        run: |
+          . .venv-tk9/bin/activate
+          # Two passes: the crash may need the display-pass refusal armed, or not.
+          python -u tools/bisect_tk91_theme.py --repeat 6 2>&1 | tee bisect-default.log
+          echo "::notice::bisect (default): exit $?"
+          python -u tools/bisect_tk91_theme.py --repeat 6 --quiet 2>&1 | tee bisect-quiet.log
+          echo "::notice::bisect (quiet): exit $?"
+          python - <<'PY'
+          import pathlib
+
+          for name in ("bisect-default.log", "bisect-quiet.log"):
+              path = pathlib.Path(name)
+              if not path.exists():
+                  continue
+              lines = [line for line in path.read_text(errors="replace").splitlines() if line.strip()]
+              last = lines[-1][:300] if lines else "(empty)"
+              print(f"::notice::{name}: {len(lines)} lines, last: {last}")
+              for line in lines[-6:]:
+                  print(f"::notice::{name}| {line[:300]}")
+          PY
       - name: The theme tests on their own (Aqua, Tk 9.x)
         id: gui-theme
         continue-on-error: true

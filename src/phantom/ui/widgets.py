@@ -19,6 +19,9 @@ from dataclasses import dataclass, field
 from typing import Any, Final
 
 import customtkinter as ctk
+from customtkinter.windows.widgets.appearance_mode import (
+    AppearanceModeTracker,
+)
 
 from phantom.ui import theme as T
 from phantom.ui.clipboard import ClipboardActions, TextBuffer, paste
@@ -34,6 +37,40 @@ _CANVAS_FLUSH: Final[Any] = tk.Canvas.update_idletasks
 #: ``CTkBaseClass._set_appearance_mode`` through ``super()``, i.e. once per widget
 #: per appearance change.
 _MISC_FLUSH: Final[Any] = tk.Misc.update_idletasks
+
+def release_appearance_callbacks(root: Any) -> int:
+    """Stop CustomTkinter notifying widgets of a window that is going away.
+
+    ``AppearanceModeTracker`` keeps one bound method per CTk widget for the life of
+    the process, and lets go of it only in ``CTkAppearanceModeBaseClass.destroy()``
+    — which ``tkinter.Tk.destroy()`` never calls for the *children* of a window.
+    A closed window therefore stays in the notification list, and the next mode
+    change calls ``_draw()`` on widgets whose Tcl commands no longer exist.  Under
+    Tcl/Tk 9.1 on Aqua that is a segfault rather than the ``TclError`` the tracker's
+    ``except Exception`` was written for; everywhere else it is a growing list that
+    makes every theme change slower than the last.
+
+    Belonging is decided by walking each callback's owning widget up to its root,
+    which is pure Python and works for a widget whose interpreter is already gone.
+    Returns how many callbacks were dropped.
+    """
+    dropped = 0
+    for callback in list(AppearanceModeTracker.callback_list):
+        owner = getattr(callback, "__self__", None)
+        if owner is None:
+            continue
+        try:
+            belongs = owner._root() is root
+        except Exception:  # a widget whose tree is half gone
+            LOGGER.debug("appearance callback of a widget with no root left", exc_info=True)
+            continue
+        if belongs:
+            AppearanceModeTracker.remove(callback)
+            dropped += 1
+    if dropped:
+        LOGGER.debug("released %d appearance callbacks of a closed window", dropped)
+    return dropped
+
 
 @contextmanager
 def quiet_idle_flush() -> Iterator[None]:

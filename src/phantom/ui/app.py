@@ -72,6 +72,7 @@ from phantom.ui.widgets import (
     primary_button,
     quiet_idle_flush,
     quiet_redraws,
+    release_appearance_callbacks,
     sans_font,
     secondary_button,
     set_enabled,
@@ -330,6 +331,12 @@ class PhantomApp:
             return
         self._schedule_layout_flush()
 
+    def _on_root_destroyed(self, event: Any) -> None:
+        """The window is going away: let go of CustomTkinter's notifications."""
+        if getattr(event, "widget", None) is not self.root:
+            return
+        release_appearance_callbacks(self.root)
+
     def _configure_root(self) -> None:
         self.root.title(self._t("window_title"))
         self.root.geometry(f"{WINDOW_SIZE[0]}x{WINDOW_SIZE[1]}")
@@ -349,6 +356,10 @@ class PhantomApp:
         # The display pass the build deferred waits for the first mapping; until
         # then the window has no native surface to draw on (see _flush_layout).
         self.root.bind("<Map>", self._on_root_mapped, add="+")
+        # A window destroyed by its embedding application never sees _on_close;
+        # <Destroy> fires for the root itself, and the release only needs Python
+        # attributes, so it works even once the Tcl side is gone.
+        self.root.bind("<Destroy>", self._on_root_destroyed, add="+")
 
     def _build(self) -> None:
         self._build_header()
@@ -2411,6 +2422,11 @@ class PhantomApp:
                 self.root.after_cancel(token)
                 setattr(self, name, None)
         self._forget_clipboard()
+        # The window is about to stop existing: take its widgets out of
+        # CustomTkinter's process-wide notification list first (see
+        # widgets.release_appearance_callbacks — a later theme change would
+        # otherwise repaint widgets whose Tcl commands are gone).
+        release_appearance_callbacks(self.root)
         if self._result_window is not None:
             self._result_window.close()
             self._result_window = None
