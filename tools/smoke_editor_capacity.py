@@ -373,13 +373,23 @@ def main(argv: list[str] | None = None) -> int:
                 editor_text() == "action-bar paste",
                 f"editor {editor_text()!r}",
             )
+            # Direct call, and the reason for it: the action bar's availability is
+            # recomputed on every state change, but this tool may have consumed the
+            # last refresh already.  Forcing it here keeps the check about the button
+            # and the redo history, and the report below prints what the state was.
+            app._refresh_editor_actions()
+            state = (
+                f"button {app.editor_redo_button.cget('state')!r}, "
+                f"can_redo={app._editor_can_redo}, busy={app._busy}, "
+                f"worker={app.worker.busy}, undo={app._editor_can_undo}"
+            )
             app.editor_redo_button.invoke()
 
             def after_redo() -> None:
                 check(
                     "action bar: redo",
                     editor_text() == "action-bar ",
-                    f"editor {editor_text()!r}",
+                    f"editor {editor_text()!r} before the click: {state}",
                 )
                 root.after(120, next_phase)
 

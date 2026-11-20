@@ -243,12 +243,15 @@ class PhantomApp:
         #: One modal per decoded result: a broken UTF-8 payload must not pop up
         #: again on every repaint of the panel.
         self._result_decode_notified = False
-        #: Set by every edit this window performs itself (paste, cut, undo, redo,
-        #: clear, full reset): Tk reports that edit as one more ``<<Modified>>``
-        #: event, and the event must not undo the bookkeeping the handler just did —
-        #: an undo that re-armed "undo available" and cleared "redo available" made
-        #: the redo button dead until the next keystroke.
-        self._editor_ignore_modified = False
+        #: Every edit this window performs itself (paste, cut, undo, redo, clear, full
+        #: reset) bumps ``_editor_programmatic_edits``; Tk reports that edit as a
+        #: ``<<Modified>>`` event, and the event must not undo the bookkeeping the
+        #: handler just did — an undo that re-armed "undo available" and cleared
+        #: "redo available" left the redo button dead until the next keystroke.
+        #: A counter rather than a flag: a burst of edits produces one coalesced
+        #: event, and a leftover flag would then swallow the *user's* next keystroke.
+        self._editor_programmatic_edits = 0
+        self._editor_seen_edits = 0
         #: ``(id(payload), len(data))`` of what the preview pane already shows, so a
         #: repaint for a language or a theme does not re-insert 200 000 characters.
         self._result_preview_key: tuple[int, int] | None = None
@@ -1558,7 +1561,7 @@ class PhantomApp:
         if not pasted:
             self._set_status_key("status_clipboard_empty", severity="warn")
             return
-        self._editor_ignore_modified = True
+        self._mark_programmatic_edit()
         self._editor_can_undo = True
         self._editor_can_redo = False
         self._editor_dirty = True
@@ -1588,7 +1591,7 @@ class PhantomApp:
         if not cut:
             self._set_status_key("status_selection_empty", severity="warn")
             return
-        self._editor_ignore_modified = True
+        self._mark_programmatic_edit()
         self._editor_can_undo = True
         self._editor_can_redo = False
         self._editor_dirty = True
@@ -1616,7 +1619,7 @@ class PhantomApp:
             self._editor_can_undo = False
             self._refresh_editor_actions()
             return
-        self._editor_ignore_modified = True
+        self._mark_programmatic_edit()
         self._editor_can_undo = True
         self._editor_can_redo = True
         self._editor_dirty = True
@@ -1635,7 +1638,7 @@ class PhantomApp:
             self._editor_can_redo = False
             self._refresh_editor_actions()
             return
-        self._editor_ignore_modified = True
+        self._mark_programmatic_edit()
         self._editor_can_undo = True
         self._editor_dirty = True
         self._commit_editor()
@@ -1691,7 +1694,7 @@ class PhantomApp:
         finally:
             self._suppress_events = False
         self._reset_modified_flag()
-        self._editor_ignore_modified = True
+        self._mark_programmatic_edit()
         self._editor_can_undo = True
         self._editor_can_redo = False
         self._editor_dirty = True
@@ -1707,7 +1710,7 @@ class PhantomApp:
             self._editor_inner.edit_modified(False)
         except Exception as exc:  # noqa: BLE001 - widget gone
             LOGGER.debug("modified flag unreadable: %s", exc)
-        self._editor_ignore_modified = True
+        self._mark_programmatic_edit()
         self._editor_metrics = measure_text("")
         self._editor_dirty = False
         self._editor_can_undo = False
@@ -2010,15 +2013,6 @@ class PhantomApp:
         """
         if self._modified_resetting:
             return
-        if self._editor_ignore_modified:
-            # This is the event Tk queued for an edit this window already handled.
-            # Swallow it and clear the widget's flag so nothing re-fires.
-            self._editor_ignore_modified = False
-            try:
-                self._editor_inner.edit_modified(False)
-            except Exception as exc:  # noqa: BLE001 - widget gone
-                LOGGER.debug("modified flag unreadable: %s", exc)
-            return
         try:
             changed = bool(self._editor_inner.edit_modified())
         except Exception as exc:  # noqa: BLE001 - widget gone or Tk refuses
@@ -2033,6 +2027,10 @@ class PhantomApp:
             self._modified_resetting = False
         if self._suppress_events:
             return
+        if self._editor_programmatic_edits != self._editor_seen_edits:
+            # This event describes edits this window already committed and counted.
+            self._editor_seen_edits = self._editor_programmatic_edits
+            return
         self._mark_editor_dirty()
         self._editor_can_undo = True
         self._editor_can_redo = False
@@ -2042,6 +2040,10 @@ class PhantomApp:
         # the user stops, by `_commit_editor`.
         self._refresh_embed_state()
         self.debouncer.schedule(self._commit_editor)
+
+    def _mark_programmatic_edit(self) -> None:
+        """Say that this window edited the field itself, so its event is expected."""
+        self._editor_programmatic_edits += 1
 
     def _mark_editor_dirty(self) -> None:
         """The field changed: the snapshot, the estimate and the footer are stale."""
