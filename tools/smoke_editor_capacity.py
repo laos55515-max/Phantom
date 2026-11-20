@@ -683,6 +683,10 @@ def main(argv: list[str] | None = None) -> int:
         for failure in failures:
             say(f"PROBLEM {failure}")
         say("main loop: closing the window the way the close button does")
+        # Nothing of ours is left on the pasteboard, so closing does not have to run
+        # the native clipboard tool while Tk is being taken apart (Aqua Tk 9.1 is
+        # where that teardown has crashed before).
+        app._clipboard_value = None
         try:
             app._on_close()
         except Exception as exc:  # noqa: BLE001 - closing is best effort in a tool

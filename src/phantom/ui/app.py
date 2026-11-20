@@ -243,10 +243,12 @@ class PhantomApp:
         #: One modal per decoded result: a broken UTF-8 payload must not pop up
         #: again on every repaint of the panel.
         self._result_decode_notified = False
-        #: Set by a full reset: Tk reports the delete it just performed as one more
-        #: ``<<Modified>>`` event, and that event must not re-arm "undo available"
-        #: for a history that was just dropped.
-        self._editor_history_cleared = False
+        #: Set by every edit this window performs itself (paste, cut, undo, redo,
+        #: clear, full reset): Tk reports that edit as one more ``<<Modified>>``
+        #: event, and the event must not undo the bookkeeping the handler just did —
+        #: an undo that re-armed "undo available" and cleared "redo available" made
+        #: the redo button dead until the next keystroke.
+        self._editor_ignore_modified = False
         #: ``(id(payload), len(data))`` of what the preview pane already shows, so a
         #: repaint for a language or a theme does not re-insert 200 000 characters.
         self._result_preview_key: tuple[int, int] | None = None
@@ -1556,6 +1558,7 @@ class PhantomApp:
         if not pasted:
             self._set_status_key("status_clipboard_empty", severity="warn")
             return
+        self._editor_ignore_modified = True
         self._editor_can_undo = True
         self._editor_can_redo = False
         self._editor_dirty = True
@@ -1585,6 +1588,7 @@ class PhantomApp:
         if not cut:
             self._set_status_key("status_selection_empty", severity="warn")
             return
+        self._editor_ignore_modified = True
         self._editor_can_undo = True
         self._editor_can_redo = False
         self._editor_dirty = True
@@ -1612,6 +1616,7 @@ class PhantomApp:
             self._editor_can_undo = False
             self._refresh_editor_actions()
             return
+        self._editor_ignore_modified = True
         self._editor_can_undo = True
         self._editor_can_redo = True
         self._editor_dirty = True
@@ -1630,6 +1635,7 @@ class PhantomApp:
             self._editor_can_redo = False
             self._refresh_editor_actions()
             return
+        self._editor_ignore_modified = True
         self._editor_can_undo = True
         self._editor_dirty = True
         self._commit_editor()
@@ -1685,6 +1691,9 @@ class PhantomApp:
         finally:
             self._suppress_events = False
         self._reset_modified_flag()
+        self._editor_ignore_modified = True
+        self._editor_can_undo = True
+        self._editor_can_redo = False
         self._editor_dirty = True
         self._commit_editor(schedule=False)
         self._refresh_embed_ready()
@@ -1698,7 +1707,7 @@ class PhantomApp:
             self._editor_inner.edit_modified(False)
         except Exception as exc:  # noqa: BLE001 - widget gone
             LOGGER.debug("modified flag unreadable: %s", exc)
-        self._editor_history_cleared = True
+        self._editor_ignore_modified = True
         self._editor_metrics = measure_text("")
         self._editor_dirty = False
         self._editor_can_undo = False
@@ -2001,10 +2010,10 @@ class PhantomApp:
         """
         if self._modified_resetting:
             return
-        if self._editor_history_cleared:
-            # This is the event Tk queued for our own full-reset delete.  Swallow it
-            # and clear the widget's flag so nothing re-fires.
-            self._editor_history_cleared = False
+        if self._editor_ignore_modified:
+            # This is the event Tk queued for an edit this window already handled.
+            # Swallow it and clear the widget's flag so nothing re-fires.
+            self._editor_ignore_modified = False
             try:
                 self._editor_inner.edit_modified(False)
             except Exception as exc:  # noqa: BLE001 - widget gone
@@ -2188,6 +2197,24 @@ class PhantomApp:
         self._clipboard_value = None
         self._generated_password = ""
         self._set_status_key("status_clipboard_cleared", severity="info")
+
+    def _forget_sensitive_references(self, *, result: bool = False) -> None:
+        """Release what this window still holds, on a reset, a close or a new result.
+
+        A reference released is not memory erased: Python, Tk, the allocator and the
+        system clipboard keep whatever copies they keep, and PHANTOM says so instead
+        of promising more.  What it can stop is *this* object graph holding the text
+        and the generated password for the rest of the process's life.
+        """
+        self._generated_password = ""
+        self._clipboard_value = None
+        if not result:
+            # The embed tab's reset must not throw the extract tab's result away.
+            return
+        self.extract_vm.result = None
+        self.extract_vm.outcome = None
+        self._result_preview_key = None
+        self._result_decode_notified = False
 
     def _forget_clipboard(self) -> None:
         """Drop our copy when the window goes away, so it cannot outlive us."""
@@ -3162,11 +3189,9 @@ class PhantomApp:
         # Application-held references to the text that was just reset.  This is a
         # release, not a claim of physical erasure: Python, Tk and the clipboard
         # may still hold copies, and PHANTOM does not pretend otherwise.
-        self._generated_password = ""
-        self._clipboard_value = None
+        self._forget_sensitive_references()
         self._editor_can_undo = False
         self._editor_can_redo = False
-        self._result_decode_notified = False
         self._refresh_all()
 
     # -- settings -------------------------------------------------------
@@ -3348,7 +3373,7 @@ class PhantomApp:
             self.settings.window_geometry = geometry
         self._save_settings()
         self._clear_extract_result_only()
-        self._generated_password = ""
+        self._forget_sensitive_references(result=True)
         LOGGER.info("window closed")
         self.root.destroy()
 

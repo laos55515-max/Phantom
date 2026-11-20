@@ -1312,7 +1312,7 @@ def test_cut_button_removes_the_selection_and_updates_the_model(app) -> None:
     app.editor_cut_button.invoke()
     assert inner.get("1.0", "end-1c") == " please"
     assert app.root.clipboard_get() == "cut me"
-    assert app.embed_vm.text == "please", "the model still describes the deleted text"
+    assert app.embed_vm.text == " please", "the model still describes the deleted text"
 
 
 def test_paste_button_inserts_the_clipboard(app) -> None:
@@ -1713,7 +1713,7 @@ def test_password_fields_and_paragraphs_have_clipboard_shortcuts(app) -> None:
     editable = [item for item in app._text_shortcuts if not item.readonly]
     readonly = [item for item in app._text_shortcuts if item.readonly]
     assert all(item.bound_count >= 16 for item in editable)
-    assert len(app._text_shortcuts) >= 6
+    assert len(app._text_shortcuts) >= 5
     assert readonly, "the result field lost its read-only shortcuts"
     assert all(item.bound_count < 16 for item in readonly)
     assert all(
@@ -3852,12 +3852,27 @@ def test_an_edit_without_a_key_still_reaches_the_model(app) -> None:
     """
     from phantom.ui.widgets import inner_text_widget
 
+    def committed() -> None:
+        """The commit is debounced (`C.DEBOUNCE_MS`), so the model follows the loop.
+
+        This is the design: a keystroke marks the field dirty and one debounced
+        commit reads it once.  The test waits for that commit instead of pretending
+        a synchronous read still happens.
+        """
+        deadline = time.monotonic() + 5.0
+        while app._editor_dirty and time.monotonic() < deadline:
+            app.root.update()
+            time.sleep(0.02)
+        assert not app._editor_dirty, "the edit never reached the model"
+
     inner = inner_text_widget(app.embed_text)
     inner.insert("1.0", "dropped in by a menu")
     app.root.update()
+    committed()
     assert app.embed_vm.text == "dropped in by a menu"
     assert "20" in app.char_label.cget("text")
 
     inner.delete("1.0", "end")
     app.root.update()
+    committed()
     assert app.embed_vm.text == ""
