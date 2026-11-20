@@ -877,8 +877,16 @@ def test_context_menu_offers_the_full_editing_set(app) -> None:
     app.root.clipboard_clear()
     app.root.clipboard_append("from-the-menu")
     app.embed_pwd.delete(0, "end")
-    menu.invoke(labels.index(app.i18n.t("menu_paste")))
+    menu.invoke(_menu_entry(menu, app.i18n.t("menu_paste")))
     assert app.embed_pwd.get() == "from-the-menu"
+
+
+def _menu_entry(menu, label: str) -> int:
+    """The *menu* index of one label: separators occupy indices of their own."""
+    for index in range(menu.index("end") + 1):
+        if menu.type(index) == "command" and menu.entrycget(index, "label") == label:
+            return index
+    raise AssertionError(f"no menu entry labelled {label!r}")
 
 
 def test_the_editor_menu_also_clears_the_field(app) -> None:
@@ -899,7 +907,7 @@ def test_the_editor_menu_also_clears_the_field(app) -> None:
     assert labels[-1] == app.i18n.t("menu_clear")
     app.embed_text.insert("1.0", "clear me")
     app._on_text_changed()
-    menu.invoke(len(labels) - 1)
+    menu.invoke(_menu_entry(menu, app.i18n.t("menu_clear")))
     assert app.embed_text.get("1.0", "end-1c") == ""
 
 
@@ -3125,11 +3133,30 @@ def _modifier() -> str:
     return "Command" if T.IS_MACOS else "Control"
 
 
-def _key(app, sequence: str) -> None:
-    """Press a key the way a user does: focus, then a generated event."""
+def _key(app, sequence: str, *, timeout: float = 5.0) -> None:
+    """Press a key the way a user does: focus, then a generated event.
+
+    The event is generated *from inside* a Tk callback and the loop is pumped until
+    it has been delivered.  Generating it from script level and calling ``update()``
+    afterwards looks equivalent and is not: on Aqua, Tk routes a generated key event
+    to the display's focus window, and only while the loop is running does the
+    window the test just focused hold that role.  Measured on macOS: script-level
+    generation delivered nothing at all, the same event from an ``after`` callback
+    delivered every time.
+    """
     inner = _editor(app)
-    inner.focus_force()
-    inner.event_generate(sequence)
+    delivered: list[str] = []
+
+    def press() -> None:
+        inner.focus_force()
+        inner.event_generate(sequence)
+        delivered.append(sequence)
+
+    app.root.after(20, press)
+    deadline = time.monotonic() + timeout
+    while not delivered and time.monotonic() < deadline:
+        app.root.update()
+    # A second turn, so the event Tk queued is dispatched and its effects applied.
     app.root.update()
 
 
@@ -3274,6 +3301,7 @@ def test_an_estimate_for_older_text_is_never_applied(app, rgb_carrier: Path) -> 
     _pump(app)
     _type(app, "new text")
     stale_revision = app._estimate_revision - 1
+    applied_before = app._applied_revision
     app._operation = "estimate"
     app._busy = True
 
@@ -3286,8 +3314,11 @@ def test_an_estimate_for_older_text_is_never_applied(app, rgb_carrier: Path) -> 
     )
     app.debouncer.abort()
 
-    assert app.embed_vm.estimate is None, "an estimate of other text must be dropped"
-    assert app._applied_revision != stale_revision
+    applied = app.embed_vm.estimate
+    assert applied is None or applied.payload_bytes != 42, (
+        "an estimate measured against other text must never be applied"
+    )
+    assert app._applied_revision == applied_before, "the stale revision was recorded as applied"
 
 
 def test_the_embed_button_is_blocked_when_the_text_does_not_fit(

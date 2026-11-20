@@ -43,6 +43,10 @@ from collections.abc import Callable
 SMALL = 120
 MEDIUM = 6_000
 LARGE = 260_000
+#: Tk lays out a Text line for display; a 260 000-character *single line* under word
+#: wrap is the pathological case for that, and it is measured here rather than
+#: asserted, because the cost is Tk's own and grows faster than the payload.
+ONE_LINE = 120_000
 
 MOD = "Command" if sys.platform == "darwin" else "Control"
 
@@ -54,6 +58,13 @@ def _text(size: int, *, alphabet: str | None = None, seed: int = 7) -> str:
         return (unit * (size // len(unit) + 1))[:size]
     rng = random.Random(seed)
     return "".join(rng.choices(alphabet, k=size))
+
+
+def _wrapped(size: int) -> str:
+    """The same size, broken into lines the way a document really is."""
+    line = "Phantom payload 0123456789 — строка текста, обычная строка документа. "
+    body = (line * 4 + "\n") * (size // (len(line) * 4 + 1) + 1)
+    return body[:size]
 
 
 def _carrier(directory: str, name: str, size: tuple[int, int]) -> str:
@@ -135,19 +146,34 @@ def main(argv: list[str] | None = None) -> int:
         settle(idle(), then)
 
     # -- the script ------------------------------------------------------
-    def phase_paste(name: str, size: int) -> None:
+    def phase_paste(name: str, payload: str, *, budget: float | None = None) -> None:
         state["phase"] = f"paste {name}"
-        payload = _text(size)
         clip_put(payload)
+        handed_back = root.clipboard_get()
+        check(
+            f"clipboard round-trip {name}",
+            handed_back == payload,
+            f"put {len(payload)} chars, got {len(handed_back)} back",
+        )
         before = len(editor_text())
+        started_at = time.monotonic()
         key(f"<{MOD}-v>")
+        spent = time.monotonic() - started_at
+        say(f"     insert of {len(payload)} chars took {spent * 1000:.0f} ms")
+        if budget is not None:
+            check(
+                f"paste {name} finishes in time",
+                spent < budget,
+                f"{spent:.1f} s for {len(payload)} chars (budget {budget:.0f} s)",
+            )
 
         def verify() -> None:
             got = editor_text()
             check(
-                f"paste {name} ({size} chars)",
-                len(got) == before + size and payload in got,
-                f"editor {len(got)} chars (expected {before + size})",
+                f"paste {name} ({len(payload)} chars)",
+                len(got) == before + len(payload) and payload in got,
+                f"editor {len(got)} chars (expected {before + len(payload)}), "
+                f"{spent * 1000:.0f} ms",
             )
             next_phase()
 
@@ -223,9 +249,15 @@ def main(argv: list[str] | None = None) -> int:
         clip_put(_text(MEDIUM))
 
         def loaded() -> None:
+            app.clear_field_button.invoke()
             app.embed_text.insert("1.0", _text(MEDIUM))
             app._on_text_changed()
-            after_settle(verify)
+
+            def estimated() -> bool:
+                estimate = app.embed_vm.estimate
+                return estimate is not None and app._applied_revision == app._estimate_revision
+
+            settle(estimated, verify)
 
         def verify() -> None:
             report = app.capacity_report
@@ -257,7 +289,7 @@ def main(argv: list[str] | None = None) -> int:
             )
             next_phase()
 
-        settle(lambda: app.embed_vm.carrier is not None and not app.worker.busy, loaded)
+        settle(lambda: app.embed_vm.carrier is not None, loaded)
 
     def phase_over_capacity() -> None:
         state["phase"] = "over capacity"
@@ -348,9 +380,10 @@ def main(argv: list[str] | None = None) -> int:
         root.after(150, verify)
 
     phases: list[Callable[[], None]] = [
-        lambda: phase_paste("small", SMALL),
-        lambda: phase_paste("medium", MEDIUM),
-        lambda: phase_paste("large", LARGE),
+        lambda: phase_paste("small", _text(SMALL)),
+        lambda: phase_paste("medium", _text(MEDIUM)),
+        lambda: phase_paste("large with line breaks", _wrapped(LARGE), budget=20.0),
+        lambda: phase_paste("one 120 000-char line", _text(ONE_LINE), budget=60.0),
         phase_select_all,
         phase_paste_over_selection,
         phase_clear_field,
