@@ -385,6 +385,67 @@ jobs:
           python -m pytest -ra -m gui -v --durations=20 \
             --timeout=120 --timeout-method=thread \
             -o faulthandler_timeout=120 2>&1 | tee gui-tk9.log
+      - name: Native backtrace of the crash (lldb)
+        id: lldb
+        continue-on-error: true
+        timeout-minutes: 25
+        run: |
+          . .venv-tk9/bin/activate
+          # A segfault inside Tk leaves no Python frame in the faulthandler dump;
+          # lldb stops at the fault and prints the native stack instead.
+          xcrun lldb --batch \
+            -o "settings set interpreter.echo-commands false" \
+            -o run \
+            -o "thread list" \
+            -o "thread backtrace all" \
+            -o quit \
+            -- python -m pytest -m gui -q --timeout=120 --timeout-method=thread \
+               -o faulthandler_timeout=120 > lldb.log 2>&1 || true
+          python - <<'PY'
+          import pathlib
+
+          path = pathlib.Path("lldb.log")
+          text = path.read_text(errors="replace").splitlines() if path.exists() else []
+          blob = "\n".join(text[-90:])
+          print(f"::error::lldb ({len(text)} lines): {blob[:6000]}")
+          PY
+      - name: macOS crash report of the last run
+        if: always()
+        continue-on-error: true
+        run: |
+          python - <<'PY'
+          import glob
+          import json
+          import os
+          import pathlib
+
+          pattern = os.path.expanduser("~/Library/Logs/DiagnosticReports/*.ips")
+          files = sorted(glob.glob(pattern), key=os.path.getmtime)[-2:]
+          if not files:
+              print("::notice::no crash report written")
+          for path in files:
+              raw = pathlib.Path(path).read_text(errors="replace").splitlines()
+              head = json.loads(raw[0]) if raw else {}
+              body: dict = {}
+              try:
+                  body = json.loads("\n".join(raw[1:]))
+              except Exception:  # noqa: BLE001 - a truncated report is still worth noting
+                  body = {}
+              name = os.path.basename(path)
+              exc = body.get("exception", {})
+              print(f"::notice::ips {name}: {head.get('app_name')} {exc.get('type')} {exc.get('signal')}")
+              images = [str(image.get("name", "?")) for image in body.get("usedImages", [])]
+              threads = body.get("threads", [])
+              index = body.get("faultingThread", 0)
+              if isinstance(index, int) and index < len(threads):
+                  frames = threads[index].get("frames", [])
+                  rendered = [
+                      f"{images[frame.get('imageIndex', 0)] if frame.get('imageIndex', 0) < len(images) else '?'}"
+                      f"+{frame.get('imageOffset', '?')}"
+                      for frame in frames[:25]
+                  ]
+                  print(f"::error::ips-frames: {' < '.join(rendered)[:6000]}")
+          PY
       - name: GUI log
         if: always()
         run: |
@@ -416,10 +477,9 @@ jobs:
           print(f"::notice::gui-tk9.log: {len(lines)} lines, {len(failures)} failing tests")
           theme = pathlib.Path("gui-tk9-theme.log")
           if theme.exists():
-              text = theme.read_text(errors="replace").splitlines()
-              print(f"::notice::theme log: {len(text)} lines")
-              for line in text[:60]:
-                  print(f"::notice::theme| {line[:400]}")
+              # One annotation, not sixty: the check-run API returns a page of them.
+              blob = "\n".join(theme.read_text(errors="replace").splitlines()[-40:])
+              print(f"::notice::theme log ({len(blob)} chars): {blob[:6000]}")
           PY
           if [ "${{ steps.gui.outcome }}" != "success" ]; then
             echo "macOS GUI tests under Tk 9 failed, timed out or crashed"
