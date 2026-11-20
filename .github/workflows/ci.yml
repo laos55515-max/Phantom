@@ -484,7 +484,11 @@ jobs:
                   print(f"::error::{name}: missing")
                   continue
               lines = [line.strip() for line in path.read_text(errors="replace").splitlines() if line.strip()]
-              summary = [line for line in lines if line.startswith(("SUMMARY", "phase ", "built:"))]
+              summary = [
+                  line
+                  for line in lines
+                  if line.startswith(("SUMMARY", "phase ", "built:", "fullscreen", "heartbeats"))
+              ]
               if not summary:
                   print(f"::error::{name} ({len(lines)} lines): {' ¦ '.join(lines[-12:])[:3000]}")
                   continue

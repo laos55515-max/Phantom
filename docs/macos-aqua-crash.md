@@ -367,7 +367,7 @@ claim. Four resize steps, all in separate `after` callbacks with frames in betwe
 
 Real Aqua, Tk 8.6.16, run `44749622440`:
 
-| | before `445a5cb` | after `5451ded` |
+| | before `445a5cb` | after `fa6aff5` |
 | --- | --- | --- |
 | tree walks to find the flow rows | **29** | **0** |
 | reflow passes | 297 | 90 |
@@ -375,9 +375,14 @@ Real Aqua, Tk 8.6.16, run `44749622440`:
 | `grid_forget()` calls | **37** | **0** |
 | wraplength re-applications | 76 | 76 |
 | `<Configure>` handler entries | 22 280 | 21 978 |
-| time in those handlers | **59.9 ms** | **9.5 ms** |
-| time inside the refit passes | **48.7 ms** | **0.4 ms** |
-| fullscreen round trip, refit time | 48.7 ms | 0.4 ms |
+| time in those handlers | **43.6 ms** | **6.2 ms** |
+| time inside the refit passes | **36.0 ms** | **0.3 ms** |
+
+Both columns come from run `44751559563`; an earlier run of the same pair
+(`44749622440`) measured 48.7 ms → 0.4 ms of refit time and 59.9 ms → 9.5 ms in the
+handlers, so the ratio is stable at roughly two orders of magnitude while the absolute
+numbers move a little between VMs. The counts (walks, passes, `grid`, `grid_forget`,
+widened paragraphs) are identical between runs, which is what a count should be.
 
 The handler-entry count is not a typo: a child's `<Configure>` reaches the toplevel's
 bind tags, so one resize step delivers a few *thousand* events at the toplevel binding.
