@@ -459,6 +459,34 @@ def test_a_resize_after_a_theme_switch_still_fits_every_caption(app) -> None:
     assert not problems, "\n".join(problems)
 
 
+def test_windows_do_not_accumulate_appearance_callbacks(tmp_path: Path) -> None:
+    """Three windows in a row must not leave three windows' worth of callbacks.
+
+    The list is process-wide, and a theme change walks all of it: a leak here is both
+    a slowdown and, on Aqua under Tcl/Tk 9.1, a crash — the notification repaints
+    widgets whose Tcl commands no longer exist.
+    """
+    from customtkinter.windows.widgets.appearance_mode import AppearanceModeTracker
+
+    baseline = len(AppearanceModeTracker.callback_list)
+    sizes = []
+    for index in range(3):
+        root, instance = _build(tmp_path / f"window{index}", map_window=False)
+        try:
+            sizes.append(len(AppearanceModeTracker.callback_list))
+            instance.worker.shutdown(timeout=2)
+            instance._on_close()
+        finally:
+            with suppress(Exception):
+                root.destroy()
+    after = len(AppearanceModeTracker.callback_list)
+    assert sizes, "no window was built"
+    assert after <= baseline + 5, (
+        f"the notification list grew from {baseline} to {after} over three windows "
+        f"(sizes while alive: {sizes})"
+    )
+
+
 def test_a_closed_window_never_hears_about_a_theme_change_again(app) -> None:
     """CustomTkinter's notification list must not keep a closed window's widgets.
 

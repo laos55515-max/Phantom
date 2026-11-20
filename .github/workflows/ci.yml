@@ -366,35 +366,39 @@ jobs:
               for line in lines[-6:]:
                   print(f"::notice::{name}| {line[:300]}")
           PY
-      - name: Which test before the theme test matters (Aqua, Tk 9.x)
-        id: gui-theme
+      - name: B — the same suite with the refusal switched off
+        id: gui-b
         continue-on-error: true
-        timeout-minutes: 15
+        timeout-minutes: 20
         run: |
+          # A/B on the runner that reproduces the crash: if the suite survives with
+          # PHANTOM_QUIET_FLUSH=0, the refusal itself is involved; if it dies there
+          # too, the trigger is elsewhere.  The step's conclusion is the answer.
           . .venv-tk9/bin/activate
-          # The theme tests pass on their own and die in the full suite, so the
-          # trigger is in what runs before them.  Three prefixes, one annotation
-          # each: whoever crashes names the test that leaves the bad state behind.
-          run_prefix() {
-            name="$1"; shift
-            python -m pytest -m gui -q -k "$1" --timeout=120 --timeout-method=thread \
-              -o faulthandler_timeout=120 > "prefix-$name.log" 2>&1
-            code=$?
-            echo "::notice::prefix $name ($1): exit $code"
-            python - "$name" "$code" <<'PY'
+          PHANTOM_QUIET_FLUSH=0 python -m pytest -m gui -q --timeout=120 \
+            --timeout-method=thread -o faulthandler_timeout=120 > gui-tk9-b.log 2>&1
+          echo "::notice::B exit $?"
+      - name: D — the suite without the theme tests
+        id: gui-d
+        continue-on-error: true
+        timeout-minutes: 20
+        run: |
+          # If everything but the theme tests passes on Tcl/Tk 9.1, the crash is in
+          # the theme path and nowhere else.
+          . .venv-tk9/bin/activate
+          python -m pytest -m gui -q -k "not theme" --timeout=120 \
+            --timeout-method=thread -o faulthandler_timeout=120 > gui-tk9-d.log 2>&1
+          echo "::notice::D exit $?"
+          python - <<'PY'
           import pathlib
-          import sys
 
-          name, code = sys.argv[1], sys.argv[2]
-          path = pathlib.Path(f"prefix-{name}.log")
-          text = path.read_text(errors="replace") if path.exists() else ""
-          print(f"::error::prefix {name} exit {code}: {text[-2500:]}")
+          for name in ("gui-tk9-b.log", "gui-tk9-d.log"):
+              path = pathlib.Path(name)
+              if not path.exists():
+                  continue
+              text = path.read_text(errors="replace").splitlines()
+              print(f"::error::{name} ({len(text)} lines): {'\n'.join(text[-25:])[:4000]}")
           PY
-          }
-          run_prefix theme_only "test_theme_switch_persists or test_a_theme_switch_refuses_every_display_pass"
-          run_prefix after_clipboard "test_clipboard_timer_clears_the_secret_natively or test_theme_switch_persists"
-          run_prefix after_language "test_language_switch_updates_visible_text or test_theme_switch_persists"
-          run_prefix all_three "test_clipboard_timer_clears_the_secret_natively or test_language_switch_updates_visible_text or test_theme_switch_persists or test_a_theme_switch_refuses_every_display_pass"
       - name: Native backtrace of the crash (lldb)
         id: lldb
         if: always()
