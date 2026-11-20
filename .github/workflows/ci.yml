@@ -252,8 +252,8 @@ jobs:
           # the whole block, not just its first line.
           if fatal:
               first = lines.index(fatal[0])
-              for line in lines[first : first + 40]:
-                  print(f"::error::crash-frame: {line[:300]}")
+              block = "\n".join(lines[first : first + 60])
+              print(f"::error::fatal-block: {block[:6000]}")
           frames = [
               line
               for line in lines
@@ -376,17 +376,9 @@ jobs:
           python -m pytest -m gui -q -k "theme" --timeout=120 --timeout-method=thread \
             -o faulthandler_timeout=120 2>&1 | tee gui-tk9-theme.log
           echo "::notice::theme-only run: exit $?"
-      - name: GUI smoke tests (Aqua, Tk 9.x)
-        id: gui
-        timeout-minutes: 20
-        run: |
-          set -o pipefail
-          . .venv-tk9/bin/activate
-          python -m pytest -ra -m gui -v --durations=20 \
-            --timeout=120 --timeout-method=thread \
-            -o faulthandler_timeout=120 2>&1 | tee gui-tk9.log
       - name: Native backtrace of the crash (lldb)
         id: lldb
+        if: always()
         continue-on-error: true
         timeout-minutes: 25
         run: |
@@ -409,6 +401,15 @@ jobs:
           blob = "\n".join(text[-90:])
           print(f"::error::lldb ({len(text)} lines): {blob[:6000]}")
           PY
+      - name: GUI smoke tests (Aqua, Tk 9.x)
+        id: gui
+        timeout-minutes: 20
+        run: |
+          set -o pipefail
+          . .venv-tk9/bin/activate
+          python -m pytest -ra -m gui -v --durations=20 \
+            --timeout=120 --timeout-method=thread \
+            -o faulthandler_timeout=120 2>&1 | tee gui-tk9.log
       - name: macOS crash report of the last run
         if: always()
         continue-on-error: true
@@ -472,8 +473,8 @@ jobs:
               print(f"::notice::tk9 tail: {line[:900]}")
           if fatal:
               first = lines.index(fatal[0])
-              for line in lines[first : first + 40]:
-                  print(f"::error::crash-frame: {line[:300]}")
+              block = "\n".join(lines[first : first + 60])
+              print(f"::error::fatal-block: {block[:6000]}")
           print(f"::notice::gui-tk9.log: {len(lines)} lines, {len(failures)} failing tests")
           theme = pathlib.Path("gui-tk9-theme.log")
           if theme.exists():
