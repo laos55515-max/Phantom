@@ -20,6 +20,7 @@ from phantom.core.constants import KdfProfile
 from phantom.core.errors import InvalidInput, InvalidPassword
 from phantom.core.progress import ProgressFn, Stage, check_cancel, noop_progress
 from phantom.core.security import secure_zeroize
+from phantom.core.text import describe_unencodable, first_unencodable
 
 __all__ = [
     "HKDF_SHA256",
@@ -66,6 +67,16 @@ def validate_password(password: str) -> None:
         raise InvalidPassword("password must be a string")
     if password == "":
         raise InvalidPassword("password is empty")
+    # A password is a secret: it is never normalised, folded or replaced.  A lone
+    # surrogate has no UTF-8 form, so the key cannot be derived from the string the
+    # user typed; refusing is the only honest answer (and the same key would not be
+    # reproducible on a machine with a different normalisation behaviour).
+    index = first_unencodable(password)
+    if index is not None:
+        raise InvalidPassword(
+            "the password contains a code point with no UTF-8 form",
+            detail=describe_unencodable(password, index),
+        ).with_params(codepoint=f"U+{ord(password[index]):04X}", position=index + 1)
 
 
 def _password_bytes(password: str, *, normalize: bool) -> bytearray:

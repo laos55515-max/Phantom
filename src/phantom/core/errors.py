@@ -22,6 +22,7 @@ class ErrorCode(Enum):
     CANCELLED = "cancelled"
     INVALID_PASSWORD = "invalid_password"  # noqa: S105 - an error id
     INVALID_INPUT = "invalid_input"
+    INVALID_UNICODE = "invalid_unicode"
     IO = "io"
     OUTPUT_IS_CARRIER = "output_is_carrier"
     SOURCE_OVERWRITE = "source_overwrite"
@@ -30,6 +31,9 @@ class ErrorCode(Enum):
     AUDIO_LOSSY = "audio_lossy"
     AUDIO_FORMAT = "audio_format"
     AUDIO_SILENCE = "audio_silence"
+    SIGNED_MEDIA = "signed_media"
+    METADATA = "metadata"
+    METADATA_CONFLICT = "metadata_conflict"
     INTERNAL = "internal"
 
 
@@ -95,6 +99,12 @@ class InvalidInput(PhantomError):  # noqa: N818 - name is the user-facing contra
     code = ErrorCode.INVALID_INPUT
 
 
+class InvalidUnicode(PhantomError):  # noqa: N818 - name is the user-facing contract
+    """Text that has no UTF-8 form (a lone surrogate): refused, never rewritten."""
+
+    code = ErrorCode.INVALID_UNICODE
+
+
 class PhantomIOError(PhantomError):
     code = ErrorCode.IO
 
@@ -127,6 +137,30 @@ class AudioFormatError(PhantomError):
 
 class SilenceError(PhantomError):
     code = ErrorCode.AUDIO_SILENCE
+
+
+class SignedMediaError(PhantomError):
+    """A content credential is attached; rewriting the file would invalidate it."""
+
+    code = ErrorCode.SIGNED_MEDIA
+
+
+class MetadataError(PhantomError):
+    """Metadata could not be read, planned or rewritten."""
+
+    code = ErrorCode.METADATA
+
+
+class MetadataConflictError(PhantomError):
+    """The rewrite would have dropped a field the plan promised to keep.
+
+    Raised by the last check before publishing, so it is a bug in the cleaning
+    policy rather than something the user did: the sentence it produces says so,
+    names the field by label instead of by tag number, and states that the file
+    was left alone.
+    """
+
+    code = ErrorCode.METADATA_CONFLICT
 
 
 class InternalError(PhantomError):

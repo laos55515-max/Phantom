@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import numpy as np
+import pytest
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 from PIL import Image
@@ -12,7 +13,8 @@ from PIL import Image
 from phantom.core import api
 from phantom.core import constants as C
 from phantom.core import files as fs
-from phantom.core.errors import PhantomError, UnsafePathError
+from phantom.core import text as text_mod
+from phantom.core.errors import InvalidUnicode, PhantomError, UnsafePathError
 from phantom.core.payload import Payload, estimate_size
 
 FIXED_PASSWORD = "Property-passphrase-2026"
@@ -57,10 +59,22 @@ def _noise(width: int, height: int) -> Image.Image:
 @SETTINGS
 @given(width=SIZES, height=SIZES, text=TEXTS)
 def test_text_roundtrip_is_exact(tmp_path_factory, width: int, height: int, text: str) -> None:
+    """Any text that can be stored must come back identical; any text that cannot
+    must be refused with a typed error instead of raising from an encoder.
+
+    ``st.characters`` does generate lone surrogates for a wide code-point range, and
+    one of them is what made this test fail with ``UnicodeEncodeError``.  Both halves
+    of the contract are asserted here, so the test stays meaningful for every
+    example instead of skipping the interesting ones.
+    """
     password = FIXED_PASSWORD
     directory = Path(tmp_path_factory.mktemp("prop"))
     carrier = directory / f"{width}x{height}.png"
     _noise(width, height).save(carrier)
+    if text_mod.first_unencodable(text) is not None:
+        with pytest.raises(InvalidUnicode):
+            Payload.text(text)
+        return
     payload = Payload.text(text)
     capacity = api.capacity_of(str(carrier))
     if not estimate_size(payload, capacity_bytes=capacity.user_bytes("")).fits(

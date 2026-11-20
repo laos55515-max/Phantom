@@ -15,7 +15,7 @@ from typing import Final
 # Application identity
 # ---------------------------------------------------------------------------
 APP_NAME: Final = "Phantom"
-APP_VERSION: Final = "2.0.0"
+APP_VERSION: Final = "2.1.0"
 APP_STAGE: Final = "release-candidate"
 APP_RELEASE_LABEL: Final = f"{APP_NAME} {APP_VERSION}"
 
@@ -210,6 +210,31 @@ WORKER_POLL_MS: Final = 40
 STAGE_TICK_MS: Final = 1000
 ANIMATION_TICK_MS: Final = 16
 DEBOUNCE_MS: Final = 320
+#: Longest single *line* the editor keeps word-wrapped.  Tk lays a line out for
+#: display, and the cost of word wrap grows faster than the line: measured in CI on
+#: Tk 8.6.16, inserting 260 000 characters broken into document lines took 29 ms,
+#: while one 120 000-character line took 13.6 s and one 260 000-character line took
+#: 75 s on 9.1.0.  Above this length the editor switches to ``wrap="none"`` and says
+#: so: the text itself is never touched, split or truncated — only how it is drawn.
+EDITOR_WRAP_LINE_LIMIT: Final = 20_000
+#: Undo steps the editor keeps.  Tk stores the text each step touched, so an
+#: unbounded history of multi-megabyte edits is a memory leak with a friendly
+#: name: 50 steps is more than anyone reaches for and stays bounded in practice.
+EDITOR_MAX_UNDO: Final = 50
+#: Largest extraction result painted in the preview pane.  The preview is a
+#: *view*: "copy all" and "save as TXT" always use the whole payload, and the
+#: label says how much of it is on screen.  Painting 15 MiB into a Tk text widget
+#: costs seconds on Aqua, which is why the pane stops here.
+RESULT_PREVIEW_CHARS: Final = 200_000
+#: Above this many characters a clipboard copy is offered a file alternative: on
+#: Aqua the pasteboard round-trip is measured to re-decode a few bytes of very
+#: large strings as Latin-1, and PHANTOM will not claim an exact transfer it
+#: cannot check.
+CLIPBOARD_EXACT_WARN_CHARS: Final = 1_000_000
+#: Largest clipboard value PHANTOM arms its 30 s auto-clear for.  Checking whether
+#: the board still holds our text reads the whole value back on the GUI thread, so
+#: the promise stays a password-sized one instead of a 15 MiB stall.
+CLIPBOARD_AUTO_CLEAR_MAX_CHARS: Final = 200_000
 WATCHDOG_SECONDS: Final = 90.0
 SETTINGS_SCHEMA_VERSION: Final = 2
 

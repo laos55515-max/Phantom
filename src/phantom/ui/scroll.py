@@ -86,6 +86,8 @@ DELTA_PER_NOTCH_AQUA_86: Final = 1.0
 
 _TEXT_AREA_NAMES: Final = frozenset({"CTkTextbox", "Text", "ScrolledText"})
 _SCROLLBAR_NAMES: Final = frozenset({"CTkScrollbar", "Scrollbar", "TScrollbar"})
+#: Single-line fields: the wheel over them scrolls the page, not the field.
+_ENTRY_NAMES: Final = frozenset({"CTkEntry", "Entry", "TEntry"})
 
 #: Widgets Tk scrolls (or, for a slider, adjusts) on its own ``<MouseWheel>``
 #: class binding.  None of them is used by the interface today — this is the list
@@ -118,13 +120,66 @@ def is_text_area(widget: Any) -> bool:
     )
 
 
-def keeps_its_own_wheel(widget: Any) -> bool:
-    """True when the widget scrolls itself, so the router must leave it alone."""
-    return (
-        is_text_area(widget)
-        or is_scrollbar(widget)
-        or type(widget).__name__ in _SELF_SCROLLING_NAMES
-    )
+def _text_widget(widget: Any) -> Any:
+    """The Tk Text behind a ``CTkTextbox`` (or the widget itself)."""
+    inner = getattr(widget, "_textbox", None)
+    return inner if inner is not None else widget
+
+
+def text_view(widget: Any) -> tuple[float, float] | None:
+    """``(first, last)`` of a text widget's vertical view, or ``None``.
+
+    ``(0.0, 1.0)`` means "the whole content is visible", which is the case that
+    matters most: an empty or short text area has nothing to scroll, so the
+    wheel belongs to the page underneath it.
+    """
+    yview = getattr(_text_widget(widget), "yview", None)
+    if not callable(yview):
+        return None
+    try:
+        values = list(yview())
+    except Exception as exc:  # noqa: BLE001 - destroyed text widget
+        LOGGER.debug("text yview unavailable: %s", exc)
+        return None
+    if len(values) < 2:  # ``xview``-shaped answers are not ours
+        return None
+    try:
+        return float(values[0]), float(values[1])
+    except (TypeError, ValueError):
+        return None
+
+
+def text_can_move(widget: Any, direction: int = 0) -> bool:
+    """Whether a text widget can still move ``direction`` (+1 = towards the end)."""
+    view = text_view(widget)
+    if view is None:
+        return False
+    first, last = view
+    if last - first >= 0.999:
+        # Everything is on screen: the text has nowhere to go, in either sense.
+        return False
+    if direction > 0:
+        return last < 0.999
+    if direction < 0:
+        return first > 0.001
+    return first > 0.001 or last < 0.999
+
+
+def keeps_its_own_wheel(widget: Any, direction: int = 0) -> bool:
+    """True when the widget scrolls itself, so the router must leave it alone.
+
+    A text area is not an automatic yes any more.  It keeps the wheel only while
+    it can still move the way the gesture asks; at its last line, or when all of
+    its content is visible, the gesture belongs to the page around it.  Without
+    ``direction`` the question is "can it move at all".
+    """
+    if is_scrollbar(widget):
+        return True
+    if type(widget).__name__ in _SELF_SCROLLING_NAMES:
+        return True
+    if is_text_area(widget):
+        return text_can_move(widget, direction)
+    return False
 
 
 def is_scrollbar(widget: Any) -> bool:
@@ -468,6 +523,11 @@ class ScrollRouter:
         self.diagnostics = diagnostics or ScrollDiagnostics.from_environment()
         self.installed = False
         self._bound: list[str] = []
+        #: Text and entry widgets this router is also bound on directly, so a
+        #: native class binding cannot swallow a gesture before it is seen.
+        self._watched: list[Any] = []
+        #: One gesture is answered once, however many bind points it reaches.
+        self._last_serial: int | None = None
 
     # -- registry ------------------------------------------------------
     def register(self, frame: Any, canvas: Any, *, name: str = "") -> ScrollArea:
@@ -518,6 +578,10 @@ class ScrollRouter:
                 continue
             self._bound.append(sequence)
         self.installed = True
+        # Text widgets are bound directly as well: Tk's own class binding can
+        # return "break" (notably for Tk 9's <TouchpadScroll>), and a chain that
+        # only listens on the "all" tag would never run.
+        self.watch_text_areas()
         LOGGER.info("scroll router installed: %s", self.describe())
         return len(self._bound)
 
@@ -552,6 +616,63 @@ class ScrollRouter:
             except Exception as exc:  # noqa: BLE001 - nothing bound, or Tk refused
                 LOGGER.debug("unbind_all(%s) failed: %s", sequence, exc)
 
+    # -- direct bindings on text widgets --------------------------------
+    def watch(self, widget: Any) -> int:
+        """Bind this router on one text/entry widget; returns how many bindings."""
+        targets: list[Any] = []
+        inner = getattr(widget, "_textbox", None) or getattr(widget, "_entry", None)
+        if inner is not None:
+            targets.append(inner)
+        targets.append(widget)
+        handlers = {
+            WHEEL_SEQUENCE: self._on_mouse_wheel,
+            "<Button-4>": self._on_x11_wheel,
+            "<Button-5>": self._on_x11_wheel,
+            TOUCHPAD_SEQUENCE: self._on_touchpad,
+        }
+        bound = 0
+        for target in targets:
+            if any(existing is target for existing in self._watched):
+                continue
+            self._watched.append(target)
+            for sequence, handler in handlers.items():
+                try:
+                    target.bind(sequence, handler, add="+")
+                except Exception as exc:  # noqa: BLE001 - destroyed, or no such sequence
+                    LOGGER.debug("bind(%s) on %r refused: %s", sequence, target, exc)
+                    continue
+                bound += 1
+        return bound
+
+    def watch_text_areas(self, start: Any = None) -> int:
+        """Walk the window and bind :meth:`watch` on every text area and entry."""
+        root = self.root if start is None else start
+        bound = 0
+        stack = [root]
+        while stack:
+            widget = stack.pop()
+            if is_text_area(widget) or type(widget).__name__ in _ENTRY_NAMES:
+                bound += self.watch(widget)
+            try:
+                stack.extend(widget.winfo_children())
+            except Exception as exc:  # noqa: BLE001 - not every object is a widget
+                LOGGER.debug("cannot walk %r: %s", widget, exc)
+        return bound
+
+    @property
+    def watched_count(self) -> int:
+        return len(self._watched)
+
+    def _already_answered(self, event: Any) -> bool:
+        """True when this very event has already been handled at another bind tag."""
+        serial = getattr(event, "serial", None)
+        if not isinstance(serial, int):
+            return False
+        if serial == self._last_serial:
+            return True
+        self._last_serial = serial
+        return False
+
     # -- resolution ----------------------------------------------------
     def widget_at(self, x_root: int, y_root: int) -> Any:
         """The widget under a screen position, or ``None`` when unknowable."""
@@ -565,27 +686,35 @@ class ScrollRouter:
             return None
         return widget or None
 
-    def resolve(self, x_root: int, y_root: int) -> ScrollArea | None:
+    def resolve(self, x_root: int, y_root: int, *, direction: int = 0) -> ScrollArea | None:
         """The scroll area under a screen position, or ``None``.
 
         This is the whole point of routing at the application level: the widget
         that received the event tells us nothing on Aqua (the event goes to the
         window under the pointer), so the pointer position is the only reliable
-        input.  A text area, a scrollbar and an unmapped tab all resolve to
-        ``None`` — the first two scroll themselves, the last is not on screen.
+        input.  A scrollbar, a text area that can still move that way, and an
+        unmapped tab all resolve to ``None`` — the first two scroll themselves,
+        the last is not on screen.
         """
         widget = self.widget_at(x_root, y_root)
         if widget is None:
             return None
-        return self.area_for_widget(widget)
+        return self.area_for_widget(widget, direction=direction)
 
-    def area_for_widget(self, widget: Any) -> ScrollArea | None:
-        """Walk up from ``widget`` to the nearest registered, visible area."""
+    def area_for_widget(self, widget: Any, *, direction: int = 0) -> ScrollArea | None:
+        """Walk up from ``widget`` to the nearest registered, visible area.
+
+        The walk used to *stop* at a text area, which is why the page froze
+        under an empty textbox: nothing scrolled at all.  Now a text area is a
+        normal step of the walk — it just refuses the gesture while it can still
+        use it itself (``keeps_its_own_wheel``), so an empty textbox, a short
+        one, or one at its last line hands the same event to the page.
+        """
         current = widget
         for _step in range(64):  # a widget tree is never this deep
             if current is None:
                 return None
-            if keeps_its_own_wheel(current):
+            if keeps_its_own_wheel(current, direction):
                 return None
             for area in self.areas:
                 if area.frame is current:
@@ -595,34 +724,44 @@ class ScrollRouter:
 
     # -- event handlers ------------------------------------------------
     def _on_mouse_wheel(self, event: Any) -> str | None:
+        if self._already_answered(event):
+            return None
         delta = getattr(event, "delta", 0)
-        area = self._pointer_area(event)
+        try:
+            units = self.geometry.units(float(delta or 0))
+        except (TypeError, ValueError):
+            units = 0.0
+        area = self._pointer_area(event, direction=_direction(units))
         before = canvas_fraction(area.canvas) if area is not None else None
         moved = False
         if area is not None:
             try:
-                units = area.accumulator.units(float(delta or 0), self.geometry)
+                steps = area.accumulator.units(float(delta or 0), self.geometry)
             except (TypeError, ValueError):
-                units = 0
-            moved = scroll_canvas(area.canvas, units) if units else False
+                steps = 0
+            moved = scroll_canvas(area.canvas, steps) if steps else False
         self._trace(event, "MouseWheel", raw=delta, decoded=None, area=area, before=before)
         return "break" if moved else None
 
     def _on_x11_wheel(self, event: Any) -> str | None:
+        if self._already_answered(event):
+            return None
         number = getattr(event, "num", None)
         if number not in (4, 5):
             return None
-        area = self._pointer_area(event)
-        before = canvas_fraction(area.canvas) if area is not None else None
         units = -1 if number == 4 else 1
+        area = self._pointer_area(event, direction=_direction(units))
+        before = canvas_fraction(area.canvas) if area is not None else None
         moved = area is not None and scroll_canvas(area.canvas, units)
         self._trace(event, "Button", raw=number, decoded=None, area=area, before=before)
         return "break" if moved else None
 
     def _on_touchpad(self, event: Any) -> str | None:
+        if self._already_answered(event):
+            return None
         raw = getattr(event, "delta", 0)
         delta_x, delta_y = precise_scroll_deltas(self.root, int(raw or 0))
-        area = self._pointer_area(event)
+        area = self._pointer_area(event, direction=_direction(-delta_y))
         before = canvas_fraction(area.canvas) if area is not None else None
         moved = False
         if area is not None and delta_y:
@@ -638,23 +777,25 @@ class ScrollRouter:
         )
         return "break" if moved else None
 
-    def _pointer_area(self, event: Any) -> ScrollArea | None:
+    def _pointer_area(self, event: Any, *, direction: int = 0) -> ScrollArea | None:
         """The area under the pointer; the event's own widget only as a fallback.
 
         The fallback exists for coordinates we cannot resolve at all (the pointer
         left the window between queueing and dispatch).  When the pointer *is*
-        over a text area, that is a deliberate miss, not a failure, so falling
-        back would scroll the page underneath the text that already scrolled
-        itself.
+        over a text area that can still move, ``area_for_widget`` answers
+        ``None`` — a deliberate miss, so the same gesture is never applied to
+        both the text and the page.
         """
         x_root = getattr(event, "x_root", None)
         y_root = getattr(event, "y_root", None)
         if isinstance(x_root, int) and isinstance(y_root, int):
             widget = self.widget_at(x_root, y_root)
             if widget is not None:
-                return self.area_for_widget(widget)
+                return self.area_for_widget(widget, direction=direction)
         widget = getattr(event, "widget", None)
-        return self.area_for_widget(widget) if widget is not None else None
+        if widget is None:
+            return None
+        return self.area_for_widget(widget, direction=direction)
 
     # -- diagnostics ---------------------------------------------------
     def _trace(
@@ -689,6 +830,15 @@ class ScrollRouter:
             ]
         )
         self.diagnostics.emit(" ".join(fields))
+
+
+def _direction(units: float) -> int:
+    """Sign of a scroll amount: +1 towards the end of the content, -1 towards its start."""
+    if units > 0:
+        return 1
+    if units < 0:
+        return -1
+    return 0
 
 
 def _fraction_text(value: float | None) -> str:

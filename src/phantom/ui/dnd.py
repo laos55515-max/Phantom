@@ -115,6 +115,10 @@ class DndProvider:
     def __init__(self) -> None:
         self.reason: str | None = None
         self._dnd_module: object | None = None
+        #: A registration that failed means drops do not work, whatever the module
+        #: said: ``tkinterdnd2`` imports fine on Tcl/Tk 9 and its Tcl side does not
+        #: load, so every ``drop_target_register`` raises "invalid command name".
+        self._registration_failed = False
         try:
             from tkinterdnd2 import DND_FILES, TkinterDnD  # noqa: PLC0415
 
@@ -127,6 +131,16 @@ class DndProvider:
     @property
     def available(self) -> bool:
         return self._dnd_module is not None
+
+    @property
+    def usable(self) -> bool:
+        """Drops really work: the module loaded *and* the registration succeeded.
+
+        ``available`` alone is a lie on Tcl/Tk 9, where ``tkinterdnd2`` imports and
+        then fails to create its Tcl commands.  The window shows its drop hints from
+        ``usable``, and file selection by button never depends on any of this.
+        """
+        return self._dnd_module is not None and not self._registration_failed
 
     def make_ctk_root(self) -> object:
         """Create a CustomTkinter root that also accepts drops (or a plain one)."""
@@ -147,6 +161,7 @@ class DndProvider:
             self.reason = f"TkDnD root failed: {exc}"
             LOGGER.warning("falling back to a plain CTk root: %s", exc)
             self._dnd_module = None
+            self._registration_failed = True
             return ctk.CTk()
 
     def register(self, target: DropTarget) -> bool:
@@ -168,6 +183,7 @@ class DndProvider:
             return True
         except Exception as exc:  # noqa: BLE001 - pragma: no cover, depends on Tk build
             self.reason = f"drop registration failed: {exc}"
+            self._registration_failed = True
             LOGGER.warning("cannot register drop target: %s", exc)
             return False
 

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "phantom-stego"
-version = "2.0.0"
+version = "2.1.0"
 description = "PHANTOM — offline AES-256-GCM payload hiding in PNG images and WAV/FLAC audio"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -115,7 +115,13 @@ strict = true
 warn_unreachable = true
 disallow_untyped_decorators = false
 show_error_codes = true
-files = ["src/phantom/core", "src/phantom/stego", "src/phantom/audio", "src/phantom/i18n"]
+files = [
+    "src/phantom/core",
+    "src/phantom/stego",
+    "src/phantom/audio",
+    "src/phantom/i18n",
+    "src/phantom/metadata",
+]
 
 [[tool.mypy.overrides]]
 module = ["soundfile.*", "mutagen.*", "tkinterdnd2.*", "customtkinter.*", "darkdetect.*"]

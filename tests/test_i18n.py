@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -52,6 +53,24 @@ def test_every_error_code_is_localised() -> None:
             assert f"err.{code.value}" in load_locale(locale, LOCALES), (
                 f"{locale} is missing err.{code.value}"
             )
+
+
+def test_the_metadata_conflict_message_says_what_happened() -> None:
+    """A bare tag number is not an error message.
+
+    The user saw "Ошибка обработки метаданных: png.gps.0x0000".  The sentence now
+    names the field by label, says the source was not touched and that no copy was
+    written, and calls the failure what it is: a bug in the policy.
+    """
+    for locale in ("uk", "ru", "en"):
+        text = load_locale(locale, LOCALES)["err.metadata_conflict"]
+        rendered = text.format(fields="GPSVersionID")
+        assert "GPSVersionID" in rendered
+        assert "{fields}" not in rendered
+        assert "0x" not in rendered
+        assert re.search(r"\b(file|файл)\b", rendered, re.IGNORECASE), (
+            f"{locale}: the message must say what happened to the file"
+        )
 
 
 def test_every_stage_is_localised() -> None:

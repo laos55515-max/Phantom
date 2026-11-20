@@ -80,13 +80,21 @@ jobs:
         # a hard limit.  The log is echoed as annotations because Actions log
         # downloads are not always reachable.
         id: gui
-        timeout-minutes: 12
+        # The module now covers four tabs, the scroll router and the metadata
+        # panel's jobs; the run itself is capped at 8 minutes by ``timeout``
+        # below, so this only catches a hang outside the test process.
+        timeout-minutes: 15
         continue-on-error: true
         run: |
           set -o pipefail
-          xvfb-run -a -s "-screen 0 1280x1024x24" python -m pytest -ra -m gui -v \
-            --durations=20 --timeout=120 --timeout-method=thread \
-            -o faulthandler_timeout=120 2>&1 | tee gui.log
+          # A wedged job leaves a non-daemon thread behind and the interpreter
+          # waits for it for ever, so a hard wall-clock cap ends the step instead
+          # of the job burning its own limit.  conftest.py prints the stacks of
+          # such threads before Python reaches that wait.
+          timeout --preserve-status --signal=TERM --kill-after=20 480 \
+            xvfb-run -a -s "-screen 0 1280x1024x24" python -m pytest -ra -m gui -v \
+              --durations=20 --timeout=120 --timeout-method=thread \
+              -o faulthandler_timeout=120 2>&1 | tee gui.log
       - name: GUI log
         if: always()
         run: |
@@ -99,17 +107,428 @@ jobs:
           interesting = [
               line
               for line in lines
-              if re.search(r"FAILED|ERROR|Timeout|^E |assert|Error", line)
+              if re.search(r"FAILED|ERROR|Timeout|^E |assert|Error|Traceback", line)
               and "PASSED" not in line
           ]
-          for line in interesting[-10:] or lines[-10:]:
-              print(f"::error::{line[:900]}")
-          print(f"::notice::gui.log: {len(lines)} lines")
+          failures = [line for line in lines if line.startswith("FAILED ")]
+          # GitHub keeps ten error, ten warning and ten notice annotations per
+          # step and silently drops the rest, so the budget is spent in order of
+          # usefulness: failing tests, then the thread dump of a hang, then the
+          # log tail.
+          # One annotation carries every failure, because GitHub keeps ten error
+          # annotations per step and silently drops the rest: a run with thirteen
+          # failures used to report only the first five names.
+          if failures:
+              joined = " || ".join(line[7:][:1500] for line in failures)
+              print(f"::error::failing: {joined[:65000]}")
+          for line in failures[:3]:
+              print(f"::error::failed: {line[:400]}")
+          for line in interesting[:3]:
+              print(f"::error::first: {line[:900]}")
+          frames = [
+              line
+              for line in lines
+              if line.startswith(("Thread ", "Current thread", "=== ", "--- thread", "Fatal Python error"))
+              or line.lstrip().startswith(("File \"", "Garbage-collecting"))
+          ]
+          fatal = any("Fatal Python error" in line for line in lines)
+          print(f"::warning::dump: fatal={fatal}, {len(frames)} frame lines, {len(lines)} log lines")
+          for line in frames[-9:]:
+              print(f"::warning::frame: {line.strip()[:400]}")
+          for line in lines[-3:]:
+              print(f"::notice::tail: {line[:900]}")
+          print(f"::notice::gui.log: {len(lines)} lines, {len(failures)} failing tests")
           PY
           if [ "${{ steps.gui.outcome }}" != "success" ]; then
             echo "GUI smoke tests failed or timed out"
             exit 1
           fi
+      - name: Start-up numbers
+        # The window's own budget, measured the same way before and after this
+        # branch: three full builds, median reported, plus a profile of one build.
+        # Annotations, because Actions log downloads are not always reachable.
+        if: matrix.python-version == '3.11'
+        continue-on-error: true
+        run: |
+          set +e
+          : > /tmp/startup.txt
+          echo "=== this branch" | tee -a /tmp/startup.txt
+          xvfb-run -a -s "-screen 0 1280x1024x24" python tools/bench_startup.py --profile --stages >>/tmp/startup.txt 2>&1
+          echo "bench(this)=$?" | tee -a /tmp/startup.txt
+          if [ -n "${{ github.base_ref }}" ]; then
+            echo "=== base (${{ github.base_ref }})" | tee -a /tmp/startup.txt
+            git fetch --depth 1 origin "${{ github.base_ref }}" >>/tmp/startup.txt 2>&1
+            echo "fetch=$?" | tee -a /tmp/startup.txt
+            base=$(git rev-parse FETCH_HEAD 2>/dev/null)
+            rm -rf /tmp/phantom-base && mkdir -p /tmp/phantom-base
+            if [ -n "$base" ]; then
+              git archive "$base" | tar -x -C /tmp/phantom-base
+              echo "archive=$? base=$base" | tee -a /tmp/startup.txt
+              PYTHONPATH=/tmp/phantom-base/src xvfb-run -a -s "-screen 0 1280x1024x24" \
+                python tools/bench_startup.py >>/tmp/startup.txt 2>&1
+              echo "bench(base)=$?" | tee -a /tmp/startup.txt
+            fi
+          fi
+          # One annotation per group: GitHub keeps ten per step and drops the
+          # rest silently, so the whole measurement travels in three.
+          echo "::notice::medians: $(grep -E '^STARTUP: median' /tmp/startup.txt | tr '\n' '|')"
+          echo "::notice::stages: $(grep -E '^STARTUP: (stage|summary)' /tmp/startup.txt | head -14 | tr '\n' '|')"
+          echo "::notice::profile: $(grep -E '^PROFILE:' /tmp/startup.txt | head -8 | tr '\n' '|')"
+          if ! grep -q "^STARTUP: median" /tmp/startup.txt; then
+            echo "::warning::bench: $(tail -4 /tmp/startup.txt | tr '\n' '|')"
+          fi
+
+      - name: Keep the GUI log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gui-log-${{ matrix.python-version }}
+          path: gui.log
+          if-no-files-found: ignore
+          retention-days: 7
+
+  gui-macos:
+    # The GUI suite on real Aqua.  Xvfb proves the Tk *widget* logic, not the
+    # macOS window layer: the crash this job exists for (inside update_idletasks,
+    # exit 139) happens on a runner the Linux jobs never touch.  Two interpreters:
+    # the one setup-python ships (Tk 8.6 frameworks) and Homebrew's python-tk
+    # (Tk 9.x, the layer the owner's MacBook runs) so a Tk 9 regression is caught
+    # in CI instead of on the owner's desk.
+    name: gui (macOS Aqua)
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+      - name: System libraries
+        run: |
+          brew install libsndfile || brew upgrade libsndfile
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-dev.txt
+      - name: Which Tk is this?
+        run: |
+          python - <<'PY'
+          import platform
+          import tkinter
+
+          root = tkinter.Tk()
+          root.withdraw()
+          root.update_idletasks()
+          print(f"::notice::tk: {platform.machine()} {platform.mac_ver()[0]} "
+                f"TkVersion={tkinter.TkVersion} patchlevel={root.tk.call('info', 'patchlevel')}")
+          root.destroy()
+          PY
+      - name: GUI smoke tests (Aqua, bundled Tk)
+        id: gui
+        timeout-minutes: 20
+        run: |
+          set -o pipefail
+          # No xvfb-run: Aqua needs the session, not a virtual display.  No
+          # ``timeout`` either — macOS ships none (the Linux job's shell has it);
+          # pytest-timeout kills a wedged test and the step cap covers the rest.
+          python -m pytest -ra -m gui -v --durations=20 \
+            --timeout=120 --timeout-method=thread \
+            -o faulthandler_timeout=120 2>&1 | tee gui-macos.log
+      - name: The editor and the capacity panel, on Tk's own loop
+        # `always()`: the suite above is one piece of evidence, this is another, and a
+        # suite failure must not hide whether the editor itself works on this Tk.
+        if: always()
+        run: |
+          set -o pipefail
+          export PYTHONPATH=src
+          python -X faulthandler -u tools/smoke_editor_capacity.py --trace 2>&1 \
+            | tee -a gui-macos.log
+
+      - name: GUI log
+        if: always()
+        run: |
+          python - <<'PY'
+          import pathlib
+          import re
+
+          path = pathlib.Path("gui-macos.log")
+          lines = path.read_text(errors="replace").splitlines() if path.exists() else []
+          failures = [line for line in lines if line.startswith(("FAILED ", "ERROR "))]
+          fatal = [line for line in lines if "Fatal Python error" in line]
+          # The frame list of a native crash is the only evidence there is: print
+          # the whole block, not just its first line.
+          if fatal:
+              # The message of a workflow command ends at the first newline: join.
+              block = [line.strip() for line in lines if line.strip()]
+              print(f"::error::fatal-block: {' ¦ '.join(block[-40:])[:6000]}")
+          frames = [
+              line
+              for line in lines
+              if line.lstrip().startswith(("File \"", "Current thread", "Thread "))
+          ]
+          if fatal:
+              print(f"::error::native crash: {' | '.join(line[:200] for line in fatal[:3])}")
+          if failures:
+              print(f"::error::failing: {' || '.join(line[7:][:1500] for line in failures)[:60000]}")
+          for line in frames[-6:]:
+              print(f"::warning::frame: {line.strip()[:400]}")
+          # A callback that raised leaves no failing test, only a traceback on
+          # stderr: without this the only evidence is a window that stopped moving.
+          noise = [
+              line
+              for line in lines
+              if "Exception in Tkinter callback" in line
+              or "Traceback (most recent call last)" in line
+              or "worker poll failed" in line
+              or "worker event" in line
+              or "operation " in line and "finished" in line
+          ]
+          for line in noise[:20]:
+              print(f"::warning::callback: {line.strip()[:900]}")
+          if noise:
+              print(f"::notice::callback-noise: {len(noise)} lines")
+          for line in lines[-3:]:
+              print(f"::notice::tail: {line[:900]}")
+          print(f"::notice::gui-macos.log: {len(lines)} lines, {len(failures)} failing tests")
+          # The editor matrix: every ok/FAIL line the diagnostic printed, in full.
+          matrix = [
+              line.strip()
+              for line in lines
+              if " ok  " in line
+              or " FAIL " in line
+              or "insert of " in line
+              or line.strip().startswith(("debug:", "panel:", "PROBLEM", "WATCHDOG", "SUMMARY"))
+          ]
+          print(f"::warning::editor matrix ({len(matrix)} lines): {' ¦ '.join(matrix)[:12000]}")
+          PY
+          if [ "${{ steps.gui.outcome }}" != "success" ]; then
+            echo "macOS GUI smoke tests failed, timed out or crashed"
+            exit 1
+          fi
+
+  gui-tk9:
+    # Tcl/Tk 9.1 on macOS, next to the 8.6 job: the build the theme switch segfaulted
+    # on.  The decisive step is the smoke run — the real window, switched from `after`
+    # callbacks, letting Tk paint in its own loop, which is how the application runs.
+    # The pytest suite is diagnostic here, not a gate: it pumps Tk with `root.update()`
+    # from script level, and on Aqua under 9.1 that call segfaults inside Tk's drawing
+    # on its own.  Measured, in six fresh VMs, one variant each: the suite dies with
+    # every theme test removed, with the theme refusal off, with the build batching
+    # off, with both off, and at the first test that draws a canvas-heavy tab.  A
+    # harness whose own pump cannot survive the platform cannot be the gate; the
+    # window has to be driven the way the application drives it.
+    name: gui (macOS Aqua, Tk 9.1)
+    runs-on: macos-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - name: Homebrew Tcl/Tk 9
+        run: |
+          brew install python@3.12 python-tk@3.12 libsndfile || brew upgrade python-tk@3.12
+          /opt/homebrew/bin/python3.12 -m venv .venv-tk9
+          . .venv-tk9/bin/activate
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-dev.txt
+          python -c "
+          import tkinter
+          print('::notice::tk', tkinter.TkVersion, tkinter.TclVersion)
+          "
+
+      - name: The window survives a theme switch on Tk's own loop
+        run: |
+          . .venv-tk9/bin/activate
+          set -o pipefail
+          # The other Aqua job gets `phantom` on the path the same way: PYTHONPATH=src,
+          # so the smoke run and the suite import exactly the checked-out tree.
+          export PYTHONPATH=src
+          python -X faulthandler -u tools/smoke_tk91_theme.py --trace 2>&1 | tee tk9-smoke.log
+
+      - name: The pytest suite, for the record
+        continue-on-error: true
+        run: |
+          . .venv-tk9/bin/activate
+          set -o pipefail
+          export PYTHONPATH=src
+          python -X faulthandler -u -m pytest -m gui -v --durations=20 \
+            --timeout=120 --timeout-method=thread -o faulthandler_timeout=120 2>&1 \
+            | tee gui-tk9.log
+
+      - name: The minimal reproduction, default and with the refusal
+        continue-on-error: true
+        run: |
+          . .venv-tk9/bin/activate
+          for mode in --update-between --quiet; do
+            echo "--- repro $mode"
+            python -X faulthandler -u tools/repro_tk91_theme_crash.py $mode \
+              || echo "::warning::repro $mode exited $?"
+          done
+
+      - name: The editor and the capacity panel, on Tk's own loop
+        # A gate, on 9.1 as well: real keystrokes, the real clipboard, a real PNG
+        # carrier and no `update()` anywhere, so the evidence is the same kind the
+        # theme smoke gives.  The assertion run is what decides; on failure the
+        # diagnostic run repeats every step and prints what it saw.
+        run: |
+          . .venv-tk9/bin/activate
+          set -o pipefail
+          export PYTHONPATH=src
+          python -X faulthandler -u tools/smoke_editor_capacity.py --trace 2>&1 \
+            | tee editor-smoke.log \
+            || { echo "::error::the editor smoke failed on Tk 9.1"; \
+                 python -X faulthandler -u tools/smoke_editor_capacity.py --diagnose 2>&1 \
+                   | tee -a editor-smoke.log; exit 1; }
+
+      - name: Native backtrace of the crash (lldb)
+        if: always()
+        continue-on-error: true
+        run: |
+          . .venv-tk9/bin/activate
+          lldb --batch -o "run" -o "bt all" -o "quit" -- \
+            python -X faulthandler -u tools/smoke_tk91_theme.py > lldb.log 2>&1 || true
+          python - <<'PY'
+          import pathlib
+
+          text = [
+              line.strip()
+              for line in pathlib.Path("lldb.log").read_text(errors="replace").splitlines()
+              if line.strip()
+          ]
+          interesting = [
+              line
+              for line in text
+              if "stop reason" in line
+              or line.startswith("frame #")
+              or "Fatal" in line
+              or "error:" in line
+          ]
+          blob = " ¦ ".join(interesting[:80]) if interesting else " ¦ ".join(text[-40:])
+          print(f"::error::lldb ({len(text)} lines, {len(interesting)} interesting): {blob[:6000]}")
+          PY
+
+      - name: macOS crash report and logs
+        if: always()
+        continue-on-error: true
+        run: |
+          python - <<'PY'
+          import pathlib
+
+          reports = sorted(pathlib.Path.home().glob("Library/Logs/DiagnosticReports/Python*"))
+          print(f"::notice::crash reports: {len(reports)}")
+          for report in reports[-2:]:
+              print(f"::notice::{report.name}: {report.read_text(errors='replace')[:2000]}")
+
+          for name in ("tk9-smoke.log", "gui-tk9.log", "editor-smoke.log"):
+              path = pathlib.Path(name)
+              if not path.exists():
+                  print(f"::notice::{name}: missing")
+                  continue
+              lines = [
+                  line.strip()
+                  for line in path.read_text(errors="replace").splitlines()
+                  if line.strip()
+              ]
+              # A workflow command's message ends at the first newline: join, never split.
+              print(f"::error::{name} ({len(lines)} lines): {' ¦ '.join(lines[-30:])[:6000]}")
+          PY
+
+  layout-profile:
+    # The measurement job for the resize work: the same profiling tool, the same
+    # Aqua session type, one run against the tree the owner tested (445a5cb) and one
+    # against this branch.  Both numbers come from wrapped calls inside the real
+    # window while it is resized in steps with frames in between — not from an
+    # estimate.  Not a gate: it prints, it does not decide.
+    name: layout profile (macOS Aqua)
+    runs-on: macos-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+      - name: System libraries
+        run: |
+          brew install libsndfile || brew upgrade libsndfile
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-dev.txt
+      - name: Profile the tree the owner tested, then this branch
+        timeout-minutes: 8
+        run: |
+          mkdir -p /tmp/before
+          git archive 445a5cb | tar -x -C /tmp/before
+          python - <<'PY'
+          """Each run in its own process with a hard cap.
+
+          The old tree can spend minutes inside a resize: its handler re-flows the
+          window synchronously, the re-flow delivers more <Configure> events, and the
+          handler answers those.  A cap turns "it never finished" into a number.
+          """
+          import os
+          import pathlib
+          import subprocess
+          import sys
+
+          runs = (
+              ("before", "/tmp/before/src"),
+              ("after", "src"),
+          )
+          for label, tree in runs:
+              env = dict(os.environ, PYTHONPATH=tree)
+              command = [
+                  sys.executable,
+                  "-u",
+                  "tools/profile_resize.py",
+                  "--label",
+                  label,
+                  "--steps",
+                  "4",
+                  "--watchdog",
+                  "30",
+              ]
+              try:
+                  done = subprocess.run(command, env=env, timeout=150, capture_output=True, text=True)
+                  output = done.stdout + done.stderr
+                  print(f"--- {label} exited {done.returncode}")
+              except subprocess.TimeoutExpired as exc:
+                  raw = exc.stdout or b""
+                  output = raw.decode(errors="replace") if isinstance(raw, bytes) else raw
+                  output += f"\n--- {label} HARD TIMEOUT after 150 s, it never finished\n"
+                  print(f"--- {label} hard timeout")
+              pathlib.Path(f"profile-{label}.log").write_text(output)
+              print(output[-3000:])
+          PY
+      - name: The numbers
+        if: always()
+        run: |
+          python - <<'PY'
+          import pathlib
+
+          for name in ("profile-before.log", "profile-after.log"):
+              path = pathlib.Path(name)
+              if not path.exists():
+                  print(f"::error::{name}: missing")
+                  continue
+              lines = [line.strip() for line in path.read_text(errors="replace").splitlines() if line.strip()]
+              summary = [
+                  line
+                  for line in lines
+                  if line.startswith(("SUMMARY", "phase ", "built:", "fullscreen", "heartbeats"))
+              ]
+              if not summary:
+                  print(f"::error::{name} ({len(lines)} lines): {' ¦ '.join(lines[-12:])[:3000]}")
+                  continue
+              print(f"::notice::{name}: {' ¦ '.join(summary)[:6000]}")
+          PY
 
   benchmark:
     name: slow benchmarks

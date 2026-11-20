@@ -15,6 +15,8 @@ The scenarios here are the ones the macOS bug was made of:
 
 from __future__ import annotations
 
+import itertools
+
 import pytest
 
 from phantom.ui import scroll
@@ -94,13 +96,29 @@ class FakeWidget:
 
 
 class FakeText(FakeWidget):
-    """A Tk Text: selection tags and its own view."""
+    """A Tk Text: selection tags and its own view.
+
+    ``view`` is what ``yview()`` answers, so a test can say "the text is empty"
+    (``(0.0, 1.0)``), "it is at its last line" (``(0.6, 1.0)``) or "it can still
+    move both ways" (``(0.2, 0.6)``) — the three cases the chaining rules are
+    about.
+    """
+
+    def __init__(
+        self,
+        master: object | None = None,
+        name: str = "widget",
+        *,
+        view: tuple[float, float] = (0.2, 0.6),
+    ) -> None:
+        super().__init__(master, name)
+        self.view = view
 
     def tag_add(self, *args: object) -> None:
         return None
 
-    def yview(self, *args: object) -> tuple[int, int]:
-        return (0, 0, 1, 1)
+    def yview(self, *args: object) -> tuple[float, float]:
+        return self.view
 
 
 class FakeScrollbar(FakeWidget):
@@ -131,6 +149,15 @@ class FakeRoot(FakeWidget):
 
 
 class FakeEvent:
+    """A Tk event; the serial is unique per event, exactly as Tk numbers them.
+
+    The router answers one gesture once, even when the same event reaches it
+    through several bind tags (a text widget's own binding and the global one),
+    so two *different* events must never share a serial in a test either.
+    """
+
+    _serials = itertools.count(1)
+
     def __init__(
         self,
         widget: object,
@@ -139,14 +166,14 @@ class FakeEvent:
         num: int | None = None,
         x_root: int = 10,
         y_root: int = 20,
-        serial: int = 1,
+        serial: int | None = None,
     ) -> None:
         self.widget = widget
         self.delta = delta
         self.num = num
         self.x_root = x_root
         self.y_root = y_root
-        self.serial = serial
+        self.serial = next(self._serials) if serial is None else serial
 
 
 def _scene(
@@ -342,13 +369,58 @@ def test_the_pointer_wins_over_the_event_widget() -> None:
     assert other_canvas.units == [], "the wrong tab scrolled"
 
 
-def test_a_text_area_resolves_to_nothing_and_keeps_its_own_scrolling() -> None:
+def test_a_text_area_that_can_still_scroll_keeps_its_own_scrolling() -> None:
     _router, root, frame, canvas = _scene()
-    text = FakeText(frame, "text")
+    text = FakeText(frame, "text", view=(0.2, 0.6))
 
     root.pointer = text
     assert root.bound["<MouseWheel>"](FakeEvent(text, delta=120)) is None
-    assert canvas.units == []
+    assert canvas.units == [], "the page scrolled underneath a text that moved"
+
+
+def test_an_empty_text_area_hands_the_gesture_to_the_page() -> None:
+    """The reported bug: scrolling over an empty textbox did nothing at all."""
+    _router, root, frame, canvas = _scene()
+    text = FakeText(frame, "text", view=(0.0, 1.0))
+
+    root.pointer = text
+    assert root.bound["<MouseWheel>"](FakeEvent(text, delta=120)) == "break"
+    assert canvas.units == [(-3, "units")]
+
+
+def test_a_text_area_at_its_last_line_hands_the_gesture_downwards_only() -> None:
+    """At the bottom, scrolling further moves the page; scrolling back moves the text."""
+    _router, root, frame, canvas = _scene()
+    text = FakeText(frame, "text", view=(0.6, 1.0))
+
+    root.pointer = text
+    down = root.bound["<MouseWheel>"](FakeEvent(text, delta=-120))
+    up = root.bound["<MouseWheel>"](FakeEvent(text, delta=120))
+
+    assert down == "break" and canvas.units == [(3, "units")]
+    assert up is None, "the text itself could still move towards its start"
+
+
+def test_a_text_area_at_its_first_line_hands_only_upwards_moves_away() -> None:
+    _router, root, frame, canvas = _scene()
+    text = FakeText(frame, "text", view=(0.0, 0.4))
+
+    root.pointer = text
+    up = root.bound["<MouseWheel>"](FakeEvent(text, delta=120))
+    down = root.bound["<MouseWheel>"](FakeEvent(text, delta=-120))
+
+    assert up == "break" and canvas.units == [(-3, "units")]
+    assert down is None
+
+
+def test_a_short_text_is_not_asked_whether_it_can_move() -> None:
+    """``last - first >= 1`` means everything is visible: no direction is left."""
+    view = FakeText(view=(0.0, 1.0))
+    assert scroll.text_can_move(view, 1) is False
+    assert scroll.text_can_move(view, -1) is False
+    assert scroll.text_can_move(FakeText(view=(0.5, 0.9)), 1) is True
+    assert scroll.text_can_move(FakeText(view=(0.5, 0.9)), -1) is True
+    assert scroll.text_can_move(FakeText(view=(0.0, 0.9)), -1) is False
 
 
 def test_a_scrollbar_resolves_to_nothing() -> None:
@@ -430,10 +502,24 @@ def test_a_handled_event_breaks_the_chain_so_nothing_scrolls_twice() -> None:
 
 def test_an_unhandled_event_is_left_to_the_rest_of_the_bindings() -> None:
     _router, root, frame, _canvas = _scene()
-    text = FakeText(frame, "text")
+    text = FakeText(frame, "text", view=(0.2, 0.6))
     root.pointer = text
 
     assert root.bound["<MouseWheel>"](FakeEvent(text, delta=120)) is None
+
+
+def test_one_gesture_is_answered_once_through_every_bind_tag() -> None:
+    """The text widget is bound directly *and* the wheel globally: one movement."""
+    router, root, frame, canvas = _scene()
+    text = FakeText(frame, "text", view=(0.0, 1.0))
+    root.pointer = text
+    event = FakeEvent(text, delta=120)
+
+    # The same event object reaches the widget binding and then the global one,
+    # exactly as a Tk event travels its bind tags.
+    assert router._on_mouse_wheel(event) == "break"
+    assert router._on_mouse_wheel(event) is None
+    assert canvas.units == [(-3, "units")]
 
 
 # ---------------------------------------------------------------------------

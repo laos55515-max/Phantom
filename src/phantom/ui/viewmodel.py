@@ -18,7 +18,13 @@ from phantom.core import api as core_api
 from phantom.core import constants as C
 from phantom.core import files as fsutil
 from phantom.core.api import CarrierKind, CarrierProbe, EmbedOutcome, ExtractOutcome
-from phantom.core.errors import CapacityError, InvalidInput, InvalidPassword, UnsafePathError
+from phantom.core.errors import (
+    CapacityError,
+    InvalidInput,
+    InvalidPassword,
+    InvalidUnicode,
+    UnsafePathError,
+)
 from phantom.core.payload import (
     ExtractedPayload,
     Payload,
@@ -27,6 +33,7 @@ from phantom.core.payload import (
     estimate_size,
 )
 from phantom.core.progress import ProgressFn
+from phantom.core.text import require_exact, utf8_size
 from phantom.ui.settings import AppSettings
 
 IssueLevel = Literal["error", "warn", "info"]
@@ -226,6 +233,15 @@ class EmbedViewModel:
     def apply_estimate(self, estimate: SizeEstimate) -> None:
         self.estimate = estimate
 
+    def reset_estimate(self) -> None:
+        """Forget the measurement — the payload it described is gone.
+
+        ``set_text``/``set_secret_file`` already do this; the interface also calls
+        it when a *carrier* changes, because the capacity the estimate was measured
+        against is no longer the capacity on screen.
+        """
+        self.estimate = None
+
     def clear(self) -> None:
         self.carrier_path = ""
         self.carrier = None
@@ -262,7 +278,24 @@ class EmbedViewModel:
             except OSError:
                 return None
         if self.mode is PayloadMode.TEXT and self.text:
-            return len(self.text.encode("utf-8")) + C.PAYLOAD_META_OVERHEAD
+            # A counter must not raise on text it cannot encode: one pasted lone
+            # surrogate would break every keystroke's estimate.
+            return utf8_size(self.text) + C.PAYLOAD_META_OVERHEAD
+        return None
+
+    def text_problem(self) -> InvalidUnicode | None:
+        """The typed error when the text has no exact UTF-8 form, else ``None``.
+
+        The interface asks this before anything else so the user is told what is
+        wrong *while typing* instead of at the moment they press Embed, and so an
+        estimate job is never started for text that can only fail.
+        """
+        if self.mode is not PayloadMode.TEXT:
+            return None
+        try:
+            require_exact(self.text, what="text")
+        except InvalidUnicode as exc:
+            return exc
         return None
 
     def fill_percent(self) -> float | None:
@@ -354,11 +387,7 @@ class EmbedViewModel:
         self,
     ) -> Callable[[ProgressFn, threading.Event], SizeEstimate | None]:
         text = self.text if self.mode is PayloadMode.TEXT else None
-        path = (
-            self.secret_path
-            if self.mode is PayloadMode.FILE and self.secret_path
-            else None
-        )
+        path = self.secret_path if self.mode is PayloadMode.FILE and self.secret_path else None
         capacity = self.capacity or 0
         backend = self.backend
 

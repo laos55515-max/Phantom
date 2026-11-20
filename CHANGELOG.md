@@ -6,7 +6,183 @@ All notable changes to PHANTOM are recorded here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **The red «ОШИБКА» now has a reason and a next step.** The footer used to print
+  a bare `ОШИБКА` in two situations: a cancellation (`_show_error` returned before
+  the dialogue), and a failed event handler, which only wrote a log line — so the
+  window said it had failed and nothing on screen said why. Every error path now
+  carries its reason (`status_error_detail` = `ОШИБКА: …`), a cancellation is
+  reported as `ОТМЕНЕНО`, a failed handler names the step it was on and says the
+  files on disk were not touched, and a failed integrity check on extracted data
+  says the data must not be saved instead of reusing the word "error".
+- **The expanded result window copied a truncated string.** `РАЗВЕРНУТЬ` read the
+  small panel *widget*, which holds an extraction preview; with a large text the
+  window then showed and copied only the beginning. It now takes the whole
+  payload from the model, and its own pane is capped for painting only — copying
+  and saving always use the complete text.
+- **A payload that is not valid UTF-8 was silently "repaired" on screen.** The
+  result pane decoded with `errors="replace"`, so a damaged payload appeared with
+  U+FFFD characters — text that looked extracted and was wrong. Decoding is now
+  strict: either the payload is text and is shown exactly, or the window says it
+  cannot be shown as text, points at the file path, and leaves the bytes alone.
+  Nothing is ever rewritten to make it decode.
+- **`СИСТЕМА ГОТОВА` while the payload no longer fits.** The footer kept its idle
+  text over an exceeded capacity, and kept a finished verdict (`СОХРАНЕНО → …`)
+  after the text had changed. A finished status is now cleared when the payload
+  changes, and the footer says `ПРЕВЫШЕНА ЁМКОСТЬ — ЗАШИФРОВАТЬ НЕЛЬЗЯ` whenever
+  the panel does.
+- **The editor no longer reads the whole field on every keystroke.** Each edit
+  used to pull the text out of Tk, count characters, count UTF-8 bytes and scan
+  every line — four full walks of a multi-megabyte string per keystroke. A
+  keystroke now only marks the field dirty; one debounced commit reads the field
+  once and measures it once (`phantom.core.text.measure_text`: 6.6 M characters,
+  381 000 lines, 92 ms with the line scan and 10 ms without), and every counter,
+  the wrap decision and the size estimate use that snapshot.
+- **Undo is bounded, and a full reset leaves nothing to undo.** Tk keeps the text
+  every undo step changed, and the history was unbounded (`maxundo=-1`). It is now
+  capped by `C.EDITOR_MAX_UNDO`; `СБРОС` additionally drops the history
+  (`edit_reset`) and the application-held references to the payload and to the
+  generated password. Emptying the field with `ОЧИСТИТЬ ПОЛЕ` stays an ordinary
+  undoable edit. This is a release of references, not a claim of physical
+  erasure — see `SECURITY.md`.
+
+- **The payload field takes a large paste, and says how big it is.** Three
+  separate faults looked like one. Select-all left the caret *in front of* the
+  selection, so the next keystroke prepended text instead of replacing it, and
+  the tag was never raised above the text tags — on Aqua the highlight was
+  invisible. Tk's undo history was never switched on, so `Cmd+Z` did nothing at
+  all. And nothing told the model that the text had changed unless the widget
+  both saw a key press *and* its release: a paste whose release was routed
+  elsewhere left the counters and the size estimate describing the previous
+  text. The editor now listens to Tk's `<<Modified>>` flag (one edit, one
+  refresh), raises and re-anchors the selection like a native field,
+  enables the undo stack, and drives undo/redo from `Cmd+Z`,
+  `Cmd+Shift+Z`, `Ctrl+Z`, `Ctrl+Y` and `Ctrl+Shift+Z`. Measured on
+  Tk 8.6.16 in CI: 260 000 characters pasted by a real `Cmd+V` insert in
+  11–56 ms, and the whole clipboard arrives.
+- **A single enormous line no longer freezes the window.** Tk lays a line out
+  for display, and word wrap on one line costs seconds: the same 260 000
+  characters took 29 ms broken into document lines against 13.6 s as one
+  120 000-character line (8.6.16) and 75 s as one 260 000-character line
+  (9.1.0). Above `EDITOR_WRAP_LINE_LIMIT` (20 000 characters on one line) the
+  editor switches to `wrap="none"` and a hint under the counters says so. The
+  text itself is never split, trimmed or truncated; wrapping returns as soon as
+  no line is that long.
+- **Selecting all and copying work from the context menu too.** Every editing
+  command is one handler shared by the keystroke, the virtual event
+  (`<<Paste>>`, `<<Copy>>`, `<<Cut>>`, `<<SelectAll>>`, `<<Undo>>`, `<<Redo>>`)
+  and the menu, and each returns `"break"`, so a class binding cannot run the
+  command a second time.
+
 ### Added
+
+- **An action bar under the payload field**: paste, copy, cut, select all, undo,
+  redo, copy all and clear field. Every button calls the same handler as the
+  hotkey and the context-menu entry (the bar holds the very
+  `ClipboardActions` object the shortcuts use), so a button cannot drift from
+  `Cmd+C`. Availability follows the editor: copy needs a selection, copy all
+  needs text, undo/redo follow what the window has seen, and everything is
+  disabled while a job runs or in file mode.
+- **Result actions**: `ВЫДЕЛИТЬ ВСЁ`, `КОПИРОВАТЬ ВЫДЕЛЕННОЕ`,
+  `КОПИРОВАТЬ ВСЁ` and `СОХРАНИТЬ TXT (UTF-8)`. Copy-all and the TXT export work
+  from the model, not from the pane: the export writes the decrypted bytes
+  verbatim and verifies them against the payload's SHA-256, so nothing is
+  normalised (NFC/NFD), no character is replaced and no line ending is rewritten.
+  The read-only result field binds `Cmd/Ctrl + A` and `Cmd/Ctrl + C` and no
+  longer offers paste, cut or undo in its menu, which could only fail there.
+- **`tools/profile_editor_capacity.py`** measures the real window at
+  100 KiB … 15 MiB for multiline, single-long-line and mixed-Unicode payloads:
+  Tk `insert`/`get`/`delete`, select-all, the counting, the clipboard round trip,
+  undo/redo, the commit path, the longest interval in which the Tk loop did not
+  run at all, peak RSS, and the memory left after a field clear and a full reset.
+  It prints one markdown table.
+
+- **`ОЧИСТИТЬ ПОЛЕ` next to the counters.** It empties the payload field, the
+  model, the estimate and the counters, returns the caret to the field and
+  aborts the pending estimate. It does **not** touch the password, the carrier,
+  the output path, the payload mode or any setting — the tab-wide `СБРОС`
+  keeps doing that. The same command is in the editor's context menu, and
+  `Cmd+Z` after it brings the text back.
+- **A capacity panel, built from the numbers the engine already computes.** It
+  shows the container (name, format, on-disk size, resolution/mode or
+  duration/sample rate/bit depth/channels), the payload (characters, UTF-8
+  bytes, prepared size — compression plus header — from the estimate), and the
+  capacity (available, occupied, free, percent, and the excess when there is
+  one) on **one** scale: `SizeEstimate.payload_bytes` against
+  `Capacity.payload_bytes`, so nothing is counted twice. The fill bar stays
+  capped at 100 % while the number may pass it. The states are explicit — no
+  carrier, no payload, calculating, fits, does not fit, calculation error — and
+  the panel says in one line that the estimate is preliminary, that the engine's
+  own final check is what decides, and that capacity is measured in payload
+  bytes, not in the file size on disk.
+- **Embedding is blocked while the numbers are unknown or do not fit.** Over
+  capacity keeps every character, shows how much is missing and how much the
+  carrier really holds instead of letting the engine's final check refuse the
+  job. Each estimate carries the revision it was started for; a result for older
+  text or another carrier is dropped and re-measured rather than shown against
+  the text on screen.
+- **The window fits its own text at every size and in every language.**
+  CustomTkinter keeps the width a button was created with, so
+  «ВЫБРАТЬ ФАЙЛ (PNG / WAV / FLAC)» was clipped on both sides in a windowed
+  window. Nothing resizes the minimum window or shrinks a font: every caption is
+  measured in its own font, `width=` became a minimum instead of a cap, a row of
+  buttons wraps onto a second line when it does not fit, and `wraplength` follows
+  the card. The GUI suite measures every captioned widget against its own text at
+  980×720, 1140×900, 1280×800, 1440×900 and after each language switch.
+- **Start-up is measured and shorter.** `PHANTOM_STARTUP_DEBUG=1` prints per-stage
+  timings (import, Tk root, each tab, the render passes, the first frame, the
+  moment the window is on screen) and a summary line. Three costs went away: the
+  system font list was enumerated once per widget (now once per window, with the
+  fonts cached), the saved geometry was applied *after* building all four tabs
+  (now before, so the window is laid out once), and the metadata panel was
+  rendered twice in the same tick (now once). Housekeeping that the first frame
+  does not need runs on the first idle callback.
+- **Scroll chaining.** A multi-line text box keeps the wheel while it can still
+  move the way the gesture asks; an empty box, one whose content is fully visible
+  or one at its last line hands the same event to the page, so scrolling no longer
+  stops over a text field. One gesture is answered once, even though the router is
+  now also bound on the text widgets themselves (Tk's class binding could
+  otherwise consume the event before the global handler saw it).
+- **The metadata tab explains itself**: the plan of the next operation and the
+  result of the previous one are separate cards; the save button is disabled (with
+  the reason) when nothing is selected or the clean is blocked; a reset button
+  clears the file and the results; the verdict is coloured and shows the field
+  count before and after; the full SHA-256 values can be copied; protected rows are
+  dimmed with their reason; «Очистка не требуется» replaces an empty plan; the
+  reveal button names the system's file manager (Finder / Проводник); and the TXT
+  report, like every status line, follows the window language while the JSON export
+  stays English and versioned.
+
+### Changed
+
+- **The result pane paints at most `C.RESULT_PREVIEW_CHARS` (200 000) characters**
+  and says so in a caption; a 15 MiB insert into a Tk text widget is a
+  multi-second display pass on Aqua. The payload is untouched: copy-all, the TXT
+  export and the expanded window all use the complete text. No data is truncated
+  anywhere, only painted.
+- **The clipboard auto-clear stays a password-sized promise.** Deciding whether a
+  15 MiB clipboard is still ours means reading it all back on the GUI thread, so
+  values above `C.CLIPBOARD_AUTO_CLEAR_MAX_CHARS` are not armed for the 30-second
+  clear — and copying more than `C.CLIPBOARD_EXACT_WARN_CHARS` characters says in
+  the footer that the pasteboard may not hand back an identical string, pointing at
+  the TXT path instead of promising something the application cannot check.
+- **A theme or language switch no longer re-paints the result preview.** The pane
+  remembers which payload it shows and stays put when nothing new arrived.
+
+- **Start-up work that nobody sees.** CustomTkinter's scrollbar flushes the whole
+  window on every draw, and the build draws about a hundred of them — each flush
+  paying for everything laid out before it. The build and the first render now run
+  with that flush off and end with one, which is the same answer for every
+  scrollbar at once. Sizing a caption no longer redraws a widget that is not on
+  screen yet: during the build the width a widget already has is a floor, and only
+  a longer caption widens it. `tools/bench_startup.py` measures the result (median
+  of three full builds, with `--profile` and `--stages` for the detail), and the CI
+  GUI job runs it for this branch and for its base and reports both.
+- The collector is restored to the state it was found in: a job no longer enables
+  a collector that was already disabled, a resume is refused while another job
+  owns the pause, and a failing poll callback is logged and re-armed instead of
+  wedging the window.
 
 - **Long operations now say what they are doing.** With v5 as the default a 24 MP
   photo takes about half a minute to embed, and the interface used to show a
@@ -214,6 +390,147 @@ All notable changes to PHANTOM are recorded here. The format follows
 
 ### Fixed
 
+- **The window can no longer stop on a job that has already finished.** Three
+  paths left the footer busy with nothing running: a job that failed between
+  setting "busy" and starting its thread kept the flag and no worker ever
+  reported back; the poll chain was re-armed only while the *worker* reported
+  busy, so a poll that failed in the gap after the last report left the window
+  stuck; and the collector pause was recorded per window, so a second window (or
+  the next job in a chain) read the collector while the first still held it down
+  and concluded "it was never enabled" — the collector then stayed off for the
+  rest of the session, which is where the GUI suite found it (`gc.isenabled()`
+  False with nothing in flight). The pause is now process-wide and given back as
+  soon as the finished job's thread is gone, an abandoned start is rolled back
+  before the error is re-raised, and the poll says in the log what it swallowed.
+
+- **Resizing and fullscreen no longer cost a full layout per event.** A drag-resize,
+  a zoom and the fullscreen transition deliver a stream of `<Configure>` events — a
+  child's configure reaches the toplevel's bind tags, so one step delivers thousands —
+  and every event that passed the width filter walked the whole widget tree to find
+  the wrapping rows and re-flowed all of them synchronously, inside the event that was
+  supposed to be painting. On real Aqua the same four resize steps cost **48.7 ms of
+  layout before and 0.4 ms after**; tree walks 29 → 0, `grid_forget` 37 → 0, handler
+  time 59.9 ms → 9.5 ms. The first event of a burst now owes one pass on the idle
+  queue (Tk's own queue: `update idletasks` is still never called), the rows are the
+  list `adopt` already collected, widths are measured once per caption change, a pass
+  moves only the children whose cell changed, and a tab nobody is looking at is laid
+  out when it is opened (a language switch still lays out all four at once). Same
+  breakpoints, same wrapping, same themes, same geometry restore.
+
+- **Drag and drop says it is unavailable when it is.** Tcl/Tk 9 imports
+  `tkinterdnd2` and then cannot create its Tcl commands, so every registration failed
+  with `invalid command name "tkdnd::drop_target"` while the window kept promising
+  drops. The hints now follow `DndProvider.usable` — the module loaded *and* a
+  registration succeeded — and the reason is kept for the log. Choosing a file with
+  the button never went through that path and still does not.
+
+- **The macOS window no longer crashes when it is built.** The build forced a
+  display pass from the constructor, and again for a window that was not on
+  screen yet; on Aqua both land in Tk's own idle drawing, which is where Tk's
+  open crash reports live (idle tasks that hold a window pointer the window no
+  longer owns). The pass is now scheduled for the first idle callback, a hidden
+  window's owed pass runs once when it is mapped, and the appearance mode is set
+  before the widgets exist, which removes about a hundred nested
+  `update_idletasks` calls per dark build. A real-Aqua CI job runs the GUI suite
+  on every push so this is checked where it happens, not under Xvfb.
+
+- **Switching the theme no longer segfaults on macOS with Tcl/Tk 9.1.** One click
+  notified every registered widget, and each notification ended with its own
+  `update_idletasks` — a display pass entered from inside a Tk callback, which on
+  Aqua under Tk 9.1 kills the interpreter (exit 139). A theme change now refuses
+  every one of those passes and owes exactly one, on the idle callback; on Aqua
+  under Tk 9 the window goes further and asks Tk for no display pass at all, for the
+  whole run, because CustomTkinter also flushes from its own draws (a scrollbar, a
+  colour change) and any of them is the same crash — Tk lays out and paints in its
+  own loop a moment later, so nothing the window shows depends on it. Dark, Light
+  and System all still switch, the setting is still saved, and on macOS with the
+  bundled Tk 8.6 nothing changed: `115 passed, 3 skipped`. The Tk 9.1 CI job drives
+  the real window through two full rounds of switching, a resize, a tab switch and
+  the close button on Tk's own event loop, and reports the crash it still sees in
+  the *pytest harness* (`root.update()` from script level) without letting it decide
+  the job — see `docs/macos-aqua-crash.md` §9.
+
+- **Text that has no UTF-8 form is refused, not quietly changed.** A lone
+  surrogate (``"\ud800"``) cannot be encoded, and the failure used to surface as a
+  `UnicodeEncodeError` from inside the container writer, after the carrier had
+  already been read and compressed. `phantom.core.text.require_exact()` now runs at
+  every place that turns text into bytes — payload, password KDF, legacy container
+  — and raises `InvalidUnicode` (`err.invalid_unicode`, with the code point and its
+  position) *before* anything is read, compressed or written: no output, no
+  temporary file, the source unchanged. The window checks the same rule while you
+  type and shows a warning instead of starting a job, so the password field is
+  covered too. Nothing is replaced and nothing is written as WTF-8, because that
+  would change the user's text; valid text is byte-identical to before and every
+  existing file still extracts.
+
+- **Damaged containers are refused cheaply, while parsing.** A 264 KB PNG whose
+  `zTXt` inflates to 256 MiB used to be decompressed in full (before any size
+  check); it now stops at `MAX_INFLATE_BYTES` — 17.0 MiB and 0.03 s — and the field
+  is shown truncated with a warning instead of killing the process. The XMP limits
+  are now applied *during* the parse rather than to a finished tree: a packet with
+  70 000 elements costs 6.8 MiB and 0.03 s (it was 11.1 MiB after the tree was
+  built), and depth, element and attribute limits are proven with a tripwire on
+  `XMLParser.read`. Truncated files, chunk lengths past the end of the file, bad
+  CRCs, `.wav` files that are really PNGs and directories are all refusals with a
+  code, never a traceback, and a refused clean leaves the source byte-identical
+  with no staged sibling behind.
+
+- **Cancel and close leave nothing behind.** Cancelling mid-clean, cancelling the
+  same job eight times in a row, closing the window during a job and re-running a
+  job after a cancel are all covered: no output file, no staged temporary file, the
+  source unchanged, the worker reusable with a fresh cancel event, and
+  `shutdown()` waits for the job thread. In the window a cancelled job now puts the
+  progress bar back to zero and to determinate mode, restores the stage line, frees
+  every action button and recomputes the save button from the plan instead of
+  leaving the pre-cancel state on screen.
+
+- **The card says what it means, in the language of the window.** Three residual
+  defects in the original report: prose this program writes ("contains personal
+  properties", "a property of the packet below") stayed English inside a Russian or
+  Ukrainian card — every such sentence now carries a locale key (21 new keys in
+  en/ru/uk, values included), while data is never translated and the JSON export
+  stays English; the counter printed "unknown 0" beside a visible unknown property
+  because the packet's properties are *derived* views — they are tallied by
+  `count_derived()` and shown on their own line, with `derived_counts` added to the
+  JSON; a disabled save button kept the accent fill, because CustomTkinter only
+  greys the caption — `widgets.set_enabled()` swaps in `CLR_DISABLED_FILL` and
+  restores the accent when the button comes back; and after a clean the header
+  named the source while the numbers described the copy — `report_after` now names
+  the file that was written, and the results card opens with which file it
+  describes.
+
+- **A protected property inside an XMP packet can no longer be deleted with it.**
+  The inspector looked for the text `<dc:rights>` in the packet and treated "I did
+  not find a protected property" as "there is nothing to protect". RDF/XML can put
+  the same property in a place that search never sees — as an attribute of
+  `rdf:Description`, inside a `rdf:Bag`/`Seq`/`Alt`, in a nested node, under a
+  prefix the file chooses, or in a namespace PHANTOM does not know — so a file with
+  `dc:rights="(c) 2024 …"` on the element and a `photoshop:City` child was offered
+  as "personal data only" and the whole packet was removed, copyright line
+  included, while the result claimed `verified: True`.
+
+  `phantom.metadata.xmp` now reads the packet structurally and decides in the
+  other direction: a property is removed only when the reader has *proved* it is
+  personal and the packet holds nothing else. Everything unrecognised — rights,
+  descriptive, provenance, unknown namespaces, unknown local names, and every
+  shape the reader does not model — blocks the whole packet, because XMP is
+  removed as a packet and there is no partial removal. A packet that cannot be
+  read completely is protected as well: truncated XML, a DTD or an entity
+  declaration (refused before parsing, so no entity is ever expanded and nothing
+  is fetched), more elements, attributes or nesting than the limits allow, a
+  packet over 1 MiB or packets over 4 MiB together. Several packets in one file
+  are read together, one unreadable packet protects the others, and a rewrite that
+  would drop a packet the plan promised to keep still fails the integrity
+  confirmation and publishes nothing.
+
+  The properties of the packet are listed one by one, including the ones in a
+  namespace this build does not know, so refusing to remove is never the same as
+  refusing to look. The reason a packet is kept is a locale key: it is shown in
+  the language of the window instead of English inside a Ukrainian card, and the
+  plan card says that personal data sits in a block that may not be removed
+  instead of «очистка не требуется». The save button follows the plan it would
+  execute — a selection that would remove nothing no longer enables it.
+
 - **The scroll wheel and the trackpad, properly this time.** The previous attempt
   bound a handler on every widget of a tab and was wrong in three ways that only
   show up on a real machine:
@@ -416,6 +733,153 @@ All notable changes to PHANTOM are recorded here. The format follows
   without the password is impossible, but the presence of steganography is
   detectable by statistical analysis. PBKDF2 is documented as an explicitly
   selected profile, never an automatic downgrade.
+
+## [2.1.0] — metadata inspector and privacy cleaner
+
+The steganography path is untouched: same formats, same cryptography, same
+readers. 2.1.0 adds a fourth tab that answers a different question — what does
+this file carry besides the picture or the sound, and what happens if we take it
+out? The release also contains the scroll-router and progress work listed under
+`[Unreleased]` above.
+
+### Added
+
+- **`phantom.metadata`, a new package:**
+  `models` (fields, categories, counts, provenance states), `png`, `wav` and
+  `flac` (chunk and block walkers with serialisers), `inspector` (content
+  detection, hashing, reports), `cleaner` (planning, rewriting, publishing),
+  `integrity` (decoded fingerprints and comparison), `provenance` (C2PA/JUMBF
+  detection) and `report` (TXT and JSON exports). No new third-party dependency:
+  Pillow, Mutagen, NumPy, SoundFile and the standard library only.
+- **Content-based format detection.** PNG, WAV and FLAC are identified from their
+  signature bytes, never from the file extension; anything else is refused with
+  `ErrorCode.UNSUPPORTED_FORMAT` instead of being parsed by the wrong reader.
+- **A read-only inspector with six categories.** PNG (chunks, tEXt/zTXt/iTXt,
+  TIFF/EXIF including GPS, XMP, ICC, tIME, unknown chunks, per-chunk CRC), WAV
+  (RIFF, `fmt `, `data`, LIST/INFO, `bext` v0–v2 with reserved bytes and coding
+  history, iXML, ID3, unknown chunks) and FLAC (STREAMINFO, Vorbis comments,
+  PICTURE, APPLICATION, SEEKTABLE, CUESHEET, PADDING, unknown blocks) are reduced
+  to fields that carry a name, a value, a container, a category (personal,
+  descriptive, technical, rights/attribution, provenance, unknown) and an
+  editability marker.
+- **Selective cleaning with a plan shown first.** Personal fields are preselected;
+  attribution fields (EXIF `Artist`, PNG `Author`, RIFF `IART`, Vorbis `ARTIST`)
+  are offered unticked; copyright, licence, technical fields, colour profiles,
+  provenance blocks and unknown chunks are protected and never removed
+  automatically. The plan reports what will be removed, what will be kept and what
+  was requested but is protected.
+- **Mandatory post-clean verification.** Pixels, alpha and chunk CRCs for PNG;
+  every PCM sample, bit depth, sample rate, channel count, frame count and
+  duration plus a full re-decode for WAV/FLAC; the metadata is re-read to prove the
+  selected fields are gone, the protected ones are intact and the field count
+  matches the plan. Whole-file SHA-256 and decoded-content SHA-256 are reported
+  separately, and the interface explains why only the second one must not change.
+- **C2PA / content-credential detection, without pretending to validate it.** A
+  manifest or a signature block is reported as "manifest found, signature not
+  verified" (the trust list and certificate chain are not part of this build), and
+  a signed file is refused by the cleaner instead of being rewritten into a file
+  that still claims a signature it no longer satisfies.
+- **The fourth tab** (`СКРЫТЬ` · `ИЗВЛЕЧЬ` · `МЕТАДАННЫЕ` · `НАСТРОЙКИ`) with five
+  cards: file selection (button and drag & drop), analysis results (counts,
+  category filter, removable-only filter, field rows with checkboxes, warnings),
+  cleaning settings (select all editable, select personal, clear, pre-report),
+  saving (path, save cleaned copy, export TXT/JSON, copy report, reveal in the file
+  manager) and the integrity card (decode status, content comparison, both hashes,
+  removed/kept counts, verdict).
+- 85 new locale keys in all three languages (302 total, parity enforced by
+  `tests/test_i18n.py`), including `err.signed_media`, `err.metadata`,
+  `stage.scanning` and `stage.cleaning`.
+- `ErrorCode.SIGNED_MEDIA`, `ErrorCode.METADATA`, `Stage.SCANNING` and
+  `Stage.CLEANING`.
+- Tests: `tests/test_metadata_inspect.py`, `tests/test_metadata_clean.py`,
+  `tests/test_metadata_report.py`, `tests/test_metadata_view.py` and a
+  `metadata_samples` builder that generates PNG/WAV/FLAC files with known
+  metadata (no new binary fixtures), plus GUI coverage of the new tab in
+  `tests/test_gui.py`.
+
+### Changed
+
+- The window has four tabs, so the scroll router registers one area per tab,
+  `metadata` included, and still exactly one global wheel handler. The metadata
+  field rows live in the tab that carries them: a `CTkScrollableFrame` inside
+  another one makes the two canvases chase each other's `<Configure>` events,
+  which is a layout storm and a scroll bug waiting to happen on the platform the
+  router was written for.
+- `Cmd/Ctrl+1…4` now select `embed`, `extract`, `metadata` and `settings`
+  (`Ctrl+3` was `settings` before); the previous tab is still restored on launch.
+- `AppSettings.normalized()` accepts `"metadata"` as a saved last tab.
+
+### Fixed
+
+- **Undo and redo keep working from the action bar.** Tk reports every change with
+  the same `<<Modified>>` event and says nothing about who caused it, so the event
+  an undo queues for itself arrived after the handler had re-armed "redo available"
+  and cleared that flag again: the redo button stayed grey until the next keystroke.
+  The edits the window performs itself are now counted and their events are
+  recognised as its own — a keystroke never bumps that counter, so it is always
+  treated as a keystroke (pinned by a GUI test that cuts, undoes and redoes).
+- **A long job can no longer freeze the window on a slow machine.** A worker
+  thread allocates, so it can start a cyclic garbage collection, and a collection
+  runs finalizers — `tkinter.font.Font.__del__` calls into Tcl, which is not
+  thread-safe. When the finalizer landed on the worker, Tk waited for a main loop
+  that was waiting for the job, and the operation never finished. The collector is
+  now paused for the length of a job and every finalizer runs on the thread that
+  owns Tk (`_pause_collection_for_job`/`_resume_collection_after_job`, pinned by a
+  GUI test).
+- **One handler that raises no longer wedges the interface.** Worker events are
+  dispatched from an `after()` callback; the traceback used to take the callback
+  with it, so the chain was never re-armed and the window stayed "busy" for an
+  operation that had already ended. The event loop now logs the traceback, finishes
+  the operation and paints an error instead.
+- **Cleaning an EXIF/GPS dossier no longer fails with a tag number.** Reported from
+  a real macOS run: a PNG with a position, two dates, make, model, owner and body
+  serial numbers ended with `Ошибка обработки метаданных: png.gps.0x0000` and no
+  cleaned copy. The pre-report offered the derived *GPS coordinates* row as one
+  removable field and translated it into every GPS tag, `GPSVersionID` included;
+  the last check before publishing then refused, correctly, to write a file that had
+  lost a field the plan promised to keep. Three things were wrong and are fixed:
+  * the position is now a **derived view** — shown, but not an entry: it is not
+    selectable, it is not counted (so one position no longer looks like six
+    personal fields) and removing the four tags behind it removes it, which is no
+    longer read as "a protected field disappeared";
+  * `removal_from_keys` maps one key to one tag and nothing else: no selection can
+    widen into tags the user did not tick;
+  * every field the plan offers is now a field the rewrite can actually do — a
+    property test removes each removable key of the files in the suite, one at a
+    time, and asserts that nothing protected was lost.
+- **Structured blocks that are removed as a whole are no longer offered when they
+  carry something protected.** An XMP packet with a title or a rights line in it is
+  reported as protected, with the reason, instead of being offered and then failing
+  (the packet also deleted `dc:rights` along with the city). Its properties are
+  derived views, so they are not counted twice either. `png.xmp` — the only key a
+  user can tick — was never mapped by the rewriter at all (the parser required three
+  dot-separated parts), so removing an XMP packet did nothing; it now works.
+- **A failed or cancelled operation empties the progress bar.** It used to keep the
+  fraction the job had reached, which reads as "still running" when nothing is.
+- **The policy guard has its own error and its own sentence.** `ErrorCode.METADATA_CONFLICT`
+  / `MetadataConflictError` (uk/ru/en) names the field by label instead of by tag
+  number, says the source was not modified and that no cleaned copy was created, and
+  states that it is a bug in the cleaning policy rather than something the user did.
+  The guard itself is unchanged: nothing is published when it fires.
+- Tests: `tests/test_metadata_exif_gps.py` (18 tests) builds the dossier that failed
+  — `GPSVersionID`, both coordinate pairs and their references, both dates, make,
+  model, owner, body serial, orientation, software, artist, copyright and one tag no
+  table knows — and checks detection, the preselection, the plan against the written
+  result, the survival of every protected tag, pixel identity, chunk CRCs, the
+  untouched source, that a failing guard publishes nothing, partial GPS selections,
+  unknown tags, cleaning twice, and the same property for WAV and FLAC.
+
+### Security
+
+- The cleaner refuses a file whose path resolves to the source, refuses to
+  overwrite an existing file without explicit permission, and publishes only
+  through a staged sibling that is renamed into place after verification.
+- Metadata is never executed, never interpolated into a shell command and never
+  written to diagnostic logs; the exports contain the personal values and are
+  therefore produced only on an explicit user action.
+- The documentation and the reports state plainly that removing metadata is not
+  anonymisation and that a missing manifest is not proof that a file carries no
+  traces.
 
 ## [2.0.0] — release candidate
 

@@ -125,6 +125,15 @@ class I18nBinder:
                 "cannot set %s=%r on %r: %s", binding.attribute, text, binding.widget, exc
             )
             return False
+        # A widget asked to re-measure itself after a caption change (a button
+        # whose width follows its localised text).  Duck-typed on purpose: this
+        # module knows nothing about Tk.
+        after = getattr(binding.widget, "_phantom_after_text", None)
+        if callable(after):
+            try:
+                after()
+            except Exception as exc:  # noqa: BLE001 - measuring must not break a switch
+                LOGGER.warning("after-text hook for %s failed: %s", binding.key, exc)
         return True
 
     def text(self, key: str, **params: Any) -> str:
