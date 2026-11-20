@@ -342,6 +342,16 @@ jobs:
           . .venv-tk9/bin/activate
           python -X faulthandler -u tools/repro_tk91_theme_crash.py --quiet \
             --toggles 6 --delay 200 2>&1 | tee repro-quiet.log
+      - name: The theme tests on their own (Aqua, Tk 9.x)
+        id: gui-theme
+        continue-on-error: true
+        timeout-minutes: 10
+        run: |
+          set -o pipefail
+          . .venv-tk9/bin/activate
+          python -m pytest -m gui -q -k "theme" --timeout=120 --timeout-method=thread \
+            -o faulthandler_timeout=120 2>&1 | tee gui-tk9-theme.log
+          echo "::notice::theme-only run: exit $?"
       - name: GUI smoke tests (Aqua, Tk 9.x)
         id: gui
         timeout-minutes: 20
@@ -375,7 +385,17 @@ jobs:
               print(f"::warning::callback: {line.strip()[:900]}")
           for line in lines[-3:]:
               print(f"::notice::tk9 tail: {line[:900]}")
+          if fatal:
+              first = lines.index(fatal[0])
+              for line in lines[first : first + 40]:
+                  print(f"::error::crash-frame: {line[:300]}")
           print(f"::notice::gui-tk9.log: {len(lines)} lines, {len(failures)} failing tests")
+          theme = pathlib.Path("gui-tk9-theme.log")
+          if theme.exists():
+              text = theme.read_text(errors="replace").splitlines()
+              print(f"::notice::theme log: {len(text)} lines")
+              for line in text[:60]:
+                  print(f"::notice::theme| {line[:400]}")
           PY
           if [ "${{ steps.gui.outcome }}" != "success" ]; then
             echo "macOS GUI tests under Tk 9 failed, timed out or crashed"
