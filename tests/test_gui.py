@@ -2094,7 +2094,11 @@ def test_a_resize_burst_owes_one_layout_pass(app) -> None:
     event itself.  What is asserted is the rule that makes a resize cheap: the
     events are recorded, one pass is owed, and it runs from the loop.
     """
+    import types
+
     app.root.deiconify()
+    app.root.update()  # let whatever the window did while it was built settle
+
     passes = app._refit_passes
     events = app._resize_events
     calls: list[int] = []
@@ -2107,17 +2111,47 @@ def test_a_resize_burst_owes_one_layout_pass(app) -> None:
     try:
         app.responsive.refit_flows = counted  # type: ignore[method-assign]
         for width in range(1100, 1300, 20):
-            app.root.event_generate("<Configure>", width=width, height=820)
+            event = types.SimpleNamespace(widget=app.root, width=width, height=820)
+            app._on_window_resize(event)
+        assert not calls, "the handler ran the pass instead of owing it"
         assert app._refit_token is not None, "the burst was not coalesced into one pass"
 
         app.root.update()
     finally:
         app.responsive.refit_flows = real  # type: ignore[method-assign]
 
-    assert app._resize_events >= events + 5, "the events never reached the handler"
+    assert app._resize_events >= events + 10, "the events never reached the handler"
     assert len(calls) == 1, f"{len(calls)} refit passes for one burst"
     assert app._refit_passes == passes + 1
     assert app._refit_token is None, "the pass is still queued after the loop ran"
+
+
+def test_generated_configure_events_do_not_refit_one_by_one(app) -> None:
+    """The same rule through Tk's own event delivery, not only through the handler.
+
+    Tk may hand the queued events over in more than one round, so a handful of
+    passes is expected — one per round.  One per *event* is what used to happen.
+    """
+    app.root.deiconify()
+    app.root.update()
+    calls: list[int] = []
+    real = app.responsive.refit_flows
+
+    def counted(*args, **kwargs):
+        calls.append(1)
+        return real(*args, **kwargs)
+
+    try:
+        app.responsive.refit_flows = counted  # type: ignore[method-assign]
+        for width in range(1100, 1300, 20):
+            app.root.event_generate("<Configure>", width=width, height=820)
+        app.root.update()
+        app.root.update()
+    finally:
+        app.responsive.refit_flows = real  # type: ignore[method-assign]
+
+    assert calls, "the generated events never caused a pass at all"
+    assert len(calls) <= 4, f"{len(calls)} passes for 10 events: not coalesced"
 
 
 def test_the_flow_rows_are_found_without_walking_the_tree(app) -> None:

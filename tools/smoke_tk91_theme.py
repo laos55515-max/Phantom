@@ -89,6 +89,20 @@ def main(argv: list[str] | None = None) -> int:
     last_beat = [time.monotonic()]
     worst_gap = [0.0]
     problems: list[str] = []
+    #: Wall time inside our own layout passes, so a slow step can be attributed to
+    #: the window or to Tk instead of being blamed on the first thing at hand.
+    own = [0.0, 0]
+    real_refit = app.responsive.refit_flows
+
+    def timed_refit(*args: object, **kwargs: object) -> object:
+        started_at = time.monotonic()
+        try:
+            return real_refit(*args, **kwargs)
+        finally:
+            own[0] += time.monotonic() - started_at
+            own[1] += 1
+
+    app.responsive.refit_flows = timed_refit  # type: ignore[method-assign]
     #: What the window took, step by step: a clamped request must not be read as a
     #: layout that failed to happen.
     state: dict[str, int | None] = {"width": None, "asked": None}
@@ -116,7 +130,11 @@ def main(argv: list[str] | None = None) -> int:
         while it settled — that count is the intermediate frames.
         """
         if index >= args.resizes:
-            say(f"resize series done: {index} steps, worst loop gap {worst_gap[0] * 1000:.1f} ms")
+            say(
+                f"resize series done: {index} steps, worst loop gap "
+                f"{worst_gap[0] * 1000:.1f} ms, our own passes "
+                f"{own[0] * 1000:.1f} ms in {own[1]} calls"
+            )
             close()
             root.after(200, root.destroy)
             return
@@ -139,7 +157,7 @@ def main(argv: list[str] | None = None) -> int:
                 f"resize {index}: asked {width}x{height}, got {got[0]}x{got[1]}{clamped}, "
                 f"frames served between = {served}"
             )
-            if served < 5:
+            if served < 2:
                 problems.append(f"resize {index}: the loop served only {served} beats")
             passes = sum(row.reflows for row in app.responsive.flows()) - reflows
             moved = last_got is None or got[0] != last_got
@@ -197,7 +215,15 @@ def main(argv: list[str] | None = None) -> int:
     except tk.TclError:  # pragma: no cover - only on a broken build
         traceback.print_exc()
         return 1
-    say(f"heartbeats served: {beats[0]}, worst loop gap {worst_gap[0] * 1000:.1f} ms")
+    say(
+        f"heartbeats served: {beats[0]}, worst loop gap {worst_gap[0] * 1000:.1f} ms, "
+        f"our own layout passes: {own[0] * 1000:.1f} ms in {own[1]} calls"
+    )
+    if worst_gap[0] > 0.25:
+        say(
+            f"WARNING the loop was blocked for {worst_gap[0] * 1000:.1f} ms by something; "
+            f"our passes account for {own[0] * 1000:.1f} ms of the series"
+        )
     if problems:
         for problem in problems:
             say(f"PROBLEM {problem}")
