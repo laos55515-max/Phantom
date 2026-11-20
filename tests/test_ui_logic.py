@@ -1246,9 +1246,26 @@ class FakeText(FakeEntry):
 
     def tag_add(self, _tag: str, _first: str, _last: str) -> None:
         self.tag = (0, len(self.text))
+        self.tag_names_used = [*getattr(self, "tag_names_used", []), (_tag, _first, _last)]
+
+    def tag_remove(self, _tag: str, _first: str, _last: str) -> None:
+        self.tag = None
+
+    def tag_raise(self, tag: str) -> None:
+        """The real widget paints ``sel`` above the text tags; remember the call."""
+        self.raised = tag
+
+    def see(self, index: str) -> None:
+        self.seen = [*getattr(self, "seen", []), index]
+
+    def edit_separator(self) -> None:
+        self.separators = getattr(self, "separators", 0) + 1
+
+    def configure(self, **kwargs: object) -> None:
+        self.options = {**getattr(self, "options", {}), **kwargs}
 
     def mark_set(self, _name: str, _index: str) -> None:
-        self.caret = 0
+        self.caret = _index
 
     def get(self, first: str | None = None, last: str | None = None) -> str:
         if first is None:
@@ -1386,6 +1403,275 @@ def test_actions_dataclass_wraps_one_widget() -> None:
     assert actions.copy() is True
     assert actions.text() == "secret-key"
     assert ui_clipboard.ClipboardActions(widget=FakeEntry("x")).paste() is False
+
+
+def test_select_all_paints_the_selection_and_puts_the_caret_at_the_end() -> None:
+    """The defect: Cmd+A left the caret at ``1.0`` and read as "nothing selected".
+
+    The next keystroke then landed *in front of* the text instead of replacing it,
+    so the user saw a selection that did nothing.
+    """
+    text = FakeText("line one\nline two", clipboard="")
+    assert ui_clipboard.select_all(text) is True
+    assert text.raised == "sel", "an unraised sel tag hides under the text tags"
+    assert text.caret == "end-1c"
+    assert text.seen == ["insert"]
+    assert ui_clipboard.selected_text(text) == "line one\nline two"
+
+
+def test_select_all_first_clears_an_earlier_selection() -> None:
+    text = FakeText("abc", clipboard="")
+    text.tag = (1, 2)
+    ui_clipboard.select_all(text)
+    assert text.tag == (0, 3)
+
+
+def test_a_paste_becomes_one_undo_step_and_shows_the_caret() -> None:
+    text = FakeText("", clipboard="first\nsecond\n")
+    ui_clipboard.paste(text)
+    assert text.separators == 1, "a paste must be one undo step, not one per line"
+    assert text.seen == ["insert"], "the caret has to be scrolled into view"
+
+
+def test_select_none_drops_the_selection() -> None:
+    text = FakeText("abc", clipboard="")
+    ui_clipboard.select_all(text)
+    ui_clipboard.select_none(text)
+    assert ui_clipboard.selected_text(text) is None
+
+
+def test_insert_text_never_truncates_a_large_block() -> None:
+    big = "x" * 250_000
+    text = FakeText("", clipboard=big)
+    assert ui_clipboard.paste(text) == big
+    assert len(text.text) == len(big), "a large paste must arrive whole"
+
+
+def test_undo_and_redo_report_when_the_stack_is_empty() -> None:
+    class NoHistory(FakeText):
+        def edit_undo(self) -> None:
+            raise RuntimeError("nothing to undo")
+
+        def edit_redo(self) -> None:
+            raise RuntimeError("nothing to redo")
+
+    text = NoHistory("abc")
+    assert ui_clipboard.undo(text) is False
+    assert ui_clipboard.redo(text) is False
+
+
+def test_enable_undo_turns_the_widget_history_on() -> None:
+    text = FakeText("abc")
+    assert ui_clipboard.enable_undo(text) is True
+    assert text.options == {"undo": True, "autoseparators": True, "maxundo": -1}
+
+
+# ---------------------------------------------------------------------------
+# the capacity panel: one scale, no double counting, honest states
+# ---------------------------------------------------------------------------
+
+
+def _carrier(*, payload_bytes: int = 1000, kind: str = "image") -> object:
+    from phantom.core.api import CarrierKind, CarrierProbe
+    from phantom.stego.engine import Capacity
+
+    capacity = Capacity(usable_bits=payload_bytes * 8, payload_bytes=payload_bytes)
+    if kind == "audio":
+        from phantom.audio import AudioInfo, AudioKind
+
+        return CarrierProbe(
+            kind=CarrierKind.AUDIO,
+            path="/tmp/carrier.wav",
+            capacity=capacity,
+            audio=AudioInfo(
+                path="/tmp/carrier.wav",
+                kind=AudioKind.WAV,
+                frames=44100,
+                channels=2,
+                sample_rate=44100,
+                bits=16,
+                capacity=capacity,
+            ),
+        )
+    from phantom.stego.image import ImageInfo
+
+    return CarrierProbe(
+        kind=CarrierKind.IMAGE,
+        path="/tmp/carrier.png",
+        capacity=capacity,
+        image=ImageInfo(
+            path="/tmp/carrier.png", width=640, height=360, mode="RGB", capacity=capacity
+        ),
+    )
+
+
+def _report(**kwargs: object):
+    from phantom.ui.capacity_view import build_report
+
+    params: dict[str, object] = {
+        "carrier": _carrier(),
+        "estimate": None,
+        "has_payload": True,
+        "chars": 100,
+        "utf8_bytes": 120,
+    }
+    params.update(kwargs)
+    return build_report(**params)
+
+
+def test_no_carrier_says_so_and_never_unlocks_embed() -> None:
+    from phantom.ui.capacity_view import CapacityState
+
+    report = _report(carrier=None)
+    assert report.state is CapacityState.NO_CARRIER
+    assert report.can_embed is False
+    assert report.percent == 0.0
+
+
+def test_no_payload_is_its_own_state() -> None:
+    from phantom.ui.capacity_view import CapacityState
+
+    report = _report(has_payload=False, chars=0, utf8_bytes=0)
+    assert report.state is CapacityState.NO_PAYLOAD
+    assert report.prepared_bytes is None
+
+
+def test_a_pending_estimate_hides_the_previous_number() -> None:
+    from phantom.core.payload import SizeEstimate
+    from phantom.ui.capacity_view import CapacityState
+
+    stale = SizeEstimate(payload_bytes=400, exceeded_capacity=False)
+    report = _report(estimate=stale, waiting=True)
+    assert report.state is CapacityState.CALCULATING
+    assert report.prepared_bytes is None, "a stale size must not read as this text's size"
+    assert report.can_embed is False
+
+
+def test_a_fitting_payload_reports_free_space_and_one_scale() -> None:
+    from phantom.core.payload import SizeEstimate
+    from phantom.ui.capacity_view import CapacityState
+
+    estimate = SizeEstimate(payload_bytes=400, exceeded_capacity=False)
+    report = _report(estimate=estimate)
+    assert report.state is CapacityState.FITS
+    assert report.can_embed is True
+    assert report.prepared_bytes == 400
+    assert report.free_bytes == 600
+    assert report.excess_bytes == 0
+    assert report.percent == pytest.approx(40.0)
+    assert report.fill == pytest.approx(0.4)
+
+
+def test_an_overflowing_payload_keeps_the_number_and_caps_the_bar() -> None:
+    from phantom.core.payload import SizeEstimate
+    from phantom.ui.capacity_view import CapacityState
+
+    estimate = SizeEstimate(payload_bytes=1500, exceeded_capacity=True)
+    report = _report(estimate=estimate)
+    assert report.state is CapacityState.OVERFLOW
+    assert report.can_embed is False
+    assert report.excess_bytes == 500
+    assert report.free_bytes == 0
+    assert report.percent == pytest.approx(150.0), "the number may pass 100 % …"
+    assert report.fill == 1.0, "… while the bar stays capped"
+
+
+def test_exceeded_capacity_without_a_bigger_number_still_overflows() -> None:
+    from phantom.core.payload import SizeEstimate
+    from phantom.ui.capacity_view import CapacityState
+
+    # The streaming estimate stops counting once the budget is gone, so it can
+    # report a lower bound below the capacity it already knows it passed.
+    estimate = SizeEstimate(payload_bytes=900, exceeded_capacity=True)
+    report = _report(estimate=estimate)
+    assert report.state is CapacityState.OVERFLOW
+    assert report.can_embed is False
+
+
+def test_a_failed_estimate_is_said_not_hidden() -> None:
+    from phantom.core.payload import SizeEstimate
+    from phantom.ui.capacity_view import CapacityState
+
+    report = _report(
+        estimate=SizeEstimate(payload_bytes=10, exceeded_capacity=False), failed=True
+    )
+    assert report.state is CapacityState.ERROR
+    assert report.can_embed is False
+
+
+def test_human_bytes_uses_one_binary_scale() -> None:
+    from phantom.ui.capacity_view import human_bytes
+
+    assert human_bytes(0) == "0 B"
+    assert human_bytes(1023) == "1023 B"
+    assert human_bytes(1024) == "1.0 KiB"
+    assert human_bytes(1536) == "1.5 KiB"
+    assert human_bytes(2 * 1024 * 1024) == "2.00 MiB"
+    assert human_bytes(None) == "—"
+
+
+def test_the_panel_lists_container_payload_and_capacity_in_one_scale() -> None:
+    from phantom.core.payload import SizeEstimate
+    from phantom.i18n import I18n
+    from phantom.ui.capacity_view import human_bytes, panel_lines
+
+    i18n = I18n("ru")
+    probe = _carrier()
+    estimate = SizeEstimate(payload_bytes=400, exceeded_capacity=False)
+    report = _report(estimate=estimate, carrier=probe, utf8_bytes=300)
+    lines = panel_lines(report, probe, i18n)
+    assert len(lines) == 3
+    assert "640×360 RGB" in lines[0], "the panel names the real geometry, not a guess"
+    assert human_bytes(400) in lines[1], "the prepared size is the estimate's own number"
+    assert human_bytes(1000) in lines[2]
+    assert human_bytes(400) in lines[2], "occupied and payload agree — nothing is counted twice"
+    assert human_bytes(600) in lines[2]
+    assert "40.0" in lines[2]
+
+
+def test_the_panel_warns_with_the_excess_and_the_real_usable_bytes() -> None:
+    from phantom.core.payload import SizeEstimate
+    from phantom.i18n import I18n
+    from phantom.ui.capacity_view import human_bytes, panel_lines
+
+    i18n = I18n("ru")
+    probe = _carrier()
+    estimate = SizeEstimate(payload_bytes=1500, exceeded_capacity=True)
+    report = _report(estimate=estimate, carrier=probe)
+    lines = panel_lines(report, probe, i18n)
+    assert len(lines) == 4
+    assert human_bytes(500) in lines[3]
+    assert human_bytes(report.usable_bytes) in lines[3]
+    assert "НЕ ХВАТАЕТ" in lines[3]
+
+
+def test_a_file_payload_gets_file_wording() -> None:
+    from phantom.core.payload import SizeEstimate
+    from phantom.i18n import I18n
+    from phantom.ui.capacity_view import panel_lines
+
+    i18n = I18n("ru")
+    probe = _carrier()
+    estimate = SizeEstimate(payload_bytes=400, exceeded_capacity=False)
+    report = _report(estimate=estimate, carrier=probe, chars=0, utf8_bytes=5000)
+    lines = panel_lines(report, probe, i18n)
+    assert "файл" in lines[1]
+    assert "симв" not in lines[1]
+
+
+def test_the_panel_speaks_three_languages() -> None:
+    from phantom.core.payload import SizeEstimate
+    from phantom.i18n import I18n
+    from phantom.ui.capacity_view import CapacityState, panel_lines
+
+    probe = _carrier(kind="audio")
+    estimate = SizeEstimate(payload_bytes=1500, exceeded_capacity=True)
+    report = _report(estimate=estimate, carrier=probe)
+    assert report.state is CapacityState.OVERFLOW
+    for language in ("ru", "uk", "en"):
+        lines = panel_lines(report, probe, I18n(language))
+        assert all(line.strip() for line in lines), language
+        assert len(lines) == 4, language
 
 
 def test_result_window_geometry_uses_most_of_the_screen() -> None:

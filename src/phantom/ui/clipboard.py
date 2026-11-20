@@ -180,12 +180,24 @@ def delete_selection(widget: Any) -> bool:
 
 
 def select_all(widget: Any) -> bool:
-    """Select the whole content so a following copy/cut has something to work on."""
+    """Select the whole content so a following copy/cut has something to work on.
+
+    The selection is the widget's own ``sel`` tag, raised above the text tags so it
+    really paints, and the caret is left where macOS leaves it after Cmd+A: at the
+    end of the selection.  Putting the caret at ``1.0`` instead made the very next
+    keystroke *prepend* to the text the user had just selected, and a selection the
+    caret sits in front of reads as "nothing happened" on Aqua, where the inactive
+    highlight is faint.  Nothing here depends on Tk's own ``<<SelectAll>>`` handler,
+    which the class binding owns and which the widget binding cannot see.
+    """
     inner = _inner(widget)
     if is_multiline(inner):
         try:
+            inner.tag_remove("sel", "1.0", "end")
             inner.tag_add("sel", "1.0", "end-1c")
-            inner.mark_set("insert", "1.0")
+            inner.tag_raise("sel")
+            inner.mark_set("insert", "end-1c")
+            inner.see("insert")
         except Exception as exc:  # noqa: BLE001 - Tk dependent
             LOGGER.warning("select-all failed: %s", exc)
             return False
@@ -199,15 +211,99 @@ def select_all(widget: Any) -> bool:
     return True
 
 
+def select_none(widget: Any) -> None:
+    """Drop the selection.  Best effort: a destroyed widget has nothing to clear."""
+    inner = _inner(widget)
+    if not is_multiline(inner):
+        return
+    try:
+        inner.tag_remove("sel", "1.0", "end")
+    except Exception as exc:  # noqa: BLE001 - Tk dependent
+        LOGGER.debug("selection clear skipped: %s", exc)
+
+
 def insert_text(widget: Any, text: str) -> bool:
-    """Insert ``text`` at the caret; ``False`` for a read-only widget."""
-    insert = getattr(_editor(widget), "insert", None)
+    """Insert ``text`` at the caret; ``False`` for a read-only widget.
+
+    A single ``insert`` of a large block is what Tk is good at, so the text goes in
+    whole — never in chunks and never truncated.  The caret is then scrolled into
+    view, which is the difference between "the paste worked" and "the paste worked
+    but the field still shows the top of the old text".
+    """
+    editor = _editor(widget)
+    insert = getattr(editor, "insert", None)
     if not callable(insert) or not text:
         return False
+    inner = _inner(widget)
+    multiline = is_multiline(inner)
+    if multiline:
+        # One undo step per paste, instead of one per line Tk decides to group.
+        separator = getattr(inner, "edit_separator", None)
+        if callable(separator):
+            try:
+                separator()
+            except Exception as exc:  # noqa: BLE001 - undo may be off
+                LOGGER.debug("undo separator skipped: %s", exc)
     try:
         insert("insert", text)
     except Exception as exc:  # noqa: BLE001 - disabled Text/Entry raises TclError
         LOGGER.debug("insert refused: %s", exc)
+        return False
+    if multiline:
+        see = getattr(inner, "see", None)
+        if callable(see):
+            try:
+                see("insert")
+            except Exception as exc:  # noqa: BLE001 - Tk dependent
+                LOGGER.debug("caret scroll skipped: %s", exc)
+    return True
+
+
+def undo(widget: Any) -> bool:
+    """Undo one step; ``False`` when the widget cannot (undo is off, nothing left)."""
+    inner = _inner(widget)
+    if not is_multiline(inner):
+        try:
+            _editor(widget).edit_undo()
+        except Exception as exc:  # noqa: BLE001 - nothing to undo
+            LOGGER.debug("undo refused: %s", exc)
+            return False
+        return True
+    try:
+        inner.edit_undo()
+    except Exception as exc:  # noqa: BLE001 - nothing to undo, or undo is off
+        LOGGER.debug("undo refused: %s", exc)
+        return False
+    return True
+
+
+def redo(widget: Any) -> bool:
+    """Redo one step; ``False`` when there is no undone step left."""
+    inner = _inner(widget)
+    if not is_multiline(inner):
+        try:
+            _editor(widget).edit_redo()
+        except Exception as exc:  # noqa: BLE001 - nothing to redo
+            LOGGER.debug("redo refused: %s", exc)
+            return False
+        return True
+    try:
+        inner.edit_redo()
+    except Exception as exc:  # noqa: BLE001 - nothing to redo, or undo is off
+        LOGGER.debug("redo refused: %s", exc)
+        return False
+    return True
+
+
+def enable_undo(widget: Any) -> bool:
+    """Turn the widget's own undo stack on (Tk keeps it off by default)."""
+    inner = _inner(widget)
+    if not is_multiline(inner):
+        return False
+    try:
+        inner.configure(undo=True, autoseparators=True, maxundo=-1)
+    except Exception as exc:  # noqa: BLE001 - Tk dependent
+        LOGGER.warning("undo could not be enabled: %s", exc)
         return False
     return True
 
@@ -259,9 +355,7 @@ def all_text(widget: Any) -> str:
     """Whole content of the widget (empty string when unreadable)."""
     inner = _inner(widget)
     try:
-        value = (
-            inner.get("1.0", "end-1c") if is_multiline(inner) else _editor(widget).get()
-        )
+        value = inner.get("1.0", "end-1c") if is_multiline(inner) else _editor(widget).get()
     except Exception as exc:  # noqa: BLE001 - the widget may be destroyed
         LOGGER.debug("widget read failed: %s", exc)
         return ""
@@ -286,9 +380,18 @@ class ClipboardActions:
     def select_all(self) -> bool:
         return select_all(self.widget)
 
+    def select_none(self) -> bool:
+        select_none(self.widget)
+        return True
+
+    def undo(self) -> bool:
+        return undo(self.widget)
+
+    def redo(self) -> bool:
+        return redo(self.widget)
+
     def text(self) -> str:
         return all_text(self.widget)
-
 
 
 def clear_command(

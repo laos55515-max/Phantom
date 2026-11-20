@@ -41,6 +41,12 @@ from phantom.ui import format as ui_format
 from phantom.ui import theme as T
 from phantom.ui.animator import Animator
 from phantom.ui.bindings import I18nBinder
+from phantom.ui.capacity_view import (
+    CapacityReport,
+    CapacityState,
+    build_report,
+    panel_lines,
+)
 from phantom.ui.debounce import Debouncer
 from phantom.ui.dnd import DndProvider, DropTarget
 from phantom.ui.format import layout_text, size_text, written_layout_text
@@ -98,7 +104,7 @@ DISPLAY_PASSES_UNSAFE: Final = sys.platform == "darwin" and tkinter.TkVersion >=
 GEOMETRY_RE: Final = re.compile(r"^\d{3,4}x\d{3,4}([+-]\d{1,5}[+-]\d{1,5})?$")
 WINDOW_SIZE: Final = (1140, 900)
 MIN_SIZE: Final = (980, 720)
-CARRIER_PATTERNS: Final = (("*.png", "*.wav", "*.flac"))
+CARRIER_PATTERNS: Final = ("*.png", "*.wav", "*.flac")
 IMAGE_PATTERNS: Final = (".png",)
 AUDIO_PATTERNS: Final = (".wav", ".flac")
 
@@ -187,6 +193,17 @@ class PhantomApp:
         self._poll_runs = 0
         #: A pending retry of the collector resume, while a worker thread winds down.
         self._gc_resume_token: str | None = None
+        #: Bumped whenever the payload the estimate describes changes.  An estimate
+        #: job carries the revision it was started for; a result from an older
+        #: revision is dropped instead of being shown against the new text.
+        self._estimate_revision = 0
+        #: The revision the last applied estimate belongs to (``-1``: none yet).
+        self._applied_revision = -1
+        #: Whether the last estimate for the current payload failed, so the panel
+        #: says "calculation error" instead of leaving a stale number up.
+        self._estimate_failed = False
+        #: The panel's last snapshot (tests and the button's enabled state read it).
+        self.capacity_report: CapacityReport | None = None
 
         self.trace.mark("init:services")
         if DISPLAY_PASSES_UNSAFE:
@@ -254,18 +271,26 @@ class PhantomApp:
         self._scroll.register(scroll, canvas, name=f"tab{len(self._scroll_frames) + 1}")
         self._scroll_frames.append(scroll)
 
-    def _paragraph_shortcuts(self, widget: Any) -> None:
-        """Cmd/Ctrl + C/V/X/A and a right-click menu for one text widget."""
+    def _paragraph_shortcuts(self, widget: Any, *, clear_handler: Any = None) -> None:
+        """Cmd/Ctrl + C/V/X/A/Z, undo/redo and a right-click menu for one widget."""
         self._text_shortcuts.append(
-            install_text_shortcuts(self.root, widget, labels_provider=self._menu_labels)
+            install_text_shortcuts(
+                self.root,
+                widget,
+                labels_provider=self._menu_labels,
+                clear_handler=clear_handler,
+            )
         )
 
     def _menu_labels(self) -> dict[str, str]:
         return {
+            "menu_undo": self._t("menu_undo"),
+            "menu_redo": self._t("menu_redo"),
             "menu_paste": self._t("menu_paste"),
             "menu_copy": self._t("menu_copy"),
             "menu_cut": self._t("menu_cut"),
             "menu_select_all": self._t("menu_select_all"),
+            "menu_clear": self._t("menu_clear"),
         }
 
     def file_manager_name(self) -> str:
@@ -516,18 +541,27 @@ class PhantomApp:
             corner_radius=10,
         )
         self.embed_text.pack(fill="both", expand=True)
-        self._paragraph_shortcuts(self.embed_text)
+        self._paragraph_shortcuts(self.embed_text, clear_handler=self._clear_field)
         self.embed_text.bind("<KeyRelease>", self._on_text_changed)
         self.embed_text.bind("<FocusOut>", self._on_text_changed)
 
+        self.counter_row = ctk.CTkFrame(payload_card, fg_color="transparent")
         self.char_label = ctk.CTkLabel(
-            payload_card,
+            self.counter_row,
             text="",
             font=mono_font(self.root, T.FONT_SIZE_FOOTER),
             text_color=T.CLR_MUTED,
             anchor="w",
         )
-        self.char_label.pack(fill="x", padx=18, pady=(2, 12))
+        self.char_label.pack(side="left", fill="x", expand=True)
+        # Clears the editor and nothing else: the password, the carrier, the output
+        # path and every setting stay exactly where the user put them.
+        self.clear_field_button = secondary_button(
+            self.counter_row, self.root, "", self._clear_field, width=150
+        )
+        self.clear_field_button.pack(side="right", padx=(12, 0))
+        self.binder.bind(self.clear_field_button, "btn_clear_field")
+        self.counter_row.pack(fill="x", padx=18, pady=(2, 12))
 
         self.file_frame = ctk.CTkFrame(payload_card, fg_color="transparent")
         self.secret_button = secondary_button(
@@ -632,6 +666,12 @@ class PhantomApp:
         self.fill_bar.pack(fill="x", padx=18, pady=(2, 4))
         self.usage_label = hint_label(carrier_card, self.root, "", wrap=620)
         self.usage_label.pack(fill="x", padx=18, pady=(0, 4))
+        # The panel: container, payload, capacity and, when it matters, the excess.
+        self.capacity_panel = value_label(carrier_card, self.root, "", mono=True)
+        self.capacity_panel.pack(fill="x", padx=18, pady=(0, 2))
+        self.capacity_note = hint_label(carrier_card, self.root, "", wrap=620)
+        self.capacity_note.pack(fill="x", padx=18, pady=(0, 4))
+        self.binder.bind(self.capacity_note, "cap_note")
         self.notice_label = hint_label(carrier_card, self.root, "", wrap=620)
         self.notice_label.pack(fill="x", padx=18, pady=(0, 4))
         self.format_label = hint_label(carrier_card, self.root, "", wrap=620)
@@ -1213,12 +1253,15 @@ class PhantomApp:
             if not self.text_frame.winfo_ismapped():
                 self.file_frame.pack_forget()
                 self.text_frame.pack(fill="both", expand=True, padx=18, pady=(0, 4))
-                self.char_label.pack(fill="x", padx=18, pady=(2, 12))
+                self.counter_row.pack(fill="x", padx=18, pady=(2, 12))
+            # The field is bypassed in file mode only; in text mode there is always
+            # something to clear, an empty field included, so the button stays live.
+            set_enabled(self.clear_field_button, not self._busy)
             self.secret_button.configure(state="disabled")
         else:
             if not self.file_frame.winfo_ismapped():
                 self.text_frame.pack_forget()
-                self.char_label.pack_forget()
+                self.counter_row.pack_forget()
                 self.file_frame.pack(fill="x", padx=18, pady=(0, 10))
             self.secret_button.configure(state="normal")
         if vm.secret_path:
@@ -1244,18 +1287,25 @@ class PhantomApp:
             )
         else:
             self.capacity_label.configure(text="")
-        fill = vm.fill_percent()
-        percent = 0.0 if fill is None else fill
-        self.fill_bar.set(min(1.0, percent / 100.0))
-        if vm.exceeds_capacity():
+        report = self._build_capacity_report()
+        self.capacity_report = report
+        self.capacity_panel.configure(text="\n".join(panel_lines(report, vm.carrier, self.i18n)))
+        self.fill_bar.set(report.fill)
+        percent = report.percent
+        if report.state is CapacityState.OVERFLOW:
+            # The number may pass 100 %; the bar above stays capped at full.
             self.usage_label.configure(
-                text=self.i18n.t("lbl_usage_exceeded", pct=f"{percent:.0f}"),
+                text=self.i18n.t("lbl_usage_exceeded", pct=f"{percent:.1f}"),
                 text_color=T.CLR_RED,
             )
-        elif fill is None:
+        elif report.state is CapacityState.CALCULATING:
             self.usage_label.configure(
-                text=self.i18n.t("lbl_usage_empty"), text_color=T.CLR_MUTED
+                text=self.i18n.t("lbl_usage_calculating"), text_color=T.CLR_MUTED
             )
+        elif report.state in (CapacityState.NO_CARRIER, CapacityState.NO_PAYLOAD):
+            self.usage_label.configure(text=self.i18n.t("lbl_usage_empty"), text_color=T.CLR_MUTED)
+        elif report.state is CapacityState.ERROR:
+            self.usage_label.configure(text=self.i18n.t("lbl_usage_error"), text_color=T.CLR_RED)
         else:
             severity = (
                 T.CLR_RED
@@ -1279,6 +1329,90 @@ class PhantomApp:
         if self.verify_checkbox.get() != vm.verify:
             self.verify_checkbox.select() if vm.verify else self.verify_checkbox.deselect()
         self.wipe_checkbox.configure(state="normal" if vm.verify else "disabled")
+        self._refresh_embed_ready()
+
+    def _build_capacity_report(self) -> CapacityReport:
+        """One snapshot for the panel, the fill bar and the embed button.
+
+        Every number is the estimate API's or the carrier's own; this method only
+        chooses which of them are still true — an estimate measured against other
+        text, or another container, is not shown at all.
+        """
+        vm = self.embed_vm
+        has_payload = vm.has_payload()
+        text_mode = vm.mode is PayloadMode.TEXT
+        text = vm.text if text_mode else ""
+        name = vm.payload_name()
+        if text_mode:
+            utf8_bytes = utf8_size(text)
+        else:
+            utf8_bytes = 0
+            if vm.secret_path:
+                try:
+                    utf8_bytes = os.path.getsize(vm.secret_path)
+                except OSError:
+                    utf8_bytes = 0
+        waiting = has_payload and (
+            vm.estimate is None or self._applied_revision != self._estimate_revision
+        )
+        return build_report(
+            carrier=vm.carrier,
+            estimate=vm.estimate,
+            has_payload=has_payload,
+            chars=len(text),
+            utf8_bytes=utf8_bytes,
+            name=name,
+            waiting=waiting,
+            failed=self._estimate_failed,
+        )
+
+    def _clear_field(self) -> None:
+        """Empty the payload field — and nothing else.
+
+        Not the password, not the carrier, not the output path, not a single
+        setting: those live in other cards and a "clear the text" button that also
+        threw them away is the kind of surprise this project does not ship.  The
+        model and the counters go first, then the widget, so no key event can see
+        a half-cleared field.
+        """
+        vm = self.embed_vm
+        self.debouncer.abort()
+        self._invalidate_estimate()
+        vm.set_text("")
+        vm.reset_estimate()
+        self._suppress_events = True
+        try:
+            self.embed_text.delete("1.0", "end")
+        finally:
+            self._suppress_events = False
+        self._refresh_embed_state()
+        self._refresh_embed_ready()
+        self.embed_text.focus_set()
+        self._set_status_key("status_field_cleared", severity="ok")
+
+    def _refresh_embed_ready(self) -> None:
+        """Block the embed button while the numbers are unknown or do not fit.
+
+        Pressing it anyway is what used to happen: the engine's own capacity check
+        then refused the job, which reads as "the paste did not work" when in fact
+        the text was never the problem.  A carrier with nothing typed in it keeps
+        the button live, because pressing it is how the user learns what is missing.
+        """
+        if self._busy:
+            return
+        report = self.capacity_report
+        blocked = bool(
+            report is not None
+            and report.state
+            in (
+                CapacityState.CALCULATING,
+                CapacityState.OVERFLOW,
+                CapacityState.ERROR,
+            )
+            and self.embed_vm.has_payload()
+            and self.embed_vm.carrier is not None
+        )
+        set_enabled(self.embed_button, not blocked)
 
     def _refresh_extract_state(self) -> None:
         vm = self.extract_vm
@@ -1360,6 +1494,7 @@ class PhantomApp:
             self.secret_button if self.embed_vm.mode is PayloadMode.FILE else None,
             self.generate_button,
             self.embed_clear_button,
+            self.clear_field_button,
             self.output_button,
             self.clear_result_button,
         ):
@@ -1377,6 +1512,7 @@ class PhantomApp:
                 set_enabled(widget, not self._busy)
             self.metadata_panel._render_save_state()
         self.cancel_button.configure(state="normal" if self._busy else "disabled")
+        self._refresh_embed_ready()
 
     # ------------------------------------------------------------------
     # helpers
@@ -1449,6 +1585,7 @@ class PhantomApp:
             if zone != "secret"
             else (".bin", ".txt", ".pdf", ".zip", ".png", ".jpg", ".json", ".csv", ".dat")
         )
+
         def _enter(_widget: Any = widget) -> None:
             self._highlight_zone(_widget, True)
 
@@ -1504,14 +1641,23 @@ class PhantomApp:
         if mode is None:
             return
         self.embed_vm.set_mode(mode)
+        self._invalidate_estimate()
         self._refresh_all()
 
     def _on_text_changed(self, _event: object | None = None) -> None:
         if self._suppress_events:
             return
         self.embed_vm.set_text(self.embed_text.get("1.0", "end-1c"))
+        self._invalidate_estimate()
         self._refresh_embed_state()
         self.debouncer.schedule(self._start_estimate)
+
+    def _invalidate_estimate(self) -> None:
+        """The payload changed: every number on screen now belongs to the old one."""
+        self._estimate_revision += 1
+        self._estimate_failed = False
+        if self.embed_vm.estimate is not None:
+            self.embed_vm.reset_estimate()
 
     def _on_password_changed(self, _event: object | None = None) -> None:
         self.embed_vm.set_password(self.embed_pwd.get())
@@ -1681,6 +1827,9 @@ class PhantomApp:
     # -- probes ---------------------------------------------------------
     def _set_carrier(self, path: str) -> None:
         self.embed_vm.set_carrier(path)
+        # A different carrier means a different capacity: the old estimate was
+        # measured against the old one and cannot stay on screen.
+        self._invalidate_estimate()
         self._set_entry_text(self.output_entry, self.embed_vm.output_path)
         self._refresh_all()
         self._start_job("probe_embed", self.embed_vm.make_probe_job(path), "status_embedding")
@@ -1693,6 +1842,7 @@ class PhantomApp:
     def _set_secret(self, path: str) -> None:
         self.embed_vm.set_secret_file(path)
         self.embed_vm.set_mode(PayloadMode.FILE)
+        self._invalidate_estimate()
         self._refresh_all()
         self.debouncer.schedule(self._start_estimate)
 
@@ -1708,8 +1858,18 @@ class PhantomApp:
             # only outcome is an error dialog over the text box the user is typing in.
             self._set_status_key(problem.i18n_key, severity="warn", **problem.params)
             return
-        job = self.embed_vm.make_estimate_job()
-        self._start_job("estimate", job, "status_ready", silent=True)
+        revision = self._estimate_revision
+        inner = self.embed_vm.make_estimate_job()
+
+        def job(report: Any, cancel: Any) -> tuple[int, Any]:
+            # The revision travels with the result: a job that started before an
+            # edit must not repaint the panel after it.
+            return revision, inner(report, cancel)
+
+        if not self._start_job("estimate", job, "status_ready", silent=True):
+            # Nothing is measuring, so the panel must not promise a number: say
+            # "calculating" and let the next change or the next tick retry.
+            self._refresh_embed_state()
 
     def _start_job(
         self,
@@ -1929,8 +2089,14 @@ class PhantomApp:
             self._set_status_key("status_cancelled", severity="warn")
             return
         if event.kind is WorkerEventType.ERROR and event.error is not None:
+            failed_estimate = self._operation == "estimate"
             self._finish_operation_ui()
             self._reset_progress()
+            if failed_estimate:
+                # The panel says "calculation error" instead of keeping the number
+                # of the previous payload up as if it described this one.
+                self._estimate_failed = True
+                self._refresh_embed_state()
             self._show_error(event.error)
 
     def _on_progress(self, event: WorkerEvent) -> None:
@@ -1974,8 +2140,25 @@ class PhantomApp:
             self._refresh_all()
             self._set_status_key("status_ready", severity="ok")
         elif operation == "estimate":
-            if value is not None:
-                self.embed_vm.apply_estimate(value)
+            revision, estimate = value if isinstance(value, tuple) else (-1, value)
+            if revision != self._estimate_revision:
+                # The text (or the carrier) changed while this estimate was being
+                # computed.  Applying it would put the old payload's size next to the
+                # new payload's characters, so it is dropped and a fresh estimate is
+                # asked for — the panel keeps saying "calculating" until then.
+                LOGGER.debug(
+                    "estimate for revision %s dropped, now %s",
+                    revision,
+                    self._estimate_revision,
+                )
+                self._estimate_failed = False
+                self._refresh_embed_state()
+                self.debouncer.schedule(self._start_estimate)
+                return
+            self._estimate_failed = False
+            self._applied_revision = revision
+            if estimate is not None:
+                self.embed_vm.apply_estimate(estimate)
             self._refresh_embed_state()
         elif operation == "embed" and isinstance(value, EmbedOutcome):
             self._on_embed_done(value)
@@ -2327,6 +2510,11 @@ class PhantomApp:
         self._set_status_key("status_ready", severity="info")
 
     def _clear_embed(self) -> None:
+        # The full reset really is a reset: text, password, carrier, output path and
+        # the estimate history go, so a later estimate cannot be measured against a
+        # carrier that is no longer loaded.
+        self.debouncer.abort()
+        self._invalidate_estimate()
         self.embed_vm.clear()
         self._suppress_events = True
         try:

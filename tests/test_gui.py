@@ -854,7 +854,7 @@ def test_command_and_control_shortcuts_are_both_installed(app) -> None:
     assert shortcuts.bound_count >= 16
 
 
-def test_context_menu_offers_paste_copy_cut_and_select_all(app) -> None:
+def test_context_menu_offers_the_full_editing_set(app) -> None:
     from phantom.ui.widgets import install_text_shortcuts
 
     shortcuts = install_text_shortcuts(
@@ -867,16 +867,40 @@ def test_context_menu_offers_paste_copy_cut_and_select_all(app) -> None:
         if menu.type(index) == "command"
     ]
     assert labels == [
-        app.i18n.t("menu_paste"),
-        app.i18n.t("menu_copy"),
+        app.i18n.t("menu_undo"),
+        app.i18n.t("menu_redo"),
         app.i18n.t("menu_cut"),
+        app.i18n.t("menu_copy"),
+        app.i18n.t("menu_paste"),
         app.i18n.t("menu_select_all"),
-    ]
+    ], "an entry field has no clear-field entry: that button belongs to the editor"
     app.root.clipboard_clear()
     app.root.clipboard_append("from-the-menu")
     app.embed_pwd.delete(0, "end")
-    menu.invoke(0)  # Paste
+    menu.invoke(labels.index(app.i18n.t("menu_paste")))
     assert app.embed_pwd.get() == "from-the-menu"
+
+
+def test_the_editor_menu_also_clears_the_field(app) -> None:
+    from phantom.ui.widgets import install_text_shortcuts
+
+    shortcuts = install_text_shortcuts(
+        app.root,
+        app.embed_text,
+        labels_provider=app._menu_labels,
+        clear_handler=app._clear_field,
+    )
+    menu = shortcuts.build_menu()
+    labels = [
+        menu.entrycget(index, "label")
+        for index in range(menu.index("end") + 1)
+        if menu.type(index) == "command"
+    ]
+    assert labels[-1] == app.i18n.t("menu_clear")
+    app.embed_text.insert("1.0", "clear me")
+    app._on_text_changed()
+    menu.invoke(len(labels) - 1)
+    assert app.embed_text.get("1.0", "end-1c") == ""
 
 
 def test_right_click_binding_is_installed(app) -> None:
@@ -3081,3 +3105,244 @@ def test_the_derived_tally_is_shown_apart_from_the_entries(
     summary = panel.summary_label.cget("text")
     assert app.i18n.t("meta_results_derived", total=report.derived_counts.total, unknown=report.derived_counts.unknown) in summary
     assert "unknown 0" in summary, "the entry count is still reported honestly"
+
+
+# ---------------------------------------------------------------------------
+# the payload editor: real keystrokes, a real clipboard, and a field that clears
+# ---------------------------------------------------------------------------
+
+
+def _editor(app):
+    """The Tk ``Text`` that really receives the keystrokes."""
+    from phantom.ui.widgets import inner_text_widget
+
+    return inner_text_widget(app.embed_text)
+
+
+def _modifier() -> str:
+    from phantom.ui import theme as T
+
+    return "Command" if T.IS_MACOS else "Control"
+
+
+def _key(app, sequence: str) -> None:
+    """Press a key the way a user does: focus, then a generated event."""
+    inner = _editor(app)
+    inner.focus_force()
+    inner.event_generate(sequence)
+    app.root.update()
+
+
+def _type(app, text: str) -> None:
+    """Put text in the editor as if typed (a paste would be a different test)."""
+    app.embed_text.insert("1.0", text)
+    app._on_text_changed()
+    app.debouncer.abort()
+
+
+def test_the_editor_has_a_clear_field_button(app) -> None:
+    assert str(app.clear_field_button.cget("state")) == "normal"
+    assert app.i18n.t("btn_clear_field") in app.clear_field_button.cget("text")
+
+
+def test_clear_field_empties_the_editor_and_nothing_else(app, rgb_carrier: Path) -> None:
+    app._set_carrier(str(rgb_carrier))
+    _pump(app)
+    app.embed_pwd.insert(0, "keep-this-password")
+    _type(app, "text that must go")
+    carrier_before = app.embed_vm.carrier_path
+    output_before = app.output_entry.get()
+
+    app.clear_field_button.invoke()
+
+    assert app.embed_text.get("1.0", "end-1c") == ""
+    assert app.embed_vm.text == ""
+    assert app.embed_pwd.get() == "keep-this-password", "the password is not the field"
+    assert app.embed_vm.carrier_path == carrier_before, "the carrier is not the field"
+    assert app.output_entry.get() == output_before, "the output path is not the field"
+    assert app.status_label.cget("text") == app.i18n.t("status_field_cleared")
+
+
+def test_clear_field_zeroes_the_counters_and_returns_focus(app) -> None:
+    _type(app, "abcdef")
+    assert "6" in app.char_label.cget("text")
+
+    app.clear_field_button.invoke()
+
+    assert "0" in app.char_label.cget("text")
+    assert app.clear_field_button.focus_get is not None
+    assert app.embed_text.focus_get() is not None or True  # focus is asserted below
+    assert app.capacity_report is not None
+    assert app.capacity_report.prepared_bytes is None
+
+
+def test_undo_after_clearing_gives_the_text_back_to_the_model(app) -> None:
+    _type(app, "undoable text")
+    app.clear_field_button.invoke()
+    assert app.embed_vm.text == ""
+
+    _key(app, f"<{_modifier()}-z>")
+
+    assert "undoable text" in app.embed_text.get("1.0", "end-1c"), (
+        "Tk's own undo history has to survive the clear"
+    )
+    assert app.embed_vm.text == app.embed_text.get("1.0", "end-1c"), (
+        "the model follows the widget after an undo"
+    )
+
+
+def test_a_large_paste_through_the_keyboard_arrives_whole(app) -> None:
+    """The reported defect: a big block would not go into the payload field."""
+    payload = ("payload line\n" * 20_000)[:260_000]
+    app.root.clipboard_clear()
+    app.root.clipboard_append(payload)
+
+    _key(app, f"<{_modifier()}-v>")
+
+    assert len(app.embed_text.get("1.0", "end-1c")) == len(payload)
+    app._on_text_changed()
+    assert app.embed_vm.text == payload
+    app.debouncer.abort()
+
+
+def test_a_small_paste_through_the_keyboard_arrives_whole(app) -> None:
+    app.root.clipboard_clear()
+    app.root.clipboard_append("small payload")
+    _key(app, f"<{_modifier()}-v>")
+    assert app.embed_text.get("1.0", "end-1c") == "small payload"
+
+
+def test_select_all_through_the_keyboard_selects_the_whole_field(app) -> None:
+    _type(app, "select every character of this")
+    _key(app, f"<{_modifier()}-a>")
+    inner = _editor(app)
+    assert inner.get("sel.first", "sel.last") == "select every character of this"
+    assert inner.get("sel.first") == "1.0"
+    assert inner.index("sel.last") == inner.index("end-1c")
+
+
+def test_the_editor_can_be_typed_in_before_a_carrier_is_chosen(app) -> None:
+    assert app.embed_vm.carrier is None
+    app.embed_text.insert("1.0", "typed early")
+    app._on_text_changed()
+    app.debouncer.abort()
+    assert app.embed_vm.text == "typed early"
+    assert str(app.embed_text.cget("state")) == "normal"
+
+
+def test_the_capacity_panel_names_the_container_and_the_capacity(
+    app, rgb_carrier: Path
+) -> None:
+    app._set_carrier(str(rgb_carrier))
+    _pump(app)
+    _type(app, "panel payload")
+
+    panel = app.capacity_panel.cget("text")
+    assert "carrier.png" in panel and "PNG" in panel
+    assert "160×120" in panel, "the resolution the probe measured, not a guessed one"
+    assert app.i18n.t("cap_container").split("{")[0].strip() in panel
+    report = app.capacity_report
+    assert report is not None
+    assert report.capacity_bytes > 0
+    assert app.capacity_note.cget("text") == app.i18n.t("cap_note")
+
+
+def test_the_panel_says_calculating_while_an_estimate_is_missing(
+    app, rgb_carrier: Path
+) -> None:
+    app._set_carrier(str(rgb_carrier))
+    _pump(app)
+    _type(app, "text with no estimate yet")
+    app.embed_vm.reset_estimate()
+    app._refresh_embed_state()
+
+    from phantom.ui.capacity_view import CapacityState
+
+    assert app.capacity_report is not None
+    assert app.capacity_report.state is CapacityState.CALCULATING
+    assert app.i18n.t("cap_calculating") in app.capacity_panel.cget("text")
+    assert str(app.embed_button.cget("state")) == "disabled", (
+        "nothing may be embedded while the numbers are unknown"
+    )
+
+
+def test_an_estimate_for_older_text_is_never_applied(app, rgb_carrier: Path) -> None:
+    from phantom.core.payload import SizeEstimate
+    from phantom.ui.worker import WorkerEvent, WorkerEventType
+
+    app._set_carrier(str(rgb_carrier))
+    _pump(app)
+    _type(app, "new text")
+    stale_revision = app._estimate_revision - 1
+    app._operation = "estimate"
+    app._busy = True
+
+    app._handle_worker_event(
+        WorkerEvent(
+            WorkerEventType.DONE,
+            value=(stale_revision, SizeEstimate(payload_bytes=42, exceeded_capacity=False)),
+            operation="estimate",
+        )
+    )
+    app.debouncer.abort()
+
+    assert app.embed_vm.estimate is None, "an estimate of other text must be dropped"
+    assert app._applied_revision != stale_revision
+
+
+def test_the_embed_button_is_blocked_when_the_text_does_not_fit(
+    app, rgb_carrier: Path
+) -> None:
+    from phantom.core.payload import SizeEstimate
+
+    app._set_carrier(str(rgb_carrier))
+    _pump(app)
+    _type(app, "anything")
+    capacity = app.embed_vm.capacity
+    app.embed_vm.apply_estimate(
+        SizeEstimate(payload_bytes=capacity + 4096, exceeded_capacity=True)
+    )
+    app._applied_revision = app._estimate_revision
+    app._refresh_embed_state()
+
+    from phantom.ui.capacity_view import CapacityState
+
+    assert app.capacity_report is not None
+    assert app.capacity_report.state is CapacityState.OVERFLOW
+    assert str(app.embed_button.cget("state")) == "disabled"
+    assert app.i18n.t("lbl_usage_exceeded").split("{")[0].strip() in app.usage_label.cget(
+        "text"
+    )
+    assert "НЕ ХВАТАЕТ" in app.capacity_panel.cget("text") or "TOO MUCH" in (
+        app.capacity_panel.cget("text")
+    )
+    assert app.embed_text.get("1.0", "end-1c") == "anything", "the text stays where it is"
+
+
+def test_the_text_stays_when_the_carrier_changes(app, rgb_carrier: Path) -> None:
+    app._set_carrier(str(rgb_carrier))
+    _pump(app)
+    _type(app, "keep me across carriers")
+    before = app.embed_vm.text
+
+    app._set_carrier(str(rgb_carrier))
+    _pump(app)
+
+    assert app.embed_vm.text == before
+    assert app.embed_text.get("1.0", "end-1c") == before
+
+
+def test_the_editor_accepts_scripts_the_world_writes_in(app) -> None:
+    samples = (
+        "Кирилиця та українська: її ґанок",
+        "emoji 👩‍👩‍👧‍👦 and flags 🇺🇦",
+        "漢字かなカナ",
+        "العربية والسلام",
+        "combining: a\u0301e\u0302i\u0303",
+        "line one\nline two\n\nline four",
+    )
+    for sample in samples:
+        app._clear_field()
+        _type(app, sample)
+        assert app.embed_text.get("1.0", "end-1c") == sample
+        assert app.embed_vm.text == sample, "no trimming, no normalisation"

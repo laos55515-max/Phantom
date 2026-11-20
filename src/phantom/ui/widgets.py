@@ -24,7 +24,12 @@ from customtkinter.windows.widgets.appearance_mode import (
 )
 
 from phantom.ui import theme as T
-from phantom.ui.clipboard import ClipboardActions, TextBuffer, paste
+from phantom.ui.clipboard import (
+    ClipboardActions,
+    TextBuffer,
+    enable_undo,
+    paste,
+)
 
 LOGGER: Final = logging.getLogger("phantom.widgets")
 
@@ -37,6 +42,7 @@ _CANVAS_FLUSH: Final[Any] = tk.Canvas.update_idletasks
 #: ``CTkBaseClass._set_appearance_mode`` through ``super()``, i.e. once per widget
 #: per appearance change.
 _MISC_FLUSH: Final[Any] = tk.Misc.update_idletasks
+
 
 def release_appearance_callbacks(root: Any) -> int:
     """Stop CustomTkinter notifying widgets of a window that is going away.
@@ -153,8 +159,7 @@ def install_quiet_display() -> None:
     misc_type.update_idletasks = _flush_refused
     canvas_type.update_idletasks = _flush_refused
     LOGGER.info(
-        "display passes are refused for this process: update idletasks is unsafe on "
-        "this Tk build"
+        "display passes are refused for this process: update idletasks is unsafe on this Tk build"
     )
 
 
@@ -207,9 +212,7 @@ def quiet_redraws() -> Iterator[None]:
 #: milliseconds on macOS, where a machine carries hundreds of them — and it used
 #: to run once per widget, because every ``sans_font()``/``mono_font()`` call
 #: looked the family up again.  One answer per Tk root is enough.
-_FAMILIES: Final[weakref.WeakKeyDictionary[Any, frozenset[str]]] = (
-    weakref.WeakKeyDictionary()
-)
+_FAMILIES: Final[weakref.WeakKeyDictionary[Any, frozenset[str]]] = weakref.WeakKeyDictionary()
 
 #: ``CTkFont`` objects are immutable once created and shared by many widgets of
 #: the same root, so one object per ``(family, size, weight)`` is enough.  This
@@ -452,6 +455,35 @@ SHORTCUT_KEYS: Final = (
     ("a", "select_all"),
 )
 
+#: Editing history.  ``<Command-Z>`` is the shifted sequence in Tk's spelling, so the
+#: redo pair is spelled out instead of being generated from one letter.
+UNDO_SEQUENCES: Final = (
+    "<Command-z>",
+    "<Control-z>",
+    "<<Undo>>",
+)
+REDO_SEQUENCES: Final = (
+    "<Command-Z>",
+    "<Command-Shift-z>",
+    "<Control-y>",
+    "<Control-Y>",
+    "<Control-Shift-Z>",
+    "<<Redo>>",
+)
+
+#: The virtual events Tk's own accelerator table posts.  Binding them here means a
+#: native menu, a class binding or a Tk 9 keystroke all end in the *same* handler,
+#: and the ``"break"`` each returns keeps the class binding from doing it twice.
+VIRTUAL_SEQUENCES: Final = (
+    ("<<SelectAll>>", "select_all"),
+    ("<<Copy>>", "copy"),
+    ("<<Cut>>", "cut"),
+    ("<<Paste>>", "paste"),
+)
+
+#: Placeholder in a menu description list; rendered as a real separator.
+SEPARATOR: Final = "-"
+
 #: Right-click / two-finger tap on macOS, right-click elsewhere.
 MENU_SEQUENCES: Final = ("<Button-2>", "<Button-3>", "<Control-Button-1>")
 
@@ -488,6 +520,8 @@ class TextShortcuts:
     widget: Any
     labels_provider: Callable[[], Mapping[str, str]] | None = None
     buffer: TextBuffer | None = None
+    #: Called when the user asks for "clear field"; ``None`` hides the menu entry.
+    clear_handler: Callable[[], None] | None = None
     actions: ClipboardActions = field(init=False)
     sequences: list[str] = field(default_factory=list)
     _menu: Any = field(default=None, init=False)
@@ -515,6 +549,20 @@ class TextShortcuts:
 
     def select_all(self, _event: Any = None) -> str:
         self.actions.select_all()
+        return "break"
+
+    def undo(self, _event: Any = None) -> str:
+        self.actions.undo()
+        return "break"
+
+    def redo(self, _event: Any = None) -> str:
+        self.actions.redo()
+        return "break"
+
+    def clear(self, _event: Any = None) -> str:
+        """Empty the field through the owner's callback, not behind its back."""
+        if self.clear_handler is not None:
+            self.clear_handler()
         return "break"
 
     def menu_labels(self) -> dict[str, str]:
@@ -545,15 +593,22 @@ class TextShortcuts:
             )
         except Exception as exc:  # noqa: BLE001 - Aqua ignores most menu colours
             LOGGER.debug("menu colours not supported: %s", exc)
-        commands = (
-            ("menu_paste", self.paste),
-            ("menu_copy", self.copy),
+        commands: list[tuple[str, Callable[..., str]]] = [
+            ("menu_undo", self.undo),
+            ("menu_redo", self.redo),
+            (SEPARATOR, self.undo),
             ("menu_cut", self.cut),
+            ("menu_copy", self.copy),
+            ("menu_paste", self.paste),
             ("menu_select_all", self.select_all),
-        )
-        for index, (key, command) in enumerate(commands):
-            if index == 3:
+        ]
+        if self.clear_handler is not None:
+            commands.append((SEPARATOR, self.undo))
+            commands.append(("menu_clear", self.clear))
+        for key, command in commands:
+            if key == SEPARATOR:
                 menu.add_separator()
+                continue
             menu.add_command(label=labels.get(key, key), command=command)
         return menu
 
@@ -578,25 +633,34 @@ class TextShortcuts:
     def install(self) -> int:
         """Bind the shortcuts and the menu; returns the number of bindings."""
         for key, method in SHORTCUT_KEYS:
-            handler = getattr(self, method)
-            for sequence in (
-                f"<Command-{key}>",
-                f"<Control-{key}>",
-                f"<Command-{key.upper()}>",
-                f"<Control-{key.upper()}>",
-            ):
-                try:
-                    self.widget.bind(sequence, handler)
-                except Exception as exc:  # noqa: BLE001 - destroyed widget
-                    LOGGER.debug("shortcut %s not bound: %s", sequence, exc)
-                    continue
-                self.sequences.append(sequence)
+            self._bind_many(
+                [
+                    f"<Command-{key}>",
+                    f"<Control-{key}>",
+                    f"<Command-{key.upper()}>",
+                    f"<Control-{key.upper()}>",
+                ],
+                getattr(self, method),
+            )
+        self._bind_many(UNDO_SEQUENCES, self.undo)
+        self._bind_many(REDO_SEQUENCES, self.redo)
+        for sequence, method in VIRTUAL_SEQUENCES:
+            self._bind_many([sequence], getattr(self, method))
         for sequence in MENU_SEQUENCES:
             try:
                 self.widget.bind(sequence, self.popup)
             except Exception as exc:  # noqa: BLE001 - platform dependent
                 LOGGER.debug("menu binding %s not bound: %s", sequence, exc)
         return self.bound_count
+
+    def _bind_many(self, sequences: Sequence[str], handler: Callable[..., Any]) -> None:
+        for sequence in sequences:
+            try:
+                self.widget.bind(sequence, handler)
+            except Exception as exc:  # noqa: BLE001 - destroyed widget
+                LOGGER.debug("shortcut %s not bound: %s", sequence, exc)
+                continue
+            self.sequences.append(sequence)
 
 
 def paste_into(widget: Any) -> str | None:
@@ -609,6 +673,7 @@ def install_text_shortcuts(
     widget: Any,
     *,
     labels_provider: Callable[[], Mapping[str, str]] | None = None,
+    clear_handler: Callable[[], None] | None = None,
 ) -> TextShortcuts:
     """Give an entry/textbox working Cmd/Ctrl shortcuts and a context menu.
 
@@ -621,7 +686,12 @@ def install_text_shortcuts(
         widget=inner,
         labels_provider=labels_provider,
         buffer=TextBuffer(inner=inner, public=None if inner is widget else widget),
+        clear_handler=clear_handler,
     )
+    # Tk keeps a Text widget's undo history switched off; Cmd+Z then does nothing
+    # at all.  Turning it on is a widget property, not a new feature: the history
+    # is bounded by Tk and cleared with the widget.
+    enable_undo(shortcuts.buffer)
     shortcuts.install()
     LOGGER.debug(
         "text shortcuts on %s: %d keyboard bindings, root=%r",

@@ -233,6 +233,15 @@ class EmbedViewModel:
     def apply_estimate(self, estimate: SizeEstimate) -> None:
         self.estimate = estimate
 
+    def reset_estimate(self) -> None:
+        """Forget the measurement — the payload it described is gone.
+
+        ``set_text``/``set_secret_file`` already do this; the interface also calls
+        it when a *carrier* changes, because the capacity the estimate was measured
+        against is no longer the capacity on screen.
+        """
+        self.estimate = None
+
     def clear(self) -> None:
         self.carrier_path = ""
         self.carrier = None
@@ -378,11 +387,7 @@ class EmbedViewModel:
         self,
     ) -> Callable[[ProgressFn, threading.Event], SizeEstimate | None]:
         text = self.text if self.mode is PayloadMode.TEXT else None
-        path = (
-            self.secret_path
-            if self.mode is PayloadMode.FILE and self.secret_path
-            else None
-        )
+        path = self.secret_path if self.mode is PayloadMode.FILE and self.secret_path else None
         capacity = self.capacity or 0
         backend = self.backend
 

@@ -237,12 +237,11 @@ jobs:
           python -m pytest -ra -m gui -v --durations=20 \
             --timeout=120 --timeout-method=thread \
             -o faulthandler_timeout=120 2>&1 | tee gui-macos.log
-      - name: Editor and capacity, diagnosed on real Aqua
-        if: always()
-        continue-on-error: true
+      - name: The editor and the capacity panel, on Tk's own loop
         run: |
+          set -o pipefail
           export PYTHONPATH=src
-          python -X faulthandler -u tools/smoke_editor_capacity.py --diagnose 2>&1 \
+          python -X faulthandler -u tools/smoke_editor_capacity.py --trace 2>&1 \
             | tee -a gui-macos.log
 
       - name: GUI log
@@ -364,16 +363,20 @@ jobs:
               || echo "::warning::repro $mode exited $?"
           done
 
-      - name: Editor and capacity, diagnosed on real Aqua
-        # Diagnostic for the payload-editor defects: real keystrokes, real clipboard,
-        # a report instead of assertions.  It becomes a gate once the fixes are in.
-        if: always()
-        continue-on-error: true
+      - name: The editor and the capacity panel, on Tk's own loop
+        # A gate, on 9.1 as well: real keystrokes, the real clipboard, a real PNG
+        # carrier and no `update()` anywhere, so the evidence is the same kind the
+        # theme smoke gives.  The assertion run is what decides; on failure the
+        # diagnostic run repeats every step and prints what it saw.
         run: |
-          . .venv-tk9/bin/activate 2>/dev/null || true
+          . .venv-tk9/bin/activate
+          set -o pipefail
           export PYTHONPATH=src
-          python -X faulthandler -u tools/smoke_editor_capacity.py --diagnose 2>&1 \
-            | tee editor-diagnose.log
+          python -X faulthandler -u tools/smoke_editor_capacity.py --trace 2>&1 \
+            | tee editor-smoke.log \
+            || { echo "::error::the editor smoke failed on Tk 9.1"; \
+                 python -X faulthandler -u tools/smoke_editor_capacity.py --diagnose 2>&1 \
+                   | tee -a editor-smoke.log; exit 1; }
 
       - name: Native backtrace of the crash (lldb)
         if: always()
@@ -414,7 +417,7 @@ jobs:
           for report in reports[-2:]:
               print(f"::notice::{report.name}: {report.read_text(errors='replace')[:2000]}")
 
-          for name in ("tk9-smoke.log", "gui-tk9.log", "editor-diagnose.log"):
+          for name in ("tk9-smoke.log", "gui-tk9.log", "editor-smoke.log"):
               path = pathlib.Path(name)
               if not path.exists():
                   print(f"::notice::{name}: missing")
