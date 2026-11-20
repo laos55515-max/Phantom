@@ -3196,6 +3196,11 @@ def _key(app, sequence: str, *, virtual: str | None = None, settle_ms: int = 150
         app.root.focus_force()
         inner.focus_force()
 
+    def through_focus() -> None:
+        """Route the key the way Tk routes a user's: to the focus window."""
+        inner.focus_set()
+        app.root.event_generate(sequence, when="now")
+
     def press_with(setup, when: str) -> None:
         seen = _witness(inner, "<KeyPress>")
 
@@ -3212,6 +3217,7 @@ def _key(app, sequence: str, *, virtual: str | None = None, settle_ms: int = 150
     try:
         press_with(focused, "now")
         press_with(lifted, "now")
+        press_with(through_focus, "now")
         press_with(focused, "tail")
     except _Delivered:
         return
@@ -3301,7 +3307,7 @@ def test_a_large_paste_through_the_keyboard_arrives_whole(app) -> None:
     app.root.clipboard_clear()
     app.root.clipboard_append(payload)
 
-    _key(app, f"<{_modifier()}-v>")
+    _key(app, f"<{_modifier()}-v>", virtual="<<Paste>>")
 
     handed_back = app.root.clipboard_get()
     assert len(app.embed_text.get("1.0", "end-1c")) == len(handed_back), (
