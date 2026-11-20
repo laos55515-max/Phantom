@@ -354,6 +354,9 @@ def main(argv: list[str] | None = None) -> int:
             )
 
         def step_copy() -> None:
+            # One range at a time: ``tag_add`` adds to whatever is selected, and two
+            # ranges make ``sel.first``..``sel.last`` the whole field between them.
+            inner.tag_remove("sel", "1.0", "end")
             inner.tag_add("sel", "1.0", "1.6")
             app._refresh_editor_actions()
             before = state_of(app.editor_copy_button)
@@ -367,6 +370,7 @@ def main(argv: list[str] | None = None) -> int:
             )
 
         def step_cut() -> None:
+            inner.tag_remove("sel", "1.0", "end")
             inner.tag_add("sel", "1.11", "end-1c")
             app._refresh_editor_actions()
             before = state_of(app.editor_cut_button)
