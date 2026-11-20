@@ -1054,9 +1054,16 @@ class PhantomApp:
             self._hide_drop_hints()
 
     def _hide_drop_hints(self) -> None:
-        """Stop promising a drop the window cannot accept."""
-        for hint in (self.dnd_carrier_hint, self.dnd_stego_hint, self.dnd_secret_hint):
-            hint.pack_forget()
+        """Stop promising a drop the window cannot accept.
+
+        Called while the tabs are being built — the drop zones are seated before
+        the hints exist — so a hint that has not been created yet is simply not
+        there to hide.
+        """
+        for name in ("dnd_carrier_hint", "dnd_stego_hint", "dnd_secret_hint"):
+            hint = getattr(self, name, None)
+            if hint is not None:
+                hint.pack_forget()
 
     def _render_all_labels(self) -> None:
         self._render_language_labels()
