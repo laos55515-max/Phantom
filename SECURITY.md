@@ -138,15 +138,28 @@ that are stated here rather than promised away:
   Python's memory manager and Tk's allocator are not under this program's control,
   and freed pages may still contain the old text until the operating system reuses
   them. No physical erasure is claimed, here or anywhere else in PHANTOM.
-- **The undo history is the widget's own.** It is bounded by Tk (`maxundo=-1`
-  means "no limit", so the history is bounded by memory), it is not encrypted, and
-  it is dropped when the widget is destroyed. A full reset (`СБРОС`) empties the
-  field, which is what makes the history empty: Tk keeps no separate store.
+- **The undo history is the widget's own, and it is bounded.**
+  `C.EDITOR_MAX_UNDO` (50) is passed to the widget, because Tk stores the text
+  every undo step changed and an unbounded stack over multi-megabyte edits is
+  unbounded memory. The history is not encrypted, and it is dropped when the
+  widget is destroyed. Two different actions, two different promises:
+  `ОЧИСТИТЬ ПОЛЕ` is an ordinary undoable edit (the text is one `Cmd+Z` away,
+  which is what a clear button should do), while the full reset `СБРОС` empties
+  the field, calls `edit_reset` and drops every application-held reference — the
+  view model's text, the measurement snapshot and the generated password — so the
+  text it removed is *not* recoverable with `Cmd+Z`. References released is all
+  that is: Tk's allocator and Python's free lists are not wiped, and this is not
+  a claim of physical erasure.
 - **The clipboard is the operating system's.** Pasting reads it; copying from the
   editor writes it; the generated-password path still clears it after
   `CLIPBOARD_CLEAR_SECONDS` through the native tool. Text you paste stays on the
   system clipboard until something else replaces it — PHANTOM cannot revoke a
-  clipboard it does not own.
+  clipboard it does not own. The 30-second auto-clear is armed only for values up
+  to `C.CLIPBOARD_AUTO_CLEAR_MAX_CHARS` (200 000 characters): deciding whether a
+  15 MiB clipboard is still ours means reading all of it back on the GUI thread,
+  and a promise that freezes the window is not a security feature. Copying more
+  than `C.CLIPBOARD_EXACT_WARN_CHARS` characters says so in the footer and points
+  at the TXT export instead.
 - **Tk's clipboard conversion is Tk's.** Measured on macOS Aqua in CI: the
   pasteboard handed back a string with one character per ~10 000 re-decoded as
   Latin-1 (`а` → `Ð°`) on some runs of a 260 000-character string, and the correct
@@ -155,6 +168,19 @@ that are stated here rather than promised away:
   returns, and no byte is dropped afterwards. If you need a byte-exact transfer of
   a very large block, put it in a file and use the file payload instead — that path
   never goes through Tk.
+- **The result pane shows a preview, never a truncated value.** Painting more
+  than `C.RESULT_PREVIEW_CHARS` (200 000) characters into a Tk widget costs
+  seconds on Aqua, so the pane paints the beginning and labels it
+  (`ПОКАЗАНО N ИЗ M СИМВОЛОВ`). `КОПИРОВАТЬ ВСЁ`, `СОХРАНИТЬ TXT (UTF-8)` and the
+  expanded window all work from the payload, and the TXT export writes the
+  decrypted bytes verbatim, verifying them against the payload's SHA-256 — no
+  Unicode normalisation, no replacement characters, no line-ending conversion. A
+  payload that is not valid UTF-8 is *reported*, never "repaired": PHANTOM does
+  not change your data to make it displayable.
+- **Nothing about your text is logged.** Log lines name widget types, event kinds,
+  operation names and exception types — never the payload, the password or the
+  clipboard contents. The diagnostics added in 2.1.0 (a failing handler names the
+  step it was on) keep that rule.
 - **Capacity is checked twice, on purpose.** The panel's number is a preliminary
   estimate computed by `phantom.core.payload.estimate_size`; the engine's own
   capacity check at embed time is final and is never disabled. The editor refuses

@@ -123,6 +123,11 @@ Text fields behave like native ones on every platform:
   payload field — Clear field. Every shortcut is bound on the inner Tk widget, so
   CustomTkinter's proxies cannot swallow it, and every command is one handler
   shared with the menu and with Tk's virtual events, so nothing runs twice.
+- **An action bar under the payload field**: paste, copy, cut, select all, undo,
+  redo, copy all and clear field. Each button calls the same handler as the
+  hotkey and the context-menu entry, so a button and `Cmd+C` cannot disagree, and
+  availability follows the editor (copy needs a selection, copy all needs text,
+  everything is disabled while a job runs or in file mode).
 - The payload field takes text of any size before a carrier is chosen, keeps it
   when the carrier changes, and never splits, trims or drops it. One line longer
   than `EDITOR_WRAP_LINE_LIMIT` (20 000 characters) turns word wrap off — a
@@ -164,9 +169,20 @@ Text fields behave like native ones on every platform:
   (`pbcopy`, `clip`, `wl-copy`, `xclip`, `xsel`) instead of Tk alone, because Tk
   only reaches the system clipboard while it owns it. If another application has
   replaced the content in the meantime, it is left alone.
+- **The result card copies and exports the whole payload, not the preview.**
+  `SELECT ALL`, `COPY SELECTION`, `COPY ALL` and `SAVE AS TXT (UTF-8)` sit next to
+  the result; the pane paints at most `RESULT_PREVIEW_CHARS` (200 000)
+  characters and says how much it is showing, because a multi-megabyte insert is
+  a multi-second display pass on Aqua. Copy-all and the TXT export work from the
+  decrypted payload: the file is written verbatim and verified against its
+  SHA-256 — nothing is normalised, no character is replaced, no line ending is
+  rewritten. A payload that is not valid UTF-8 is reported instead of being
+  "repaired".
 - `EXPAND` opens the result in a window at 80 % of the screen with the text
-  selectable and read-only, plus `COPY TEXT`, `COPY PATH`, `SHOW IN FINDER`
-  (macOS `open -R`, Windows `explorer /select,`, Linux `xdg-open`) and `CLOSE`.
+  selectable and read-only, plus `COPY TEXT`, `SELECT ALL`, `SAVE AS TXT`,
+  `COPY PATH`, `SHOW IN FINDER` (macOS `open -R`, Windows `explorer /select,`,
+  Linux `xdg-open`) and `CLOSE`; it holds the complete text even when its own
+  pane shows a preview.
 
 ### Window size, start-up and language
 

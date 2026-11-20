@@ -27,6 +27,7 @@ extracting exactly as before, and this refusal happens *before* anything is pack
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Final
 
 from phantom.core.errors import InvalidUnicode
@@ -83,3 +84,64 @@ def utf8_size(text: str) -> int:
     that the text itself cannot be stored.
     """
     return len(text.encode("utf-8", errors="surrogatepass"))
+
+
+@dataclass(frozen=True, slots=True)
+class TextMetrics:
+    """One measurement of one string, taken once.
+
+    The interface used to ask four different questions — how many characters, how
+    many UTF-8 bytes, is any line long enough to slow Tk's word wrap, can this text
+    be stored at all — and every one of them walked the whole string.  On a 12 MiB
+    payload that is more than the editor can afford per keystroke, so all four are
+    measured in one pass, stored, and reused until the text really changes.
+    """
+
+    chars: int
+    utf8_bytes: int
+    longest_line: int
+    unencodable: int | None
+
+    @property
+    def empty(self) -> bool:
+        return self.chars == 0
+
+    @property
+    def storable(self) -> bool:
+        """Whether this text has an exact UTF-8 form (no lone surrogates)."""
+        return self.unencodable is None
+
+
+def measure_text(text: str, *, scan_lines: bool = True) -> TextMetrics:
+    """Measure ``text`` in one walk: characters, UTF-8 bytes, longest line, validity.
+
+    ``scan_lines=False`` skips the line walk and reports ``longest_line=-1`` — for a
+    text short enough that no line can reach the wrap threshold, walking millions of
+    lines to prove it would be the cost this function exists to avoid.
+    """
+    longest = -1
+    if scan_lines:
+        longest = 0
+        start = 0
+        while True:
+            found = text.find("\n", start)
+            if found < 0:
+                longest = max(longest, len(text) - start)
+                break
+            longest = max(longest, found - start)
+            start = found + 1
+    try:
+        size = len(text.encode("utf-8"))
+        unencodable: int | None = None
+    except UnicodeEncodeError as exc:
+        # The byte counter must not make the field unusable: count what it would
+        # take with the replacement form, and let the interface say separately that
+        # the text cannot be stored (see `require_exact`).
+        size = utf8_size(text)
+        unencodable = exc.start
+    return TextMetrics(
+        chars=len(text),
+        utf8_bytes=size,
+        longest_line=longest,
+        unencodable=unencodable,
+    )

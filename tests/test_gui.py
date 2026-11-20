@@ -1212,6 +1212,301 @@ def test_closing_the_window_releases_the_wheel_routing(app) -> None:
 
 
 # ---------------------------------------------------------------------------
+# the editor action bar, the result actions and the diagnostics
+# ---------------------------------------------------------------------------
+
+
+def _text_payload(text: str, *, name: str = "message.txt"):
+    """A text payload exactly as the engine hands one over (real bytes, real digest)."""
+    import hashlib
+
+    from phantom.core.payload import ExtractedPayload, PayloadKind
+
+    data = text.encode("utf-8")
+    digest = hashlib.sha256(data).hexdigest()
+    return ExtractedPayload(
+        kind=PayloadKind.TEXT,
+        name=name,
+        data=data,
+        sha256_expected=digest,
+        sha256_actual=digest,
+        integrity_ok=True,
+        original_size=len(data),
+        compressed_size=len(data),
+    )
+
+
+def _show_text_payload(app, text: str) -> str:
+    """Put a real payload in the extract model and repaint the panel."""
+    payload = _text_payload(text)
+    app.extract_vm.result = payload
+    app.extract_vm.outcome = None
+    app._result_preview_key = None
+    app._refresh_extract_state()
+    return text
+
+
+def test_the_editor_action_bar_offers_every_action(app) -> None:
+    """Buttons, hotkeys and the context menu must be the same handlers.
+
+    Anything else is how a field ends up with a "cut" button that cuts and a
+    Cmd+X that does nothing — the situation this bar exists to end.
+    """
+    bar = app.editor_actions
+    for widget, label_key in (
+        (app.editor_paste_button, "btn_paste"),
+        (app.editor_copy_button, "btn_copy"),
+        (app.editor_cut_button, "btn_cut"),
+        (app.editor_select_all_button, "btn_select_all"),
+        (app.editor_undo_button, "btn_undo"),
+        (app.editor_redo_button, "btn_redo"),
+        (app.editor_copy_all_button, "btn_copy_all"),
+        (app.clear_field_button, "btn_clear_field"),
+    ):
+        assert widget.master is bar, f"{label_key} is not in the action bar"
+        assert widget.cget("text") == app.i18n.t(label_key)
+    api = app._editor_action_api()
+    assert api is not None and api is app._editor_shortcuts.actions, (
+        "the bar is not using the shortcut object's clipboard actions"
+    )
+
+
+def test_select_all_button_selects_the_whole_editor(app) -> None:
+    body = "".join(f"line {index}: строка текста\n" for index in range(2000))
+    app.embed_text.insert("1.0", body)
+    app._on_text_changed()
+    app.editor_select_all_button.invoke()
+    inner = app._editor_inner
+    assert inner.get("sel.first", "sel.last") == body
+    assert inner.index("insert") != "1.0", "the caret sits in front of the selection"
+
+
+def test_copy_selection_then_copy_all_from_the_action_bar(app) -> None:
+    body = "alpha beta gamma"
+    app.embed_text.insert("1.0", body)
+    app._on_text_changed()
+    inner = app._editor_inner
+    inner.tag_remove("sel", "1.0", "end")
+    inner.tag_add("sel", "1.0", "1.5")
+    app._refresh_editor_actions()
+    app.editor_copy_button.invoke()
+    assert app.root.clipboard_get() == "alpha"
+    inner.tag_remove("sel", "1.0", "end")
+    app.editor_copy_all_button.invoke()
+    assert app.root.clipboard_get() == body
+    assert app.embed_vm.text == body
+
+
+def test_cut_button_removes_the_selection_and_updates_the_model(app) -> None:
+    app.embed_text.insert("1.0", "cut me please")
+    app._on_text_changed()
+    inner = app._editor_inner
+    inner.tag_add("sel", "1.0", "1.7")
+    app.editor_cut_button.invoke()
+    assert inner.get("1.0", "end-1c") == "please"
+    assert app.root.clipboard_get() == "cut me"
+    assert app.embed_vm.text == "please", "the model still describes the deleted text"
+
+
+def test_paste_button_inserts_the_clipboard(app) -> None:
+    app.root.clipboard_clear()
+    app.root.clipboard_append("pasted body")
+    app.editor_paste_button.invoke()
+    assert app._editor_inner.get("1.0", "end-1c") == "pasted body"
+    assert app.embed_vm.text == "pasted body"
+
+
+def test_undo_and_redo_buttons_follow_the_history(app) -> None:
+    app.embed_text.insert("1.0", "undo me")
+    app.embed_text.edit_separator()
+    app._on_editor_modified()
+    app.root.update()
+    assert str(app.editor_undo_button.cget("state")) == "normal"
+    app.editor_undo_button.invoke()
+    assert app._editor_inner.get("1.0", "end-1c") == ""
+    assert app.embed_vm.text == ""
+    assert str(app.editor_redo_button.cget("state")) == "normal"
+    app.editor_redo_button.invoke()
+    assert app._editor_inner.get("1.0", "end-1c") == "undo me"
+
+
+def test_clear_field_keeps_the_password_and_the_carrier(app) -> None:
+    app.embed_vm.set_password("keep-me-please")
+    app.embed_vm.carrier_path = "/tmp/carrier.png"
+    app.embed_text.insert("1.0", "text to clear")
+    app._on_text_changed()
+    app.clear_field_button.invoke()
+    assert app._editor_inner.get("1.0", "end-1c") == ""
+    assert app.embed_vm.password == "keep-me-please"
+    assert app.embed_vm.carrier_path == "/tmp/carrier.png"
+    assert app._status_key == "status_field_cleared"
+
+
+def test_a_full_reset_drops_the_undo_history(app) -> None:
+    """The text a reset removes must not be one Cmd+Z away."""
+    import tkinter as tk
+
+    app.embed_text.insert("1.0", "secret payload")
+    app._on_text_changed()
+    app._clear_embed()
+    app.root.update()
+    with pytest.raises(tk.TclError):
+        app._editor_inner.edit_undo()
+    assert app._editor_can_undo is False and app._editor_can_redo is False
+
+
+def test_result_copy_all_uses_the_model_not_the_preview(app, monkeypatch) -> None:
+    """The pane paints a preview; copy-all must hand over everything.
+
+    The preview is capped (a 15 MiB insert is a multi-second display pass on Aqua),
+    so a copy that reads the widget silently truncates the user's data.  This is
+    that bug, asserted against the model.  The cap is lowered here so the test does
+    not spend a second painting a pane it is not testing.
+    """
+    monkeypatch.setattr(C, "RESULT_PREVIEW_CHARS", 4_000)
+    body = "".join(f"{index:06d} строка результата 😀\n" for index in range(900))
+    assert len(body) > C.RESULT_PREVIEW_CHARS
+    _show_text_payload(app, body)
+    preview = app.result_text.get("1.0", "end-1c")
+    assert len(preview) == C.RESULT_PREVIEW_CHARS, "the preview cap did not apply"
+    app.copy_button.invoke()
+    copied = app.root.clipboard_get()
+    assert len(copied) == len(body)
+    assert copied == body
+
+
+def test_result_selects_and_copies_without_being_editable(app) -> None:
+    body = "read only result — строка"
+    _show_text_payload(app, body)
+    assert app.result_text.cget("state") == "disabled"
+    app.select_all_result_button.invoke()
+    inner = app.result_text._textbox
+    assert inner.get("sel.first", "sel.last") == body
+    app.copy_selection_button.invoke()
+    assert app.root.clipboard_get() == body
+
+
+def test_reading_the_clipboard_is_not_the_only_way_to_get_the_result(app) -> None:
+    """With no selection, "copy selection" says so instead of copying nothing."""
+    _show_text_payload(app, "body")
+    app.result_text._textbox.tag_remove("sel", "1.0", "end")
+    app.copy_selection_button.invoke()
+    assert app._status_key == "status_selection_empty"
+
+
+def test_result_txt_save_is_byte_exact(app, dialogs, tmp_path: Path) -> None:
+    """No normalisation, no replacement characters, no rewritten line endings."""
+    body = (
+        "Cyrillic: Привіт, світе\r\n"
+        "Emoji: 👩‍👩‍👧‍👦 🇺🇦\n"
+        "Combining: e\u0301 a\u0308\n"
+        "CJK: 漢字かなカナ\n"
+        "NUL and dashes: — – ‒\n"
+    )
+    _show_text_payload(app, body)
+    payload_bytes = app.extract_vm.result.data
+    target = tmp_path / "result.txt"
+    dialogs.paths.append(str(target))
+    assert app._save_result_txt() is True
+    written = target.read_bytes()
+    assert written == payload_bytes
+    assert b"\r\n" in written, "the CRLF line ending was rewritten"
+    assert "\ufffd".encode() not in written
+    assert written.decode("utf-8") == body
+    assert app._status_key == "status_txt_saved"
+
+
+def test_a_payload_that_is_not_utf8_is_reported_not_repaired(app, dialogs) -> None:
+    from phantom.core.payload import ExtractedPayload, PayloadKind
+
+    data = b"ok" + b"\xff\xfe" + b"text"
+    payload = ExtractedPayload(
+        kind=PayloadKind.TEXT,
+        name="broken.txt",
+        data=data,
+        sha256_expected="",
+        sha256_actual="",
+        integrity_ok=True,
+        original_size=len(data),
+        compressed_size=len(data),
+    )
+    app.extract_vm.result = payload
+    app._refresh_extract_state()
+    assert app.result_text.get("1.0", "end-1c") == "", "the preview kept garbage"
+    assert "\ufffd" not in app.result_text.get("1.0", "end-1c")
+    assert app._result_text_exact() is None
+    assert app._status_key == "status_error_detail"
+    assert dialogs.errors, "nothing explained why the text cannot be shown"
+    assert app.extract_vm.result is payload, "the payload was 'repaired' behind our back"
+
+
+def test_clear_result_drops_the_payload_and_the_preview_cache(app) -> None:
+    _show_text_payload(app, "body to clear")
+    assert app._result_preview_key is not None
+    app.clear_result_button.invoke()
+    assert app.extract_vm.result is None
+    assert app.result_text.get("1.0", "end-1c") == ""
+    assert app._result_preview_key is None
+
+
+def test_the_result_field_offers_no_editing_actions(app) -> None:
+    sequences = set(app._result_shortcuts.sequences)
+    assert app._result_shortcuts.readonly is True
+    assert "<Control-v>" not in sequences and "<Command-v>" not in sequences
+    assert "<Control-x>" not in sequences and "<Command-z>" not in sequences
+    assert "<Control-c>" in sequences and "<Control-a>" in sequences
+
+
+def test_the_footer_explains_an_error_instead_of_a_bare_error(app, dialogs) -> None:
+    from phantom.core.errors import InternalError
+
+    app._show_error(InternalError("worker step failed"))
+    text = app.status_label.cget("text")
+    assert text.startswith(app.i18n.t("status_error_detail").split("{")[0])
+    assert "worker step failed" in text
+    assert dialogs.errors, "the error was never explained"
+
+
+def test_a_cancellation_is_not_reported_as_an_error(app, dialogs) -> None:
+    from phantom.core.errors import OperationCancelled
+
+    app._show_error(OperationCancelled())
+    assert app._status_key == "status_cancelled"
+    assert not dialogs.errors, "a cancellation opened an error dialogue"
+
+
+def test_a_changed_payload_clears_a_finished_verdict(app) -> None:
+    app._set_status_key("status_done", severity="ok", path="/tmp/out.png")
+    app._mark_editor_dirty()
+    assert app._status_key == "status_ready", (
+        "the footer still claims a file was saved while the text has changed"
+    )
+
+
+def test_over_capacity_does_not_say_the_system_is_ready(app) -> None:
+    from phantom.ui.capacity_view import CapacityReport, CapacityState
+
+    app._set_status_key("status_ready", severity="info")
+    app.capacity_report = CapacityReport(state=CapacityState.OVERFLOW, excess_bytes=10)
+    app._sync_capacity_status()
+    assert app._status_key == "status_capacity_exceeded"
+    assert app.status_label.cget("text") == app.i18n.t("status_capacity_exceeded")
+    app.capacity_report = CapacityReport(state=CapacityState.FITS)
+    app._sync_capacity_status()
+    assert app._status_key == "status_ready"
+
+
+def test_the_action_bar_relabels_in_every_language(app) -> None:
+    for language in ("uk", "ru", "en"):
+        app.i18n.set_language(language)
+        app._render_all_labels()
+        assert app.editor_cut_button.cget("text") == app.i18n.t("btn_cut")
+        assert app.editor_copy_all_button.cget("text") == app.i18n.t("btn_copy_all")
+        assert app.save_txt_button.cget("text") == app.i18n.t("btn_save_txt")
+        assert app.select_all_result_button.cget("text") == app.i18n.t("btn_select_all")
+
+
+# ---------------------------------------------------------------------------
 # expanded result window
 # ---------------------------------------------------------------------------
 RESULT_LABELS = {
@@ -1232,7 +1527,7 @@ RESULT_LABELS = {
 
 
 def test_expand_opens_a_large_read_only_window(app) -> None:
-    app._set_textbox(app.result_text, "readable result body")
+    _show_text_payload(app, "readable result body")
     app._expand_result()
     app.root.update()
     window = app._result_window

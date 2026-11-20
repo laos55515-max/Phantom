@@ -21,7 +21,9 @@ from typing import Any, Final
 
 import customtkinter as ctk
 
+from phantom.core import constants as C
 from phantom.core import files as fsutil
+from phantom.ui import clipboard as clip
 from phantom.ui import theme as T
 from phantom.ui.layout import MIN_WINDOW, window_geometry
 from phantom.ui.widgets import (
@@ -47,10 +49,15 @@ class ResultWindow(ctk.CTkToplevel):  # type: ignore[misc]
         path: str | Path | None = None,
         copy_callback: Callable[[str], bool] | None = None,
         on_close: Callable[[], None] | None = None,
+        save_txt: Callable[[], bool] | None = None,
     ) -> None:
         super().__init__(master)
         self.labels = dict(labels)
+        #: The whole text, even when the widget below only paints its beginning:
+        #: copy-all and save-as-TXT never work from the visible preview.
         self.result_text = text
+        self._save_txt = save_txt
+        self.trimmed = len(text) > C.RESULT_PREVIEW_CHARS
         self.path: Path | None = Path(path) if path else None
         self._copy_callback = copy_callback
         self._on_close = on_close
@@ -106,11 +113,26 @@ class ResultWindow(ctk.CTkToplevel):  # type: ignore[misc]
             wrap="word",
         )
         self.text_box.grid(row=2, column=0, sticky="nsew", padx=20, pady=(0, 8))
-        self.text_box.insert("1.0", self.result_text)
+        visible = (
+            self.result_text
+            if not self.trimmed
+            else self.result_text[: C.RESULT_PREVIEW_CHARS]
+        )
+        self.text_box.insert("1.0", visible)
         self.text_box.configure(state="disabled")
         self.shortcuts = install_text_shortcuts(
-            self, self.text_box, labels_provider=self._menu_labels
+            self, self.text_box, labels_provider=self._menu_labels, readonly=True
         )
+
+        if self.trimmed:
+            meta.configure(
+                text=self.labels.get(
+                    "lbl_result_preview_trimmed",
+                    f"showing {len(visible)} of {len(self.result_text)} characters",
+                ).format(
+                    shown=f"{len(visible):,}", total=f"{len(self.result_text):,}"
+                )
+            )
 
         self.feedback = ctk.CTkLabel(
             self,
@@ -132,6 +154,18 @@ class ResultWindow(ctk.CTkToplevel):  # type: ignore[misc]
             height=38,
         )
         self.copy_text_button.pack(side="left")
+
+        self.select_all_button = secondary_button(
+            row, self, self.labels.get("btn_select_all", ""), self.select_all
+        )
+        self.select_all_button.pack(side="left", padx=(10, 0))
+
+        self.save_button = secondary_button(
+            row, self, self.labels.get("btn_save_txt", ""), self.save_txt
+        )
+        self.save_button.pack(side="left", padx=(10, 0))
+        if self._save_txt is None:
+            self.save_button.configure(state="disabled")
 
         self.copy_path_button = secondary_button(
             row, self, self.labels.get("btn_copy_path", ""), self.copy_path
@@ -156,9 +190,7 @@ class ResultWindow(ctk.CTkToplevel):  # type: ignore[misc]
 
     def _menu_labels(self) -> Mapping[str, str]:
         return {
-            "menu_paste": self.labels.get("menu_paste", ""),
             "menu_copy": self.labels.get("menu_copy", ""),
-            "menu_cut": self.labels.get("menu_cut", ""),
             "menu_select_all": self.labels.get("menu_select_all", ""),
         }
 
@@ -166,9 +198,13 @@ class ResultWindow(ctk.CTkToplevel):  # type: ignore[misc]
         for sequence in ("<Escape>", "<Command-w>", "<Control-w>"):
             self.bind(sequence, lambda _event: self.close())
         for sequence in ("<Command-c>", "<Control-c>"):
-            self.bind(sequence, lambda _event: self.copy_text())
+            # Cmd+C copies what is selected; with no selection it copies the whole
+            # result, which is what a read-only window can mean by "copy".
+            self.bind(sequence, lambda _event: self.copy_selection())
         for sequence in ("<Command-a>", "<Control-a>"):
             self.bind(sequence, lambda _event: _select_all(self.text_box))
+        for sequence in ("<Command-s>", "<Control-s>"):
+            self.bind(sequence, lambda _event: self.save_txt())
 
     def _focus_self(self) -> None:
         if self._closed:
@@ -182,7 +218,28 @@ class ResultWindow(ctk.CTkToplevel):  # type: ignore[misc]
 
     # -- actions --------------------------------------------------------
     def copy_text(self) -> bool:
+        """Copy the whole result, from the full string, not the preview."""
         return self._copy(self.result_text, "status_copied")
+
+    def copy_selection(self) -> bool:
+        selection = clip.selected_text(self.text_box)
+        if selection is None:
+            return self.copy_text()
+        return self._copy(selection, "status_copied")
+
+    def select_all(self) -> bool:
+        _select_all(self.text_box)
+        return self._set_feedback("status_selected_all")
+
+    def save_txt(self) -> bool:
+        if self._save_txt is None:
+            return self._set_feedback("status_no_result")
+        try:
+            accepted = bool(self._save_txt())
+        except Exception as exc:  # noqa: BLE001 - saving must not crash the window
+            LOGGER.warning("save callback failed: %s", exc)
+            accepted = False
+        return self._set_feedback("status_txt_saved" if accepted else "status_no_result")
 
     def copy_path(self) -> bool:
         if self.path is None:

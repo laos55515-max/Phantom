@@ -486,3 +486,48 @@ binding on the widget is what proved it. The GUI tests therefore fall back to th
 equivalent *virtual event* (`<<Paste>>`, `<<SelectAll>>`, `<<Undo>>`), which Tk
 dispatches to the widget's bind tags without asking about focus, and the real
 keystrokes stay covered by the smoke, which is a gate in both Aqua jobs.
+
+## 11. The 2.1.0 editor pass: what the clipboard, the preview and the counters cost
+
+The same rule as every section above: a number only counts if it was taken where
+the user feels it, and a claim is only made when it can be checked.
+
+**A keystroke no longer copies the field.** Before this pass, every `<<Modified>>`
+event pulled the whole text out of Tk, counted characters, counted UTF-8 bytes and
+scanned every line to decide about word wrap — four full walks of the string per
+edit. At 6.6 M characters (10.5 MB of UTF-8 in 381 000 lines) one
+`measure_text` costs 92 ms with the line scan and 10 ms without (`utf8_size`
+alone was one of the four walks). The editor now marks the field dirty on an edit
+and does exactly one `Text.get` plus one measurement per debounced burst
+(`DEBOUNCE_MS`), then repaints the counters, the wrap decision and the background
+estimate from that snapshot. `tools/profile_editor_capacity.py` prints the same
+numbers per size (100 KiB … 15 MiB, multiline / one long line / mixed Unicode),
+including the longest interval in which the Tk loop did not run at all.
+
+**The result pane paints a preview; the data is never truncated.** A 15 MiB
+insert into a Tk text widget is a multi-second display pass on Aqua — the same
+class of cost as the word-wrap freeze — so the pane paints at most
+`RESULT_PREVIEW_CHARS` (200 000) characters and labels itself
+(«ПОКАЗАНО N ИЗ M СИМВОЛОВ»). `КОПИРОВАТЬ ВСЁ`, `СОХРАНИТЬ TXT (UTF-8)` and the
+expanded window work from the payload; the TXT export writes the decrypted bytes
+verbatim and verifies them against the payload's SHA-256. This is a *painting*
+limit, not a data limit, and the caption says so — the previous code, by
+contrast, copied the widget and therefore silently copied a truncated string.
+
+**The clipboard is measured, not trusted.** `_clipboard_diff` in
+`tools/smoke_editor_capacity.py` reports where the pasteboard handed back a
+different string; on Aqua it re-decodes a few bytes of a multi-megabyte string as
+Latin-1 on some runs (`а` → `Ð°`). PHANTOM inserts exactly what the clipboard
+returns and never guesses at a repair. Above `CLIPBOARD_EXACT_WARN_CHARS`
+(1 000 000 characters) the footer says the transfer cannot be verified and points
+at the TXT file; above `CLIPBOARD_AUTO_CLEAR_MAX_CHARS` (200 000) the 30-second
+auto-clear is not armed, because deciding whether the clipboard is still ours
+means reading it all back on the GUI thread. A byte-exact transfer of a very
+large block goes through the file payload, which never touches Tk.
+
+**The footer tells the truth in all three states.** A bare «ОШИБКА» was produced
+by two paths: a cancellation (`_show_error` returned before the dialogue) and a
+failed event handler (logged only). Both now carry a reason, the cancellation is
+«ОТМЕНЕНО», and a failed handler names the step. `СИСТЕМА ГОТОВА` is replaced by
+«ПРЕВЫШЕНА ЁМКОСТЬ» whenever the panel says the payload does not fit, and a
+finished verdict is cleared as soon as the payload changes.

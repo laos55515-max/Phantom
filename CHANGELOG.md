@@ -8,6 +8,45 @@ All notable changes to PHANTOM are recorded here. The format follows
 
 ### Fixed
 
+- **The red «ОШИБКА» now has a reason and a next step.** The footer used to print
+  a bare `ОШИБКА` in two situations: a cancellation (`_show_error` returned before
+  the dialogue), and a failed event handler, which only wrote a log line — so the
+  window said it had failed and nothing on screen said why. Every error path now
+  carries its reason (`status_error_detail` = `ОШИБКА: …`), a cancellation is
+  reported as `ОТМЕНЕНО`, a failed handler names the step it was on and says the
+  files on disk were not touched, and a failed integrity check on extracted data
+  says the data must not be saved instead of reusing the word "error".
+- **The expanded result window copied a truncated string.** `РАЗВЕРНУТЬ` read the
+  small panel *widget*, which holds an extraction preview; with a large text the
+  window then showed and copied only the beginning. It now takes the whole
+  payload from the model, and its own pane is capped for painting only — copying
+  and saving always use the complete text.
+- **A payload that is not valid UTF-8 was silently "repaired" on screen.** The
+  result pane decoded with `errors="replace"`, so a damaged payload appeared with
+  U+FFFD characters — text that looked extracted and was wrong. Decoding is now
+  strict: either the payload is text and is shown exactly, or the window says it
+  cannot be shown as text, points at the file path, and leaves the bytes alone.
+  Nothing is ever rewritten to make it decode.
+- **`СИСТЕМА ГОТОВА` while the payload no longer fits.** The footer kept its idle
+  text over an exceeded capacity, and kept a finished verdict (`СОХРАНЕНО → …`)
+  after the text had changed. A finished status is now cleared when the payload
+  changes, and the footer says `ПРЕВЫШЕНА ЁМКОСТЬ — ЗАШИФРОВАТЬ НЕЛЬЗЯ` whenever
+  the panel does.
+- **The editor no longer reads the whole field on every keystroke.** Each edit
+  used to pull the text out of Tk, count characters, count UTF-8 bytes and scan
+  every line — four full walks of a multi-megabyte string per keystroke. A
+  keystroke now only marks the field dirty; one debounced commit reads the field
+  once and measures it once (`phantom.core.text.measure_text`: 6.6 M characters,
+  381 000 lines, 92 ms with the line scan and 10 ms without), and every counter,
+  the wrap decision and the size estimate use that snapshot.
+- **Undo is bounded, and a full reset leaves nothing to undo.** Tk keeps the text
+  every undo step changed, and the history was unbounded (`maxundo=-1`). It is now
+  capped by `C.EDITOR_MAX_UNDO`; `СБРОС` additionally drops the history
+  (`edit_reset`) and the application-held references to the payload and to the
+  generated password. Emptying the field with `ОЧИСТИТЬ ПОЛЕ` stays an ordinary
+  undoable edit. This is a release of references, not a claim of physical
+  erasure — see `SECURITY.md`.
+
 - **The payload field takes a large paste, and says how big it is.** Three
   separate faults looked like one. Select-all left the caret *in front of* the
   selection, so the next keystroke prepended text instead of replacing it, and
@@ -37,6 +76,27 @@ All notable changes to PHANTOM are recorded here. The format follows
   command a second time.
 
 ### Added
+
+- **An action bar under the payload field**: paste, copy, cut, select all, undo,
+  redo, copy all and clear field. Every button calls the same handler as the
+  hotkey and the context-menu entry (the bar holds the very
+  `ClipboardActions` object the shortcuts use), so a button cannot drift from
+  `Cmd+C`. Availability follows the editor: copy needs a selection, copy all
+  needs text, undo/redo follow what the window has seen, and everything is
+  disabled while a job runs or in file mode.
+- **Result actions**: `ВЫДЕЛИТЬ ВСЁ`, `КОПИРОВАТЬ ВЫДЕЛЕННОЕ`,
+  `КОПИРОВАТЬ ВСЁ` and `СОХРАНИТЬ TXT (UTF-8)`. Copy-all and the TXT export work
+  from the model, not from the pane: the export writes the decrypted bytes
+  verbatim and verifies them against the payload's SHA-256, so nothing is
+  normalised (NFC/NFD), no character is replaced and no line ending is rewritten.
+  The read-only result field binds `Cmd/Ctrl + A` and `Cmd/Ctrl + C` and no
+  longer offers paste, cut or undo in its menu, which could only fail there.
+- **`tools/profile_editor_capacity.py`** measures the real window at
+  100 KiB … 15 MiB for multiline, single-long-line and mixed-Unicode payloads:
+  Tk `insert`/`get`/`delete`, select-all, the counting, the clipboard round trip,
+  undo/redo, the commit path, the longest interval in which the Tk loop did not
+  run at all, peak RSS, and the memory left after a field clear and a full reset.
+  It prints one markdown table.
 
 - **`ОЧИСТИТЬ ПОЛЕ` next to the counters.** It empties the payload field, the
   model, the estimate and the counters, returns the caret to the field and
@@ -95,6 +155,20 @@ All notable changes to PHANTOM are recorded here. The format follows
   stays English and versioned.
 
 ### Changed
+
+- **The result pane paints at most `C.RESULT_PREVIEW_CHARS` (200 000) characters**
+  and says so in a caption; a 15 MiB insert into a Tk text widget is a
+  multi-second display pass on Aqua. The payload is untouched: copy-all, the TXT
+  export and the expanded window all use the complete text. No data is truncated
+  anywhere, only painted.
+- **The clipboard auto-clear stays a password-sized promise.** Deciding whether a
+  15 MiB clipboard is still ours means reading it all back on the GUI thread, so
+  values above `C.CLIPBOARD_AUTO_CLEAR_MAX_CHARS` are not armed for the 30-second
+  clear — and copying more than `C.CLIPBOARD_EXACT_WARN_CHARS` characters says in
+  the footer that the pasteboard may not hand back an identical string, pointing at
+  the TXT path instead of promising something the application cannot check.
+- **A theme or language switch no longer re-paints the result preview.** The pane
+  remembers which payload it shows and stays put when nothing new arrived.
 
 - **Start-up work that nobody sees.** CustomTkinter's scrollbar flushes the whole
   window on every draw, and the build draws about a hundred of them — each flush

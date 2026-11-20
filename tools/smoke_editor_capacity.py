@@ -293,6 +293,160 @@ def main(argv: list[str] | None = None) -> int:
 
         root.after(120, verify)
 
+    def phase_action_bar() -> None:
+        """The visible action bar, driven by real button clicks.
+
+        A button is not a handler call: ``invoke()`` goes through Tk's command
+        dispatch exactly like a mouse click, so what this phase proves is that the
+        widget is wired — the handler behind it is the same one the hotkey and the
+        context menu use (asserted below by comparing the object graph).
+        """
+        state["phase"] = "action bar"
+        inner.tag_remove("sel", "1.0", "end")
+        clip_put("action-bar paste")
+        app.editor_paste_button.invoke()
+        check(
+            "action bar: paste",
+            editor_text() == "action-bar paste" and app.embed_vm.text == "action-bar paste",
+            f"editor {len(editor_text())} chars, model {len(app.embed_vm.text)} chars",
+        )
+        check(
+            "action bar: bar and hotkeys share one clipboard object",
+            app._editor_action_api() is app._editor_shortcuts.actions,
+            "same ClipboardActions instance",
+        )
+        inner.tag_add("sel", "1.0", "1.6")
+        app._refresh_editor_actions()
+        app.editor_copy_button.invoke()
+        check(
+            "action bar: copy selection",
+            root.clipboard_get() == "action",
+            f"clipboard {len(root.clipboard_get())} chars",
+        )
+        inner.tag_add("sel", "1.7", "end")
+        app.editor_cut_button.invoke()
+        check(
+            "action bar: cut",
+            editor_text() == "action-bar " and app.embed_vm.text == "action-bar ",
+            f"editor {editor_text()!r}",
+        )
+        app.editor_select_all_button.invoke()
+        check(
+            "action bar: select all",
+            selection() == "action-bar ",
+            f"selected {len(selection())} chars",
+        )
+        app.editor_copy_all_button.invoke()
+        check(
+            "action bar: copy all",
+            root.clipboard_get() == "action-bar ",
+            f"clipboard {root.clipboard_get()!r}",
+        )
+        app.editor_undo_button.invoke()
+        check(
+            "action bar: undo",
+            editor_text() == "action-bar paste",
+            f"editor {editor_text()!r}",
+        )
+        app.editor_redo_button.invoke()
+        check(
+            "action bar: redo",
+            editor_text() == "action-bar ",
+            f"editor {editor_text()!r}",
+        )
+        root.after(120, next_phase)
+
+    def phase_result_actions() -> None:
+        """The result pane: select, copy the selection, copy *everything*, save TXT.
+
+        The payload is injected directly — this is a state injection, not a real
+        extraction (a real one costs a carrier, a KDF pass and a full embed).  What
+        is exercised for real is everything after it: the buttons, the read-only
+        widget, the system clipboard and the file writer.
+        """
+        state["phase"] = "result actions"
+        import hashlib
+
+        from phantom.core.payload import ExtractedPayload, PayloadKind
+        from phantom.ui import app as appmod
+
+        body = "".join(f"{index:06d} строка результата 😀\n" for index in range(9000))
+        data = body.encode("utf-8")
+        digest = hashlib.sha256(data).hexdigest()
+        app.extract_vm.result = ExtractedPayload(
+            kind=PayloadKind.TEXT,
+            name="result.txt",
+            data=data,
+            sha256_expected=digest,
+            sha256_actual=digest,
+            integrity_ok=True,
+            original_size=len(data),
+            compressed_size=len(data),
+        )
+        app._result_preview_key = None
+        app._refresh_extract_state()
+        say(f"note  result payload injected directly: {len(body)} chars of {len(data)} bytes")
+        preview = app.result_text.get("1.0", "end-1c")
+        check(
+            "result: the preview is capped and says so",
+            len(preview) == C.RESULT_PREVIEW_CHARS,
+            f"preview {len(preview)} of {len(body)} chars",
+        )
+        app.select_all_result_button.invoke()
+        result_inner = (
+            app.result_text._textbox
+            if hasattr(app.result_text, "_textbox")
+            else app.result_text
+        )
+        selected = result_inner.get("sel.first", "sel.last")
+        check(
+            "result: select all in a disabled field",
+            selected == preview and len(selected) > 0,
+            f"selected {len(selected)} of {len(preview)} preview chars",
+        )
+        app.copy_selection_button.invoke()
+        check(
+            "result: copy the selection",
+            root.clipboard_get() == preview,
+            f"clipboard {len(root.clipboard_get())} chars",
+        )
+        app.copy_button.invoke()
+        copied = root.clipboard_get()
+        check(
+            "result: copy all is the whole payload, not the preview",
+            copied == body,
+            f"clipboard {len(copied)} chars of {len(body)}",
+        )
+        target = os.path.join(temporary, "result.txt")
+        original_dialog = appmod.filedialog.asksaveasfilename
+        appmod.filedialog.asksaveasfilename = lambda **_kwargs: target
+        try:
+            app.save_txt_button.invoke()
+        finally:
+            appmod.filedialog.asksaveasfilename = original_dialog
+        written = b""
+        if os.path.exists(target):
+            with open(target, "rb") as handle:
+                written = handle.read()
+        check(
+            "result: save TXT is byte-exact",
+            written == data and hashlib.sha256(written).hexdigest() == digest,
+            f"{len(written)} of {len(data)} bytes, sha256 "
+            f"{hashlib.sha256(written).hexdigest()[:12]} vs {digest[:12]}",
+        )
+        check(
+            "result: save TXT has no BOM and no rewritten line endings",
+            not written.startswith(b"\xef\xbb\xbf") and b"\r\n" not in written,
+            "utf-8 without BOM, LF endings",
+        )
+        app.clear_result_button.invoke()
+        check(
+            "result: clear drops the payload",
+            app.extract_vm.result is None and app.result_text.get("1.0", "end-1c") == "",
+            "model and pane empty",
+        )
+        next_phase()
+
     def phase_choose_carrier() -> None:
         state["phase"] = "choose carrier"
         path = _carrier(temporary, "carrier.png", (640, 360))
@@ -386,6 +540,11 @@ def main(argv: list[str] | None = None) -> int:
                 str(app.embed_button.cget("state")) == "disabled",
                 f"button {app.embed_button.cget('state')}",
             )
+            check(
+                "over capacity: the footer does not say the system is ready",
+                app._status_key == "status_capacity_exceeded",
+                f"footer {app.status_label.cget('text')!r}",
+            )
             next_phase()
 
         settle(fitted, verify)
@@ -440,7 +599,9 @@ def main(argv: list[str] | None = None) -> int:
         phase_clipboard_types,
         phase_select_all,
         phase_paste_over_selection,
+        phase_action_bar,
         phase_clear_field,
+        phase_result_actions,
         phase_choose_carrier,
         phase_over_capacity,
         phase_swap_carrier,

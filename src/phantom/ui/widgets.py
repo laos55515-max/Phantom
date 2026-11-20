@@ -23,6 +23,7 @@ from customtkinter.windows.widgets.appearance_mode import (
     AppearanceModeTracker,
 )
 
+from phantom.core import constants as C
 from phantom.ui import theme as T
 from phantom.ui.clipboard import (
     ClipboardActions,
@@ -522,6 +523,10 @@ class TextShortcuts:
     buffer: TextBuffer | None = None
     #: Called when the user asks for "clear field"; ``None`` hides the menu entry.
     clear_handler: Callable[[], None] | None = None
+    #: A disabled result field: selection and copy work, editing does not.  The
+    #: menu and the bindings then stop offering paste/cut/undo, which could only
+    #: ever fail, while Cmd/Ctrl+A and Cmd/Ctrl+C keep working.
+    readonly: bool = False
     actions: ClipboardActions = field(init=False)
     sequences: list[str] = field(default_factory=list)
     _menu: Any = field(default=None, init=False)
@@ -593,15 +598,23 @@ class TextShortcuts:
             )
         except Exception as exc:  # noqa: BLE001 - Aqua ignores most menu colours
             LOGGER.debug("menu colours not supported: %s", exc)
-        commands: list[tuple[str, Callable[..., str]]] = [
-            ("menu_undo", self.undo),
-            ("menu_redo", self.redo),
-            (SEPARATOR, self.undo),
-            ("menu_cut", self.cut),
-            ("menu_copy", self.copy),
-            ("menu_paste", self.paste),
-            ("menu_select_all", self.select_all),
-        ]
+        commands: list[tuple[str, Callable[..., str]]] = []
+        if not self.readonly:
+            commands.extend(
+                [
+                    ("menu_undo", self.undo),
+                    ("menu_redo", self.redo),
+                    (SEPARATOR, self.undo),
+                    ("menu_cut", self.cut),
+                    ("menu_paste", self.paste),
+                ]
+            )
+        commands.extend(
+            [
+                ("menu_copy", self.copy),
+                ("menu_select_all", self.select_all),
+            ]
+        )
         if self.clear_handler is not None:
             commands.append((SEPARATOR, self.undo))
             commands.append(("menu_clear", self.clear))
@@ -632,7 +645,10 @@ class TextShortcuts:
 
     def install(self) -> int:
         """Bind the shortcuts and the menu; returns the number of bindings."""
+        editing = ("undo", "redo", "cut", "paste")
         for key, method in SHORTCUT_KEYS:
+            if self.readonly and method in editing:
+                continue
             self._bind_many(
                 [
                     f"<Command-{key}>",
@@ -642,9 +658,12 @@ class TextShortcuts:
                 ],
                 getattr(self, method),
             )
-        self._bind_many(UNDO_SEQUENCES, self.undo)
-        self._bind_many(REDO_SEQUENCES, self.redo)
+        if not self.readonly:
+            self._bind_many(UNDO_SEQUENCES, self.undo)
+            self._bind_many(REDO_SEQUENCES, self.redo)
         for sequence, method in VIRTUAL_SEQUENCES:
+            if self.readonly and method in editing:
+                continue
             self._bind_many([sequence], getattr(self, method))
         for sequence in MENU_SEQUENCES:
             try:
@@ -674,6 +693,7 @@ def install_text_shortcuts(
     *,
     labels_provider: Callable[[], Mapping[str, str]] | None = None,
     clear_handler: Callable[[], None] | None = None,
+    readonly: bool = False,
 ) -> TextShortcuts:
     """Give an entry/textbox working Cmd/Ctrl shortcuts and a context menu.
 
@@ -687,11 +707,13 @@ def install_text_shortcuts(
         labels_provider=labels_provider,
         buffer=TextBuffer(inner=inner, public=None if inner is widget else widget),
         clear_handler=clear_handler,
+        readonly=readonly,
     )
     # Tk keeps a Text widget's undo history switched off; Cmd+Z then does nothing
     # at all.  Turning it on is a widget property, not a new feature: the history
     # is bounded by Tk and cleared with the widget.
-    enable_undo(shortcuts.buffer)
+    if not readonly:
+        enable_undo(shortcuts.buffer, maxundo=C.EDITOR_MAX_UNDO)
     shortcuts.install()
     LOGGER.debug(
         "text shortcuts on %s: %d keyboard bindings, root=%r",

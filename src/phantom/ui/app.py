@@ -32,7 +32,7 @@ from phantom.core.errors import (
 )
 from phantom.core.payload import PayloadKind
 from phantom.core.progress import INDETERMINATE_STAGES, Stage
-from phantom.core.text import utf8_size
+from phantom.core.text import TextMetrics, measure_text
 from phantom.i18n import I18n
 from phantom.metadata.cleaner import CleaningOutcome
 from phantom.metadata.models import MetadataReport
@@ -90,6 +90,23 @@ from phantom.ui.widgets import (
 from phantom.ui.worker import WorkerEvent, WorkerEventType, WorkerService
 
 LOGGER: Final = logging.getLogger("phantom.app")
+
+#: Statuses that describe a *finished* action.  Once the payload changes they no
+#: longer describe anything on screen, so they go back to "ready" instead of sitting
+#: there contradicting the panel ("SYSTEM READY" over an exceeded capacity, or a
+#: green "SAVED" over text that was never embedded).
+STALE_STATUS_KEYS: Final = frozenset(
+    {
+        "status_done",
+        "status_unverified",
+        "status_error",
+        "status_copied",
+        "status_file_saved",
+        "status_pasted",
+        "status_field_cleared",
+        "status_pwd_generated",
+    }
+)
 
 #: ``update idletasks`` — the display pass this window uses to settle its layout —
 #: is not survivable on every Aqua build.  Tcl/Tk 9.1 on macOS segfaults inside it
@@ -208,6 +225,27 @@ class PhantomApp:
         self._editor_wrapping = True
         #: True while the ``<<Modified>>`` flag is being cleared (it re-fires).
         self._modified_resetting = False
+        #: The last measurement of the payload field, and whether it still applies.
+        #: Reading a multi-megabyte ``Text`` is not something a keystroke may do:
+        #: the field is read once per debounced burst, measured once, and every
+        #: counter, panel and estimate uses that snapshot until it is invalidated.
+        self._editor_metrics: TextMetrics | None = None
+        self._editor_dirty = True
+        #: The editor's own shortcut/menu object; the action bar calls exactly the
+        #: same handlers, so a button, a hotkey and the context menu cannot drift.
+        self._editor_shortcuts: Any = None
+        self._result_shortcuts: Any = None
+        #: Tk offers no way to *ask* whether undo or redo has a step left, so the
+        #: two buttons follow what this window has seen: an edit makes undo
+        #: available, an undo makes redo available, a new edit clears redo again.
+        self._editor_can_undo = False
+        self._editor_can_redo = False
+        #: One modal per decoded result: a broken UTF-8 payload must not pop up
+        #: again on every repaint of the panel.
+        self._result_decode_notified = False
+        #: ``(id(payload), len(data))`` of what the preview pane already shows, so a
+        #: repaint for a language or a theme does not re-insert 200 000 characters.
+        self._result_preview_key: tuple[int, int] | None = None
 
         self.trace.mark("init:services")
         if DISPLAY_PASSES_UNSAFE:
@@ -275,16 +313,19 @@ class PhantomApp:
         self._scroll.register(scroll, canvas, name=f"tab{len(self._scroll_frames) + 1}")
         self._scroll_frames.append(scroll)
 
-    def _paragraph_shortcuts(self, widget: Any, *, clear_handler: Any = None) -> None:
+    def _paragraph_shortcuts(
+        self, widget: Any, *, clear_handler: Any = None, readonly: bool = False
+    ) -> Any:
         """Cmd/Ctrl + C/V/X/A/Z, undo/redo and a right-click menu for one widget."""
-        self._text_shortcuts.append(
-            install_text_shortcuts(
-                self.root,
-                widget,
-                labels_provider=self._menu_labels,
-                clear_handler=clear_handler,
-            )
+        shortcuts = install_text_shortcuts(
+            self.root,
+            widget,
+            labels_provider=self._menu_labels,
+            clear_handler=clear_handler,
+            readonly=readonly,
         )
+        self._text_shortcuts.append(shortcuts)
+        return shortcuts
 
     def _menu_labels(self) -> dict[str, str]:
         return {
@@ -545,7 +586,9 @@ class PhantomApp:
             corner_radius=10,
         )
         self.embed_text.pack(fill="both", expand=True)
-        self._paragraph_shortcuts(self.embed_text, clear_handler=self._clear_field)
+        self._editor_shortcuts = self._paragraph_shortcuts(
+            self.embed_text, clear_handler=self._clear_field
+        )
         # Tk's own "this widget's text changed" flag, not the keyboard: a paste from
         # the context menu, an undo, a cut and a programmatic insert all move the flag,
         # while a `<KeyRelease>` only arrives when the key and its release are both
@@ -565,14 +608,53 @@ class PhantomApp:
             anchor="w",
         )
         self.char_label.pack(side="left", fill="x", expand=True)
+        self.counter_row.pack(fill="x", padx=18, pady=(2, 4))
+
+        # The action bar: the clipboard, selection and history actions a text field
+        # is expected to have, visible instead of hidden behind a keyboard shortcut
+        # that Aqua may or may not deliver.  Every button calls the same helper as
+        # the hotkey and the context-menu entry; nothing here is a second code path.
+        # A flow row keeps them in reading order and wraps the overflow instead of
+        # cutting the last button off at the minimum window width.
+        self.editor_actions = self.editor_actions_row = FlowRow(payload_card)
+        self.editor_actions.pack(fill="x", padx=18, pady=(0, 8))
+        self.editor_paste_button = self.editor_actions.add(
+            secondary_button(self.editor_actions, self.root, "", self._editor_paste)
+        )
+        self.editor_copy_button = self.editor_actions.add(
+            secondary_button(self.editor_actions, self.root, "", self._editor_copy)
+        )
+        self.editor_cut_button = self.editor_actions.add(
+            secondary_button(self.editor_actions, self.root, "", self._editor_cut)
+        )
+        self.editor_select_all_button = self.editor_actions.add(
+            secondary_button(self.editor_actions, self.root, "", self._editor_select_all)
+        )
+        self.editor_undo_button = self.editor_actions.add(
+            secondary_button(self.editor_actions, self.root, "", self._editor_undo)
+        )
+        self.editor_redo_button = self.editor_actions.add(
+            secondary_button(self.editor_actions, self.root, "", self._editor_redo)
+        )
+        self.editor_copy_all_button = self.editor_actions.add(
+            secondary_button(self.editor_actions, self.root, "", self._editor_copy_all)
+        )
         # Clears the editor and nothing else: the password, the carrier, the output
         # path and every setting stay exactly where the user put them.
-        self.clear_field_button = secondary_button(
-            self.counter_row, self.root, "", self._clear_field, width=150
+        self.clear_field_button = self.editor_actions.add(
+            secondary_button(self.editor_actions, self.root, "", self._clear_field)
         )
-        self.clear_field_button.pack(side="right", padx=(12, 0))
-        self.binder.bind(self.clear_field_button, "btn_clear_field")
-        self.counter_row.pack(fill="x", padx=18, pady=(2, 12))
+        for widget, key in (
+            (self.editor_paste_button, "btn_paste"),
+            (self.editor_copy_button, "btn_copy"),
+            (self.editor_cut_button, "btn_cut"),
+            (self.editor_select_all_button, "btn_select_all"),
+            (self.editor_undo_button, "btn_undo"),
+            (self.editor_redo_button, "btn_redo"),
+            (self.editor_copy_all_button, "btn_copy_all"),
+            (self.clear_field_button, "btn_clear_field"),
+        ):
+            self.binder.bind(widget, key)
         self.line_hint = hint_label(payload_card, self.root, "", wrap=620)
         self.line_hint.pack(fill="x", padx=18, pady=(0, 8))
         self.line_hint.pack_forget()
@@ -833,7 +915,9 @@ class PhantomApp:
         )
         self.result_text.pack(fill="both", expand=True, padx=18, pady=(0, 8))
         self.result_text.configure(state="disabled")
-        self._paragraph_shortcuts(self.result_text)
+        # Read-only: selection and copy are bound, paste/cut/undo are not offered at
+        # all — a menu entry that can only ever fail is not an action.
+        self._result_shortcuts = self._paragraph_shortcuts(self.result_text, readonly=True)
         self.result_file_label = value_label(result_card, self.root, "")
         self.result_file_label.pack(fill="x", padx=18)
         # Seven buttons: packed side by side they needed ~1150 logical pixels and
@@ -841,8 +925,17 @@ class PhantomApp:
         # The flow row keeps them in reading order and moves the overflow down.
         buttons_row = self.extract_buttons_row = FlowRow(result_card)
         buttons_row.pack(fill="x", padx=18, pady=(8, 4))
+        self.select_all_result_button = buttons_row.add(
+            secondary_button(buttons_row, self.root, "", self._select_all_result)
+        )
+        self.copy_selection_button = buttons_row.add(
+            secondary_button(buttons_row, self.root, "", self._copy_result_selection)
+        )
         self.copy_button = buttons_row.add(
             secondary_button(buttons_row, self.root, "", self._copy_result)
+        )
+        self.save_txt_button = buttons_row.add(
+            secondary_button(buttons_row, self.root, "", self._save_result_txt)
         )
         self.save_button = buttons_row.add(
             secondary_button(buttons_row, self.root, "", self._save_result_file)
@@ -868,7 +961,10 @@ class PhantomApp:
         self.binder.bind_dynamic(
             self.reveal_button, "btn_reveal", lambda: {"file_manager": self.file_manager_name()}
         )
-        self.binder.bind(self.copy_button, "btn_copy")
+        self.binder.bind(self.select_all_result_button, "btn_select_all")
+        self.binder.bind(self.copy_selection_button, "btn_copy_selection")
+        self.binder.bind(self.copy_button, "btn_copy_all")
+        self.binder.bind(self.save_txt_button, "btn_save_txt")
         self.binder.bind(self.save_button, "btn_save")
         self.binder.bind(self.save_as_button, "btn_save_as")
         self.binder.bind(self.clear_result_button, "btn_clear")
@@ -1235,6 +1331,7 @@ class PhantomApp:
     # state refresh
     # ------------------------------------------------------------------
     def _refresh_all(self, *, initial: bool = False) -> None:
+        self._commit_if_dirty()
         self._refresh_embed_state()
         self._refresh_extract_state()
         self._refresh_settings_state()
@@ -1251,18 +1348,7 @@ class PhantomApp:
 
     def _refresh_embed_state(self) -> None:
         vm = self.embed_vm
-        text = self.embed_text.get("1.0", "end-1c")
-        if text != vm.text and not self._suppress_events:
-            vm.set_text(text)
-        self.char_label.configure(
-            text=self.i18n.t(
-                "lbl_char_count",
-                chars=len(vm.text),
-                # Every keystroke passes through here: a lone surrogate in the text
-                # must not raise from a counter and freeze the character label.
-                **{"bytes": utf8_size(vm.text)},
-            )
-        )
+        self._refresh_counters()
         if vm.mode is PayloadMode.TEXT:
             if not self.text_frame.winfo_ismapped():
                 self.file_frame.pack_forget()
@@ -1344,6 +1430,8 @@ class PhantomApp:
             self.verify_checkbox.select() if vm.verify else self.verify_checkbox.deselect()
         self.wipe_checkbox.configure(state="normal" if vm.verify else "disabled")
         self._refresh_embed_ready()
+        self._refresh_editor_actions()
+        self._sync_capacity_status()
 
     def _build_capacity_report(self) -> CapacityReport:
         """One snapshot for the panel, the fill bar and the embed button.
@@ -1353,27 +1441,31 @@ class PhantomApp:
         text, or another container, is not shown at all.
         """
         vm = self.embed_vm
-        has_payload = vm.has_payload()
         text_mode = vm.mode is PayloadMode.TEXT
-        text = vm.text if text_mode else ""
         name = vm.payload_name()
         if text_mode:
-            utf8_bytes = utf8_size(text)
+            metrics = None if self._editor_dirty else self._editor_metrics
+            chars = 0 if metrics is None else metrics.chars
+            utf8_bytes = 0 if metrics is None else metrics.utf8_bytes
+            has_payload = chars > 0
         else:
+            chars = 0
+            has_payload = vm.has_payload()
             utf8_bytes = 0
             if vm.secret_path:
                 try:
                     utf8_bytes = os.path.getsize(vm.secret_path)
                 except OSError:
                     utf8_bytes = 0
-        waiting = has_payload and (
-            vm.estimate is None or self._applied_revision != self._estimate_revision
+        waiting = bool(text_mode and self._editor_dirty) or (
+            has_payload
+            and (vm.estimate is None or self._applied_revision != self._estimate_revision)
         )
         return build_report(
             carrier=vm.carrier,
             estimate=vm.estimate,
             has_payload=has_payload,
-            chars=len(text),
+            chars=chars,
             utf8_bytes=utf8_bytes,
             name=name,
             waiting=waiting,
@@ -1381,6 +1473,12 @@ class PhantomApp:
         )
 
     def _sync_editor_wrap(self) -> None:
+        """Re-apply the wrap decision from the committed measurement."""
+        metrics = self._editor_metrics
+        if metrics is not None:
+            self._apply_wrap(metrics.longest_line)
+
+    def _apply_wrap(self, longest_line: int) -> None:
         """Turn word wrap off for a single line long enough to cost Tk seconds.
 
         This is a display decision and nothing else: the text stays byte for byte
@@ -1389,10 +1487,9 @@ class PhantomApp:
         the same amount of text broken into lines), so the editor stops wrapping
         that line and says why in the hint under the counters.
         """
-        text = self.embed_vm.text
-        too_long = len(text) > C.EDITOR_WRAP_LINE_LIMIT and any(
-            len(line) > C.EDITOR_WRAP_LINE_LIMIT for line in text.split("\n")
-        )
+        if longest_line < 0:
+            return  # not measured: no line can be that long
+        too_long = longest_line > C.EDITOR_WRAP_LINE_LIMIT
         if too_long == (not self._editor_wrapping):
             return
         self._editor_wrapping = not too_long
@@ -1409,6 +1506,160 @@ class PhantomApp:
                 text=self.i18n.t("hint_long_line", limit=C.EDITOR_WRAP_LINE_LIMIT)
             )
             self.line_hint.pack(fill="x", padx=18, pady=(0, 8))
+
+    # -- editor action bar -----------------------------------------------
+    def _editor_action_api(self) -> Any:
+        """The clipboard object the hotkeys and the context menu already use."""
+        shortcuts = self._editor_shortcuts
+        return None if shortcuts is None else getattr(shortcuts, "actions", None)
+
+    def _editor_can_edit(self) -> bool:
+        """Text mode and no running job: the only state in which edits make sense."""
+        return self.embed_vm.mode is PayloadMode.TEXT and not self._busy
+
+    def _editor_has_selection(self) -> bool:
+        """Whether a selection exists, without copying it out of Tk.
+
+        Asking Tk for ``sel.first`` costs nothing even when the whole 15 MiB field
+        is selected, while ``get("sel.first", "sel.last")`` would copy all of it just
+        to decide whether a button should be grey.
+        """
+        try:
+            self._editor_inner.index("sel.first")
+        except Exception:  # noqa: BLE001 - TclError means "no selection"
+            return False
+        return True
+
+    def _report_copied(self, value: str, *, key: str = "status_copied") -> None:
+        """Say what was copied — and say when the clipboard is not exact."""
+        if len(value) >= C.CLIPBOARD_EXACT_WARN_CHARS:
+            # Measured on Aqua: the pasteboard round-trip re-decodes a few bytes of
+            # a very large string as Latin-1.  PHANTOM does not claim an exact
+            # transfer it cannot verify, so it names the file path instead.
+            self._set_status_key("hint_clipboard_exact", severity="warn", chars=f"{len(value):,}")
+            return
+        self._set_status_key(key, severity="ok")
+
+    def _editor_paste(self) -> None:
+        actions = self._editor_action_api()
+        if actions is None or not self._editor_can_edit():
+            return
+        self._suppress_events = True
+        try:
+            pasted = actions.paste()
+        finally:
+            self._suppress_events = False
+        if not pasted:
+            self._set_status_key("status_clipboard_empty", severity="warn")
+            return
+        self._editor_can_undo = True
+        self._editor_can_redo = False
+        self._editor_dirty = True
+        self._commit_editor()
+        self._set_status_key("status_pasted", severity="ok")
+
+    def _editor_copy(self) -> None:
+        actions = self._editor_action_api()
+        if actions is None:
+            return
+        value = clip.selected_text(self._editor_inner)
+        if value is None or not actions.copy():
+            self._set_status_key("status_selection_empty", severity="warn")
+            return
+        self._report_copied(value)
+
+    def _editor_cut(self) -> None:
+        actions = self._editor_action_api()
+        if actions is None or not self._editor_can_edit():
+            return
+        value = clip.selected_text(self._editor_inner)
+        self._suppress_events = True
+        try:
+            cut = actions.cut()
+        finally:
+            self._suppress_events = False
+        if not cut:
+            self._set_status_key("status_selection_empty", severity="warn")
+            return
+        self._editor_can_undo = True
+        self._editor_can_redo = False
+        self._editor_dirty = True
+        self._commit_editor()
+        self._report_copied(value or "")
+
+    def _editor_select_all(self) -> None:
+        actions = self._editor_action_api()
+        if actions is None or not actions.select_all():
+            self._set_status_key("status_selection_empty", severity="warn")
+            return
+        self._refresh_editor_actions()
+        self._set_status_key("status_selected_all", severity="info")
+
+    def _editor_undo(self) -> None:
+        actions = self._editor_action_api()
+        if actions is None or not self._editor_can_edit():
+            return
+        self._suppress_events = True
+        try:
+            undone = actions.undo()
+        finally:
+            self._suppress_events = False
+        if not undone:
+            self._editor_can_undo = False
+            self._refresh_editor_actions()
+            return
+        self._editor_can_undo = True
+        self._editor_can_redo = True
+        self._editor_dirty = True
+        self._commit_editor()
+
+    def _editor_redo(self) -> None:
+        actions = self._editor_action_api()
+        if actions is None or not self._editor_can_edit():
+            return
+        self._suppress_events = True
+        try:
+            redone = actions.redo()
+        finally:
+            self._suppress_events = False
+        if not redone:
+            self._editor_can_redo = False
+            self._refresh_editor_actions()
+            return
+        self._editor_can_undo = True
+        self._editor_dirty = True
+        self._commit_editor()
+
+    def _editor_copy_all(self) -> None:
+        """Copy the whole field without selecting it first.
+
+        The text comes from the model, and a pending edit is committed first, so the
+        clipboard gets exactly what the counters describe — never a stale snapshot.
+        """
+        self._commit_if_dirty()
+        text = self.embed_vm.text
+        if not text:
+            self._set_status_key("status_field_empty", severity="warn")
+            return
+        self._copy_to_clipboard(text)
+        self._report_copied(text)
+
+    def _refresh_editor_actions(self) -> None:
+        """Enable what the editor can do now; grey out what it cannot."""
+        editable = self._editor_can_edit()
+        has_text = bool(self.embed_vm.text) or self._editor_dirty
+        has_selection = editable and self._editor_has_selection()
+        for widget in (
+            self.editor_paste_button,
+            self.editor_cut_button,
+            self.clear_field_button,
+        ):
+            set_enabled(widget, editable)
+        set_enabled(self.editor_copy_button, has_selection)
+        set_enabled(self.editor_select_all_button, editable and has_text)
+        set_enabled(self.editor_copy_all_button, has_text)
+        set_enabled(self.editor_undo_button, editable and self._editor_can_undo)
+        set_enabled(self.editor_redo_button, editable and self._editor_can_redo)
 
     def _clear_field(self) -> None:
         """Empty the payload field — and nothing else.
@@ -1430,11 +1681,19 @@ class PhantomApp:
         finally:
             self._suppress_events = False
         self._reset_modified_flag()
-        self._sync_editor_wrap()
-        self._refresh_embed_state()
+        self._editor_dirty = True
+        self._commit_editor(schedule=False)
         self._refresh_embed_ready()
         self.embed_text.focus_set()
         self._set_status_key("status_field_cleared", severity="ok")
+
+    def _reset_editor_history(self) -> None:
+        """Drop the widget's undo stack, and the snapshot that described it."""
+        clip.reset_history(self.embed_text)
+        self._editor_metrics = measure_text("")
+        self._editor_dirty = False
+        self._editor_can_undo = False
+        self._editor_can_redo = False
 
     def _reset_modified_flag(self) -> None:
         """The model already knows: stop Tk from reporting this edit as a new one."""
@@ -1455,15 +1714,18 @@ class PhantomApp:
             return
         report = self.capacity_report
         blocked = bool(
-            report is not None
-            and report.state
-            in (
-                CapacityState.CALCULATING,
-                CapacityState.OVERFLOW,
-                CapacityState.ERROR,
+            self._editor_dirty
+            or (
+                report is not None
+                and report.state
+                in (
+                    CapacityState.CALCULATING,
+                    CapacityState.OVERFLOW,
+                    CapacityState.ERROR,
+                )
+                and self.embed_vm.has_payload()
+                and self.embed_vm.carrier is not None
             )
-            and self.embed_vm.has_payload()
-            and self.embed_vm.carrier is not None
         )
         set_enabled(self.embed_button, not blocked)
 
@@ -1487,6 +1749,13 @@ class PhantomApp:
             self.expand_button.configure(state="disabled")
             self.copy_path_button.configure(state="disabled")
             self.reveal_button.configure(state="disabled")
+            for widget in (
+                self.select_all_result_button,
+                self.copy_selection_button,
+                self.copy_button,
+                self.save_txt_button,
+            ):
+                set_enabled(widget, False)
             return
         self.audit_rows["audit_layout"].configure(
             text=layout_text(self.i18n, payload.container_version)
@@ -1509,15 +1778,24 @@ class PhantomApp:
                 text=self.i18n.t("lbl_integrity_fail"), text_color=T.CLR_RED
             )
         if payload.kind is PayloadKind.TEXT:
-            self._set_textbox(self.result_text, payload.data.decode("utf-8", errors="replace"))
             self.result_file_label.configure(text=self.i18n.t("lbl_extract_text_hint"))
+            # Paints the preview, and replaces that caption when it had to stop
+            # before the end of the text.
+            self._render_result_preview()
         else:
             self._set_textbox(self.result_text, "")
+            self._result_preview_key = None
             self.result_file_label.configure(
                 text=f"{payload.name} · {payload.original_size} B"
             )
         has_text = payload.kind is PayloadKind.TEXT
-        self.copy_button.configure(state="normal" if has_text else "disabled")
+        for widget in (
+            self.select_all_result_button,
+            self.copy_selection_button,
+            self.copy_button,
+            self.save_txt_button,
+        ):
+            set_enabled(widget, has_text)
         state = "normal" if not has_text else "disabled"
         self.save_button.configure(state=state)
         self.save_as_button.configure(state=state)
@@ -1599,9 +1877,18 @@ class PhantomApp:
         return self.i18n.t("err.internal", details=str(exc))
 
     def _show_error(self, exc: PhantomError) -> None:
-        self._set_status_key("status_error", severity="error")
+        """Never leave a bare red "ERROR" in the footer.
+
+        The old code painted ``status_error`` and, for a cancellation, returned
+        without any dialogue: the footer said only "ERROR" while the modal that
+        explains it never appeared.  Now the footer carries the reason and a
+        cancellation is what it is — a cancellation, not a failure.
+        """
         if isinstance(exc, OperationCancelled):
+            self._set_status_key("status_cancelled", severity="warn")
             return
+        detail = exc.message or exc.code.value
+        self._set_status_key("status_error_detail", severity="error", details=detail)
         messagebox.showerror(self.i18n.t("err.title"), self._error_message(exc), parent=self.root)
 
     def _show_warning(self, title_key: str, message_key: str, **params: object) -> None:
@@ -1717,16 +2004,77 @@ class PhantomApp:
             self._editor_inner.edit_modified(False)
         finally:
             self._modified_resetting = False
-        self._on_text_changed()
-
-    def _on_text_changed(self, _event: object | None = None) -> None:
         if self._suppress_events:
             return
-        self.embed_vm.set_text(self.embed_text.get("1.0", "end-1c"))
-        self._sync_editor_wrap()
-        self._invalidate_estimate()
+        self._mark_editor_dirty()
+        self._editor_can_undo = True
+        self._editor_can_redo = False
+        self._refresh_editor_actions()
+        # Nothing is read here.  A keystroke must cost a keystroke, not a copy of the
+        # whole field: the text, its measurement and the estimate are committed once
+        # the user stops, by `_commit_editor`.
         self._refresh_embed_state()
-        self.debouncer.schedule(self._start_estimate)
+        self.debouncer.schedule(self._commit_editor)
+
+    def _mark_editor_dirty(self) -> None:
+        """The field changed: the snapshot, the estimate and the footer are stale."""
+        self._editor_dirty = True
+        self._invalidate_estimate()
+        self._clear_stale_status()
+
+    def _on_text_changed(self, _event: object | None = None) -> None:
+        """A focus change or an explicit call: commit now instead of waiting."""
+        if self._suppress_events:
+            return
+        self._mark_editor_dirty()
+        self._commit_editor()
+
+    def _commit_if_dirty(self) -> None:
+        """Commit a pending edit without asking for another estimate.
+
+        Discrete moments — a probe landing, a tab switch, a language change, a test
+        that has just written into the field — need the numbers to be true *now*,
+        and none of them is a keystroke, so reading the field here is affordable.
+        """
+        if self._editor_dirty and not self._suppress_events:
+            self._commit_editor(schedule=False)
+
+    def _commit_editor(self, *, schedule: bool = True) -> None:
+        """Read the field once, measure it once, then ask for an estimate.
+
+        This is the only place that pulls the payload text out of Tk, and it runs
+        from a debounced callback: 12 MiB of text costs one ``get``, one measurement
+        and one background estimate, no matter how many keystrokes produced it.
+        """
+        self.debouncer.abort()
+        if self._suppress_events:
+            return
+        try:
+            text = self.embed_text.get("1.0", "end-1c")
+        except Exception as exc:  # noqa: BLE001 - the widget may be going away
+            LOGGER.debug("payload field unreadable: %s", exc)
+            return
+        metrics = measure_text(
+            text, scan_lines=len(text) > C.EDITOR_WRAP_LINE_LIMIT or not self._editor_wrapping
+        )
+        self._editor_metrics = metrics
+        self._editor_dirty = False
+        if text != self.embed_vm.text:
+            self.embed_vm.set_text(text)
+        self._apply_wrap(metrics.longest_line)
+        self._refresh_counters()
+        self._refresh_embed_state()
+        if schedule:
+            self._start_estimate()
+
+    def _refresh_counters(self) -> None:
+        """Characters and UTF-8 bytes, from the committed measurement."""
+        metrics = self._editor_metrics
+        chars = 0 if metrics is None else metrics.chars
+        size = 0 if metrics is None else metrics.utf8_bytes
+        self.char_label.configure(
+            text=self.i18n.t("lbl_char_count", chars=chars, **{"bytes": size})
+        )
 
     def _invalidate_estimate(self) -> None:
         """The payload changed: every number on screen now belongs to the old one."""
@@ -1734,6 +2082,27 @@ class PhantomApp:
         self._estimate_failed = False
         if self.embed_vm.estimate is not None:
             self.embed_vm.reset_estimate()
+
+    def _sync_capacity_status(self) -> None:
+        """The footer must not say "ready" over a payload that cannot be embedded.
+
+        Only an idle, informational footer is replaced: a finished job's verdict, a
+        running operation or a message the user just caused all keep priority.
+        """
+        if self._busy:
+            return
+        report = self.capacity_report
+        over = report is not None and report.state is CapacityState.OVERFLOW
+        if over and self._status_key in ("status_ready", "status_capacity_exceeded"):
+            self._set_status_key("status_capacity_exceeded", severity="warn")
+            return
+        if not over and self._status_key == "status_capacity_exceeded":
+            self._set_status_key("status_ready", severity="info")
+
+    def _clear_stale_status(self) -> None:
+        """A finished operation's verdict is not a statement about the new text."""
+        if self._status_key in STALE_STATUS_KEYS and not self._busy:
+            self._set_status_key("status_ready", severity="info")
 
     def _on_password_changed(self, _event: object | None = None) -> None:
         self.embed_vm.set_password(self.embed_pwd.get())
@@ -1762,6 +2131,11 @@ class PhantomApp:
         self.root.clipboard_clear()
         self.root.clipboard_append(value)
         self._clipboard_value = value
+        if len(value) > C.CLIPBOARD_AUTO_CLEAR_MAX_CHARS:
+            # Deciding whether a 15 MiB clipboard is still ours means reading all of
+            # it back on the GUI thread: a multi-megabyte copy stays on the board
+            # and the footer says why exact transfer needs a file instead.
+            return
         if self._clipboard_token is not None:
             self.root.after_cancel(self._clipboard_token)
         self._clipboard_token = self.root.after(
@@ -1924,6 +2298,9 @@ class PhantomApp:
 
     # -- worker plumbing ------------------------------------------------
     def _start_estimate(self) -> None:
+        # Never estimate text the field no longer holds: a probe landing or a
+        # carrier swap can schedule this while an edit is still uncommitted.
+        self._commit_if_dirty()
         if self.worker.busy:
             self.debouncer.schedule(self._start_estimate)
             return
@@ -2127,11 +2504,24 @@ class PhantomApp:
         for event in self.worker.poll():
             try:
                 self._handle_worker_event(event)
-            except Exception:
+            except Exception as exc:
+                # Log the *kind* of failure and the step, never the payload: the
+                # event may carry user text.
                 LOGGER.exception("worker event %s could not be handled", event.kind.value)
+                self._last_poll_error = f"handler:{type(exc).__name__}"
+                step = self._operation or event.kind.value
                 self._finish_operation_ui()
                 self._reset_progress()
-                self._set_status_key("status_error", severity="error")
+                self._set_status_key(
+                    "status_error_detail",
+                    severity="error",
+                    details=self.i18n.t("err_ui_handler_t"),
+                )
+                messagebox.showerror(
+                    self.i18n.t("err_ui_handler_t"),
+                    self.i18n.t("err_ui_handler", step=step),
+                    parent=self.root,
+                )
 
     def _worker_has_work(self) -> bool:
         """``worker.busy``, read through a call because it changes mid-poll."""
@@ -2272,7 +2662,11 @@ class PhantomApp:
         self.settings.last_dir = os.path.dirname(outcome.output_path) or self.settings.last_dir
         self._save_settings()
         if outcome.wipe_error:
-            self._set_status_key("status_error", severity="warn")
+            self._set_status_key(
+                "status_error_detail",
+                severity="warn",
+                details=self.i18n.t("warn_wipe_t"),
+            )
             self._show_warning(
                 "warn_wipe_t", "warn_wipe_m", details=outcome.wipe_error
             )
@@ -2290,7 +2684,9 @@ class PhantomApp:
                 "status_extracted_bytes", severity="ok", size=payload.original_size
             )
         else:
-            self._set_status_key("status_error", severity="warn")
+            # A failed integrity check is not a generic "ERROR": it says what is
+            # wrong and that the data must not be saved.
+            self._set_status_key("status_extract_verify_failed", severity="warn")
         self.animator.to("progress", 1.0, duration=0.2, on_update=self.progress_bar.set)
         self._ensure_animation_loop()
 
@@ -2479,11 +2875,15 @@ class PhantomApp:
         if self._result_window is not None:
             self._result_window.close()
             self._result_window = None
-        text = clip.all_text(CTkAdapter.inner_textbox(self.result_text) or self.result_text)
-        if not text:
-            payload = self.extract_vm.result
-            if payload is not None and payload.kind is not PayloadKind.TEXT:
-                text = f"{payload.name}\n{payload.original_size} B"
+        # The window gets the *whole* result from the model.  It used to read the
+        # panel's own widget, which holds a preview: "expand" then copied a
+        # truncated string and nobody could see that it had.
+        payload = self.extract_vm.result
+        text = ""
+        if payload is not None and payload.kind is PayloadKind.TEXT:
+            text = self._result_text_exact() or ""
+        if not text and payload is not None:
+            text = f"{payload.name}\n{payload.original_size} B"
         labels = {
             "result_window_title": self._t("result_window_title"),
             "btn_copy_text": self._t("btn_copy_text"),
@@ -2498,6 +2898,12 @@ class PhantomApp:
             "status_path_missing": self._t("status_path_missing"),
             "status_revealed": self._t("status_revealed"),
             "status_reveal_failed": self._t("status_reveal_failed"),
+            "btn_select_all": self._t("btn_select_all"),
+            "btn_save_txt": self._t("btn_save_txt"),
+            "status_selected_all": self._t("status_selected_all"),
+            "status_txt_saved": self._t("status_txt_saved"),
+            "status_no_result": self._t("status_no_result"),
+            "lbl_result_preview_trimmed": self._t("lbl_result_preview_trimmed"),
         }
         window = ResultWindow(
             self.root,
@@ -2507,6 +2913,7 @@ class PhantomApp:
             path=self._result_path() or None,
             copy_callback=self._copy_for_window,
             on_close=self._forget_result_window,
+            save_txt=self._save_result_txt,
         )
         self._result_window = window
 
@@ -2518,12 +2925,135 @@ class PhantomApp:
         self._copy_to_clipboard(value)
         return True
 
-    def _copy_result(self) -> None:
+    def _result_inner(self) -> Any:
+        return CTkAdapter.inner_textbox(self.result_text) or self.result_text
+
+    def _result_text_exact(self) -> str | None:
+        """The whole extracted text, decoded strictly — or ``None`` with a reason.
+
+        ``errors="replace"`` would have turned a decoding problem into U+FFFD
+        characters in the user's hands: the text would look extracted and be
+        silently wrong.  A strict decode cannot do that, and PHANTOM never repairs
+        a payload by changing what it holds.
+        """
         payload = self.extract_vm.result
         if payload is None or payload.kind is not PayloadKind.TEXT:
+            self._set_status_key("status_no_result", severity="warn")
+            return None
+        try:
+            return payload.data.decode("utf-8")
+        except UnicodeDecodeError:
+            self._report_text_not_utf8()
+            return None
+
+    def _report_text_not_utf8(self) -> None:
+        """Explain, once, and point at the file path that keeps the bytes intact."""
+        self._set_status_key(
+            "status_error_detail",
+            severity="error",
+            details=self.i18n.t("err_result_not_utf8_t"),
+        )
+        if self._result_decode_notified:
             return
-        self._copy_to_clipboard(payload.data.decode("utf-8", errors="replace"))
-        self._set_status_key("status_copied", severity="ok")
+        self._result_decode_notified = True
+        messagebox.showerror(
+            self.i18n.t("err_result_not_utf8_t"),
+            self.i18n.t("err_result_not_utf8"),
+            parent=self.root,
+        )
+
+    def _render_result_preview(self) -> None:
+        """Paint at most ``RESULT_PREVIEW_CHARS``; the data itself is untouched.
+
+        A 15 MiB insert into a Tk text widget is a multi-second display pass on
+        Aqua.  The pane therefore shows the beginning of the text and says so;
+        "copy all" and "save as TXT" always operate on the complete payload.
+        """
+        payload = self.extract_vm.result
+        if payload is None:
+            self._set_textbox(self.result_text, "")
+            self._result_preview_key = None
+            return
+        key = (id(payload), len(payload.data))
+        if key == self._result_preview_key:
+            return
+        try:
+            text = payload.data.decode("utf-8")
+        except UnicodeDecodeError:
+            self._set_textbox(self.result_text, "")
+            self._report_text_not_utf8()
+            return
+        self._result_preview_key = key
+        if len(text) > C.RESULT_PREVIEW_CHARS:
+            self._set_textbox(self.result_text, text[: C.RESULT_PREVIEW_CHARS])
+            self.result_file_label.configure(
+                text=self.i18n.t(
+                    "lbl_result_preview_trimmed",
+                    shown=f"{C.RESULT_PREVIEW_CHARS:,}",
+                    total=f"{len(text):,}",
+                )
+            )
+            return
+        self._set_textbox(self.result_text, text)
+
+    def _select_all_result(self) -> None:
+        """Select the whole result field — read-only or not, selection is allowed."""
+        if clip.select_all(self._result_inner()):
+            self._set_status_key("status_selected_all", severity="info")
+            return
+        self._set_status_key("status_no_result", severity="warn")
+
+    def _copy_result_selection(self) -> None:
+        value = clip.selected_text(self._result_inner())
+        if value is None:
+            self._set_status_key("status_selection_empty", severity="warn")
+            return
+        self._copy_to_clipboard(value)
+        self._report_copied(value)
+
+    def _copy_result(self) -> None:
+        """Copy the *whole* result, from the model, not from the preview."""
+        text = self._result_text_exact()
+        if text is None:
+            return
+        self._copy_to_clipboard(text)
+        self._report_copied(text)
+
+    def _save_result_txt(self) -> bool:
+        """Write the extracted text as a UTF-8 TXT file, byte for byte.
+
+        The file gets ``payload.data`` — the exact bytes that were decrypted and
+        whose SHA-256 was verified — so no normalisation, no replacement characters
+        and no line-ending rewriting can happen on the way out.
+        """
+        payload = self.extract_vm.result
+        if payload is None or payload.kind is not PayloadKind.TEXT:
+            self._set_status_key("status_no_result", severity="warn")
+            return False
+        suggested = payload.name or "message.txt"
+        if not suggested.lower().endswith(".txt"):
+            suggested = f"{os.path.splitext(suggested)[0] or 'message'}.txt"
+        target = filedialog.asksaveasfilename(
+            parent=self.root,
+            title=self.i18n.t("dlg_save_txt"),
+            initialdir=self.settings.last_dir or None,
+            initialfile=suggested,
+            defaultextension=".txt",
+            filetypes=[("TXT", "*.txt"), ("*", "*")],
+        )
+        if not target:
+            return False
+        try:
+            fsutil.write_bytes_verified(
+                target, payload.data, expected_sha256=payload.sha256_actual
+            )
+        except PhantomError as exc:
+            self._show_error(exc)
+            return False
+        self._set_status_key("status_txt_saved", severity="ok", path=target)
+        self.settings.last_dir = os.path.dirname(target) or self.settings.last_dir
+        self._save_settings()
+        return True
 
     def _save_result_file(self) -> None:
         payload = self.extract_vm.result
@@ -2575,6 +3105,8 @@ class PhantomApp:
     def _clear_extract_result_only(self) -> None:
         self.extract_vm.result = None
         self.extract_vm.outcome = None
+        self._result_decode_notified = False
+        self._result_preview_key = None
         self._set_textbox(self.result_text, "")
         self._refresh_extract_state()
 
@@ -2595,11 +3127,22 @@ class PhantomApp:
         self._suppress_events = True
         try:
             self.embed_text.delete("1.0", "end")
+            # A full reset is not an undoable edit: the history of the text being
+            # thrown away must not stay in the widget, one Cmd+Z away.
+            self._reset_editor_history()
             self.embed_pwd.delete(0, "end")
             self._set_entry_text(self.output_entry, "")
             self.secret_label.configure(text=self.i18n.t("lbl_no_secret_file"))
         finally:
             self._suppress_events = False
+        # Application-held references to the text that was just reset.  This is a
+        # release, not a claim of physical erasure: Python, Tk and the clipboard
+        # may still hold copies, and PHANTOM does not pretend otherwise.
+        self._generated_password = ""
+        self._clipboard_value = None
+        self._editor_can_undo = False
+        self._editor_can_redo = False
+        self._result_decode_notified = False
         self._refresh_all()
 
     # -- settings -------------------------------------------------------

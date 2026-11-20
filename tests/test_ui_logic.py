@@ -1264,6 +1264,11 @@ class FakeText(FakeEntry):
     def configure(self, **kwargs: object) -> None:
         self.options = {**getattr(self, "options", {}), **kwargs}
 
+    def edit_reset(self) -> None:
+        """Tk drops the whole undo stack here (``reset_history`` calls it)."""
+        self.resets = getattr(self, "resets", 0) + 1
+        self.history_cleared = True
+
     def mark_set(self, _name: str, _index: str) -> None:
         self.caret = _index
 
@@ -1463,7 +1468,25 @@ def test_undo_and_redo_report_when_the_stack_is_empty() -> None:
 def test_enable_undo_turns_the_widget_history_on() -> None:
     text = FakeText("abc")
     assert ui_clipboard.enable_undo(text) is True
-    assert text.options == {"undo": True, "autoseparators": True, "maxundo": -1}
+    assert text.options == {
+        "undo": True,
+        "autoseparators": True,
+        "maxundo": C.EDITOR_MAX_UNDO,
+    }
+
+
+def test_undo_history_is_bounded_and_can_be_dropped() -> None:
+    """Bounded history, and a full reset that leaves nothing to undo.
+
+    Tk stores the text every undo step touched; an unbounded stack over
+    multi-megabyte edits is memory the user never asked for.  ``edit_reset`` is
+    what the full reset uses: after it the text it removed is not one Cmd+Z away.
+    """
+    text = FakeText("abc")
+    assert ui_clipboard.enable_undo(text, maxundo=3) is True
+    assert text.options["maxundo"] == 3
+    assert ui_clipboard.reset_history(text) is True
+    assert text.resets == 1
 
 
 # ---------------------------------------------------------------------------

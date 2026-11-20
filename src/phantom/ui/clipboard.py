@@ -295,15 +295,39 @@ def redo(widget: Any) -> bool:
     return True
 
 
-def enable_undo(widget: Any) -> bool:
-    """Turn the widget's own undo stack on (Tk keeps it off by default)."""
+def enable_undo(widget: Any, *, maxundo: int = 50) -> bool:
+    """Turn the widget's own undo stack on (Tk keeps it off by default).
+
+    ``maxundo`` bounds the history on purpose.  Tk keeps the text each step
+    changed, so an unbounded stack over multi-megabyte edits is unbounded memory:
+    the limit is what keeps undo from being the reason a pasted block exhausts RAM.
+    """
     inner = _inner(widget)
     if not is_multiline(inner):
         return False
     try:
-        inner.configure(undo=True, autoseparators=True, maxundo=-1)
+        inner.configure(undo=True, autoseparators=True, maxundo=max(1, int(maxundo)))
     except Exception as exc:  # noqa: BLE001 - Tk dependent
         LOGGER.warning("undo could not be enabled: %s", exc)
+        return False
+    return True
+
+
+def reset_history(widget: Any) -> bool:
+    """Throw away the widget's undo history; ``False`` when it has none.
+
+    Used for a *full* reset only.  Emptying the field on the user's request stays
+    an ordinary undoable edit; a reset that also drops the password must not leave
+    the text it removed sitting one Cmd+Z away.
+    """
+    inner = _inner(widget)
+    reset = getattr(inner, "edit_reset", None)
+    if not callable(reset):
+        return False
+    try:
+        reset()
+    except Exception as exc:  # noqa: BLE001 - undo may be off
+        LOGGER.debug("undo history not reset: %s", exc)
         return False
     return True
 
