@@ -12,7 +12,9 @@ import gc
 import logging
 import os
 import re
+import sys
 import time
+import tkinter
 from collections.abc import Callable
 from tkinter import TclError, filedialog, messagebox
 from typing import Any, Final
@@ -66,6 +68,7 @@ from phantom.ui.widgets import (
     card_title,
     display_font,
     hint_label,
+    install_quiet_display,
     install_text_shortcuts,
     mono_font,
     paste_into,
@@ -81,6 +84,17 @@ from phantom.ui.widgets import (
 from phantom.ui.worker import WorkerEvent, WorkerEventType, WorkerService
 
 LOGGER: Final = logging.getLogger("phantom.app")
+
+#: ``update idletasks`` — the display pass this window uses to settle its layout —
+#: is not survivable on every Aqua build.  Tcl/Tk 9.1 on macOS segfaults inside it
+#: whenever it is called from script level while Tk is drawing (the owner's MacBook
+#: and the macOS CI runner both reproduce it, at a build, at a theme change, and in a
+#: plain ``update``), and Tk's own tracker carries the report that ``update idletasks``
+#: no longer produces a display on macOS under 9.  Nothing the window draws depends on
+#: the pass — Tk lays out and paints in its own loop a moment later — so on that
+#: combination it is not attempted at all: the window is slower to *first* paint and
+#: cannot take the interpreter down with it.
+DISPLAY_PASSES_UNSAFE: Final = sys.platform == "darwin" and tkinter.TkVersion >= 9
 GEOMETRY_RE: Final = re.compile(r"^\d{3,4}x\d{3,4}([+-]\d{1,5}[+-]\d{1,5})?$")
 WINDOW_SIZE: Final = (1140, 900)
 MIN_SIZE: Final = (980, 720)
@@ -169,6 +183,11 @@ class PhantomApp:
         self._gc_resume_token: str | None = None
 
         self.trace.mark("init:services")
+        if DISPLAY_PASSES_UNSAFE:
+            # The whole process stops asking Tk for display passes, not just this
+            # window: CustomTkinter flushes from its own draws (a scrollbar, a colour
+            # change), and every one of those is the crash on this platform.
+            install_quiet_display()
         self._configure_root()
         # The appearance mode goes on *before* the widgets exist.  CustomTkinter
         # notifies every registered widget when the mode actually changes, and each
@@ -307,6 +326,14 @@ class PhantomApp:
 
         Returns whether the pass really ran.
         """
+        if DISPLAY_PASSES_UNSAFE:
+            # Nothing is owed, because nothing is attempted: see the constant.
+            self._layout_pending = False
+            LOGGER.debug(
+                "display pass skipped: update idletasks is unsafe on Aqua under Tk %s",
+                tkinter.TkVersion,
+            )
+            return False
         try:
             if not self.root.winfo_viewable():
                 self._layout_pending = True

@@ -100,6 +100,18 @@ def appearance_mode_is_global():
             ctk.set_appearance_mode(before.lower())
 
 
+def _passes_are_attempted() -> bool:
+    """Whether this platform's Tk is asked for a display pass at all.
+
+    ``DISPLAY_PASSES_UNSAFE`` means Aqua under Tk 9, where ``update idletasks``
+    segfaults; the window then relies on Tk's own loop and never runs a pass, so a
+    test about passes has to ask which world it is in instead of assuming one.
+    """
+    from phantom.ui.app import DISPLAY_PASSES_UNSAFE
+
+    return not DISPLAY_PASSES_UNSAFE
+
+
 def _after_scripts(app) -> list[str]:
     """The callbacks Tk says are armed, by name — for the failure message only."""
     names = []
@@ -385,7 +397,8 @@ def test_switching_the_theme_six_times_keeps_the_window_alive(app) -> None:
             assert ctk_mode() == mode
         assert app._layout_token is None, f"the pass owed by {mode} never ran"
     assert W.suppressed_flush_count() > before + 20, "nothing was refused at all"
-    assert app._display_passes >= passes + len(order), "the window stopped repainting"
+    if _passes_are_attempted():
+        assert app._display_passes >= passes + len(order), "the window stopped repainting"
 
 
 def test_a_hidden_window_switches_the_theme_without_a_display_pass(app) -> None:
@@ -411,7 +424,10 @@ def test_a_hidden_window_switches_the_theme_without_a_display_pass(app) -> None:
 
     app.root.deiconify()
     app.root.update()
-    assert app._display_passes == passes + 1, "the owed pass never ran on <Map>"
+    if _passes_are_attempted():
+        assert app._display_passes == passes + 1, "the owed pass never ran on <Map>"
+    else:
+        assert app._display_passes == passes
 
 
 def test_the_system_theme_tick_never_flushes_from_the_timer(app, monkeypatch) -> None:
@@ -2516,7 +2532,10 @@ def test_the_build_never_enters_the_event_loop(app, tmp_path: Path) -> None:
         root.update()
 
         assert passes, "the scheduled pass never ran"
-        assert instance._display_passes >= 1
+        if _passes_are_attempted():
+            assert instance._display_passes >= 1
+        else:
+            assert instance._display_passes == 0, "a pass ran where Tk 9 cannot survive one"
         assert instance._layout_token is None
     finally:
         type(app)._flush_layout = real
@@ -2589,13 +2608,45 @@ def test_a_hidden_window_is_never_asked_to_display(tmp_path: Path) -> None:
     root, instance = _build(tmp_path / "hidden", map_window=False)
     try:
         assert instance._display_passes == 0, "a hidden window was displayed anyway"
-        assert instance._layout_pending is True, "the pass was forgotten, not deferred"
+        if _passes_are_attempted():
+            assert instance._layout_pending is True, "the pass was forgotten, not deferred"
 
         root.deiconify()
         root.update()
 
-        assert instance._display_passes >= 1, "the mapping did not run the owed pass"
+        if _passes_are_attempted():
+            assert instance._display_passes >= 1, "the mapping did not run the owed pass"
         assert instance._layout_pending is False
+    finally:
+        instance.worker.shutdown(timeout=2)
+        root.destroy()
+
+
+def test_a_platform_that_cannot_take_a_pass_is_never_asked_for_one(tmp_path: Path) -> None:
+    """The refusal is permanent exactly where the call cannot be made at all.
+
+    On Aqua under Tk 9 the window installs the refusal for the whole process, because
+    CustomTkinter flushes from its own draws as well and any one of those is the
+    segfault; on every other platform the refusal must end with its ``with`` block,
+    which is the property the rest of the suite depends on.
+    """
+    import tkinter as tk
+
+    from phantom.ui import widgets as W
+    from phantom.ui.app import DISPLAY_PASSES_UNSAFE
+
+    before = tk.Misc.update_idletasks
+    root, instance = _build(tmp_path / "permanent", map_window=True)
+    try:
+        if DISPLAY_PASSES_UNSAFE:
+            assert tk.Misc.update_idletasks is not before, "the window kept asking Tk to display"
+            assert tk.Canvas.update_idletasks is not before
+            with W.quiet_redraws():
+                pass
+            assert tk.Misc.update_idletasks is not before, "the refusal ended with the block"
+            assert instance._display_passes == 0, "a pass ran on a platform that cannot take one"
+        else:
+            assert tk.Misc.update_idletasks is before, "the refusal outlived its scope"
     finally:
         instance.worker.shutdown(timeout=2)
         root.destroy()

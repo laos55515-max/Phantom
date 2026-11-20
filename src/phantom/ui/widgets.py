@@ -97,6 +97,10 @@ def quiet_idle_flush() -> Iterator[None]:
         yield
         return
 
+    if _QUIET.permanent:
+        yield
+        return
+
     def _no_flush(_self: Any, *_args: Any, **_kwargs: Any) -> None:
         return None
 
@@ -105,15 +109,18 @@ def quiet_idle_flush() -> Iterator[None]:
     try:
         yield
     finally:
-        canvas_type.update_idletasks = _CANVAS_FLUSH
+        if not _QUIET.permanent:
+            canvas_type.update_idletasks = _CANVAS_FLUSH
 
 
 @dataclass
 class _QuietState:
-    """How deep the refusal is nested, and how many passes it has refused."""
+    """How deep the refusal is nested, how many passes it refused, and whether it
+    is permanent (a platform where the call cannot be made at all)."""
 
     depth: int = 0
     refused: int = 0
+    permanent: bool = False
 
 
 #: One counter for the whole process: a theme switch can nest (a redraw asked for
@@ -128,6 +135,27 @@ def suppressed_flush_count() -> int:
 
 def _flush_refused(_widget: Any, *_args: Any, **_kwargs: Any) -> None:
     _QUIET.refused += 1
+
+
+def install_quiet_display() -> None:
+    """Never ask Tk for a display pass in this process, for the rest of its life.
+
+    For Aqua under Tcl/Tk 9, where ``update idletasks`` segfaults: the window then
+    relies on Tk laying out and painting in its own loop, which it does a moment
+    after the callback that changed something returns.  Called once, from the window
+    that knows the platform (``PhantomApp``), and idempotent.
+    """
+    if _QUIET.permanent:
+        return
+    _QUIET.permanent = True
+    misc_type: Any = tk.Misc
+    canvas_type: Any = tk.Canvas
+    misc_type.update_idletasks = _flush_refused
+    canvas_type.update_idletasks = _flush_refused
+    LOGGER.info(
+        "display passes are refused for this process: update idletasks is unsafe on "
+        "this Tk build"
+    )
 
 
 @contextmanager
@@ -156,7 +184,7 @@ def quiet_redraws() -> Iterator[None]:
     places in Tk's display path, and a machine that fails must be able to say which
     one it needs.
     """
-    if os.environ.get("PHANTOM_QUIET_REDRAW", "1") == "0":
+    if _QUIET.permanent or os.environ.get("PHANTOM_QUIET_REDRAW", "1") == "0":
         yield
         return
 
@@ -170,7 +198,7 @@ def quiet_redraws() -> Iterator[None]:
         yield
     finally:
         _QUIET.depth -= 1
-        if _QUIET.depth == 0:
+        if _QUIET.depth == 0 and not _QUIET.permanent:
             misc_type.update_idletasks = _MISC_FLUSH
             canvas_type.update_idletasks = _CANVAS_FLUSH
 
