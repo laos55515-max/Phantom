@@ -1308,9 +1308,9 @@ def test_cut_button_removes_the_selection_and_updates_the_model(app) -> None:
     app._on_text_changed()
     _pump(app)
     inner = app._editor_inner
-    inner.tag_add("sel", "1.0", "1.7")
+    inner.tag_add("sel", "1.0", "1.6")
     app.editor_cut_button.invoke()
-    assert inner.get("1.0", "end-1c") == "please"
+    assert inner.get("1.0", "end-1c") == " please"
     assert app.root.clipboard_get() == "cut me"
     assert app.embed_vm.text == "please", "the model still describes the deleted text"
 
@@ -1333,6 +1333,9 @@ def test_undo_and_redo_buttons_follow_the_history(app) -> None:
     app.editor_undo_button.invoke()
     assert app._editor_inner.get("1.0", "end-1c") == ""
     assert app.embed_vm.text == ""
+    # The undo changed the payload, so an estimate is running; every action button
+    # is disabled while a job runs, and the redo click must wait for it.
+    _pump(app)
     assert str(app.editor_redo_button.cget("state")) == "normal"
     app.editor_redo_button.invoke()
     assert app._editor_inner.get("1.0", "end-1c") == "undo me"
@@ -1431,8 +1434,12 @@ def test_result_txt_save_is_byte_exact(app, dialogs, tmp_path: Path) -> None:
     assert app._status_key == "status_txt_saved"
 
 
-def test_a_payload_that_is_not_utf8_is_reported_not_repaired(app, dialogs) -> None:
+def test_a_payload_that_is_not_utf8_is_reported_not_repaired(
+    app, dialogs, monkeypatch
+) -> None:
     from phantom.core.payload import ExtractedPayload, PayloadKind
+
+    seen = _capture_dialogs(monkeypatch, dialogs)
 
     data = b"ok" + b"\xff\xfe" + b"text"
     payload = ExtractedPayload(
@@ -1451,7 +1458,7 @@ def test_a_payload_that_is_not_utf8_is_reported_not_repaired(app, dialogs) -> No
     assert "\ufffd" not in app.result_text.get("1.0", "end-1c")
     assert app._result_text_exact() is None
     assert app._status_key == "status_error_detail"
-    assert dialogs.errors, "nothing explained why the text cannot be shown"
+    assert seen, "nothing explained why the text cannot be shown"
     assert app.extract_vm.result is payload, "the payload was 'repaired' behind our back"
 
 
@@ -1472,14 +1479,30 @@ def test_the_result_field_offers_no_editing_actions(app) -> None:
     assert "<Control-c>" in sequences and "<Control-a>" in sequences
 
 
-def test_the_footer_explains_an_error_instead_of_a_bare_error(app, dialogs) -> None:
+def _capture_dialogs(monkeypatch, dialogs) -> list[str]:
+    """Record error dialogues instead of failing on them (some tests expect one)."""
+    from phantom.ui import app as ui_app
+
+    seen: list[str] = []
+
+    def record(title: str = "", message: str = "", **_: object) -> str:
+        seen.append(f"{title}: {message}")
+        dialogs.errors.append(f"{title}: {message}")
+        return "ok"
+
+    monkeypatch.setattr(ui_app.messagebox, "showerror", record, raising=False)
+    return seen
+
+
+def test_the_footer_explains_an_error_instead_of_a_bare_error(app, dialogs, monkeypatch) -> None:
     from phantom.core.errors import InternalError
 
+    seen = _capture_dialogs(monkeypatch, dialogs)
     app._show_error(InternalError("worker step failed"))
     text = app.status_label.cget("text")
     assert text.startswith(app.i18n.t("status_error_detail").split("{")[0])
     assert "worker step failed" in text
-    assert dialogs.errors, "the error was never explained"
+    assert seen, "the error was never explained"
 
 
 def test_a_cancellation_is_not_reported_as_an_error(app, dialogs) -> None:
@@ -1684,9 +1707,19 @@ def test_password_fields_and_paragraphs_have_clipboard_shortcuts(app) -> None:
         bound.update(shortcuts.sequences)
     assert wanted <= bound, f"missing shortcuts: {sorted(wanted - bound)}"
 
-    # 16 sequences per text widget: Cmd/Ctrl x lower/upper case for c, v, x, a.
-    assert all(item.bound_count >= 16 for item in app._text_shortcuts)
-    assert len(app._text_shortcuts) >= 5
+    # 16 sequences per editable text widget: Cmd/Ctrl x lower/upper case for
+    # c, v, x, a.  The result field is read-only and deliberately binds fewer —
+    # copy and select-all only, because paste/cut/undo could only ever fail there.
+    editable = [item for item in app._text_shortcuts if not item.readonly]
+    readonly = [item for item in app._text_shortcuts if item.readonly]
+    assert all(item.bound_count >= 16 for item in editable)
+    assert len(app._text_shortcuts) >= 6
+    assert readonly, "the result field lost its read-only shortcuts"
+    assert all(item.bound_count < 16 for item in readonly)
+    assert all(
+        "<Command-v>" not in item.sequences and "<Control-x>" not in item.sequences
+        for item in readonly
+    )
 
 
 # ---------------------------------------------------------------------------

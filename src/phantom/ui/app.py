@@ -2041,11 +2041,17 @@ class PhantomApp:
         self._clear_stale_status()
 
     def _on_text_changed(self, _event: object | None = None) -> None:
-        """A focus change or an explicit call: commit now instead of waiting."""
+        """A focus change or an explicit call: commit now instead of waiting.
+
+        The estimate is *scheduled*, not started: this runs on ``<FocusOut>``, and a
+        job started here would disable every action of the window while the user is
+        clicking the button that took the focus away.
+        """
         if self._suppress_events:
             return
         self._mark_editor_dirty()
-        self._commit_editor()
+        self._commit_editor(schedule=False)
+        self.debouncer.schedule(self._start_estimate)
 
     def _commit_if_dirty(self) -> None:
         """Commit a pending edit without asking for another estimate.

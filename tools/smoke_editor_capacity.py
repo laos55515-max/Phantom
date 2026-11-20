@@ -358,19 +358,29 @@ def main(argv: list[str] | None = None) -> int:
             root.clipboard_get() == "action-bar ",
             f"clipboard {root.clipboard_get()!r}",
         )
+        # Undo and redo change the payload, so each one starts a size estimate and
+        # every action button is disabled while it runs.  The chain has to let the
+        # loop finish that job, exactly like a person clicking twice would.
+        def after_undo() -> None:
+            check(
+                "action bar: undo",
+                editor_text() == "action-bar paste",
+                f"editor {editor_text()!r}",
+            )
+            app.editor_redo_button.invoke()
+
+            def after_redo() -> None:
+                check(
+                    "action bar: redo",
+                    editor_text() == "action-bar ",
+                    f"editor {editor_text()!r}",
+                )
+                root.after(120, next_phase)
+
+            settle(idle(), after_redo)
+
         app.editor_undo_button.invoke()
-        check(
-            "action bar: undo",
-            editor_text() == "action-bar paste",
-            f"editor {editor_text()!r}",
-        )
-        app.editor_redo_button.invoke()
-        check(
-            "action bar: redo",
-            editor_text() == "action-bar ",
-            f"editor {editor_text()!r}",
-        )
-        root.after(120, next_phase)
+        settle(idle(), after_undo)
 
     def phase_result_actions() -> None:
         """The result pane: select, copy the selection, copy *everything*, save TXT.
