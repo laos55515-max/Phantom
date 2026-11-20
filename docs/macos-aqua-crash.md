@@ -461,3 +461,28 @@ never went through that path, and a test now fails if it ever starts to.
 - `test_a_hidden_tab_is_laid_out_when_it_is_opened` — and only then.
 - `test_a_language_switch_lays_out_every_tab` — all four, hidden or not.
 - `test_a_dnd_that_cannot_register_hides_its_hints_and_keeps_the_button`.
+
+## 11. Two Tk costs the editor has to live with (2.1.0)
+
+Measured in CI by `tools/smoke_editor_capacity.py`, which drives the real window
+from `after` callbacks and never calls `update()`.
+
+**Word wrap is superlinear in line length.** Inserting the same 260 000 characters
+took 29 ms when they were broken into document-like lines and 13.6 s when they were
+one 120 000-character line (Tk 8.6.16), and 75 s for one 260 000-character line
+(9.1.0). The cost is Tk laying the line out for display; it is not the insert, the
+model or the estimate. The editor therefore switches to `wrap="none"` above
+`EDITOR_WRAP_LINE_LIMIT` (20 000 characters on one line) and says so under the
+counters. The text is never touched: nothing is split, trimmed or truncated, and
+wrapping returns when no line is that long.
+
+**A generated key event needs a focus window.** `event generate` for a key routes
+the event to the display's focus window. In a persistent loop (the smoke, and the
+application itself) that is the window the user is typing in, and every keystroke
+arrives. In a harness that starts a nested loop per keystroke with no active
+application — the pytest jobs on both Tks — Tk delivered *nothing*, from script
+level and from inside the loop, with `when="now"` and with `when="tail"`; a witness
+binding on the widget is what proved it. The GUI tests therefore fall back to the
+equivalent *virtual event* (`<<Paste>>`, `<<SelectAll>>`, `<<Undo>>`), which Tk
+dispatches to the widget's bind tags without asking about focus, and the real
+keystrokes stay covered by the smoke, which is a gate in both Aqua jobs.

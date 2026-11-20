@@ -123,6 +123,45 @@ may be re-encoded before it reaches the recipient.
 - **Traffic analysis.** The fact that two parties exchanged a file is visible to
   the channel.
 
+## The payload editor (2.1.0)
+
+The editor holds the plaintext you are about to embed, in a Tk `Text` widget, for
+as long as the window is open. That is a deliberate part of the design — you have
+to be able to read and edit what you are about to seal — and it comes with limits
+that are stated here rather than promised away:
+
+- **The text lives in this process's memory.** Tk keeps its own buffer, the view
+  model keeps a copy, and the estimate compresses a copy of it in a worker thread.
+  Nothing writes the editor's contents to disk, to the settings file, to a log or
+  to the network, and `ОЧИСТИТЬ ПОЛЕ` aborts the pending estimate and clears the
+  widget, the model, the counters and the undo history's *current* state — but
+  Python's memory manager and Tk's allocator are not under this program's control,
+  and freed pages may still contain the old text until the operating system reuses
+  them. No physical erasure is claimed, here or anywhere else in PHANTOM.
+- **The undo history is the widget's own.** It is bounded by Tk (`maxundo=-1`
+  means "no limit", so the history is bounded by memory), it is not encrypted, and
+  it is dropped when the widget is destroyed. A full reset (`СБРОС`) empties the
+  field, which is what makes the history empty: Tk keeps no separate store.
+- **The clipboard is the operating system's.** Pasting reads it; copying from the
+  editor writes it; the generated-password path still clears it after
+  `CLIPBOARD_CLEAR_SECONDS` through the native tool. Text you paste stays on the
+  system clipboard until something else replaces it — PHANTOM cannot revoke a
+  clipboard it does not own.
+- **Tk's clipboard conversion is Tk's.** Measured on macOS Aqua in CI: the
+  pasteboard handed back a string with one character per ~10 000 re-decoded as
+  Latin-1 (`а` → `Ð°`) on some runs of a 260 000-character string, and the correct
+  string on others. This happens inside Tk between the widget and the pasteboard,
+  before PHANTOM sees the text; the editor inserts exactly what the clipboard
+  returns, and no byte is dropped afterwards. If you need a byte-exact transfer of
+  a very large block, put it in a file and use the file payload instead — that path
+  never goes through Tk.
+- **Capacity is checked twice, on purpose.** The panel's number is a preliminary
+  estimate computed by `phantom.core.payload.estimate_size`; the engine's own
+  capacity check at embed time is final and is never disabled. The editor refuses
+  to *embed* when the estimate says the payload does not fit, but it never refuses
+  to *hold* your text: over-capacity text stays in the field, is shown as an
+  excess, and can be embedded into a bigger carrier without retyping.
+
 ## Metadata cleaning (2.1.0)
 
 The fourth tab inspects and cleans the container metadata of PNG, WAV and FLAC

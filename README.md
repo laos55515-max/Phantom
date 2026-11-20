@@ -117,9 +117,27 @@ from a checkout.
 
 Text fields behave like native ones on every platform:
 
-- `Cmd+C/V/X/A` on macOS, `Ctrl+C/V/X/A` elsewhere, plus a right-click
-  (two-finger tap) menu with Paste, Copy, Cut and Select all. Every shortcut is
-  bound on the inner Tk widget, so CustomTkinter's proxies cannot swallow it.
+- `Cmd+C/V/X/A` and `Cmd+Z` / `Cmd+Shift+Z` on macOS, `Ctrl+C/V/X/A`,
+  `Ctrl+Z` / `Ctrl+Y` / `Ctrl+Shift+Z` elsewhere, plus a right-click
+  (two-finger tap) menu with Undo, Redo, Cut, Copy, Paste, Select all and — in the
+  payload field — Clear field. Every shortcut is bound on the inner Tk widget, so
+  CustomTkinter's proxies cannot swallow it, and every command is one handler
+  shared with the menu and with Tk's virtual events, so nothing runs twice.
+- The payload field takes text of any size before a carrier is chosen, keeps it
+  when the carrier changes, and never splits, trims or drops it. One line longer
+  than `EDITOR_WRAP_LINE_LIMIT` (20 000 characters) turns word wrap off — a
+  display decision, said in a hint under the counters — because Tk's wrap costs
+  seconds per 100 000 characters on a single line while costing nothing on text
+  that has line breaks.
+- `ОЧИСТИТЬ ПОЛЕ` next to the counters empties the field and only the field:
+  password, carrier, output path and settings stay. `Cmd+Z` puts the text back.
+- The capacity card answers "how much fits" with the engine's own numbers:
+  container (name, format, size on disk, resolution or duration), payload
+  (characters, UTF-8 bytes, prepared size), capacity (available, occupied, free,
+  percent, excess) on one scale, with explicit states for no carrier, no text,
+  calculating, fits, does not fit and calculation error. The estimate is
+  preliminary by construction — the engine's capacity check at embed time is
+  final — and embedding is disabled while the numbers are unknown or too large.
 - `PASTE` and `COPY KEY` buttons next to both password fields, for systems where
   the shortcut never reaches the application.
 - The mouse wheel and the trackpad scroll the whole tab, not just the scrollbar,

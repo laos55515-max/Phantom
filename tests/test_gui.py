@@ -3133,67 +3133,88 @@ def _modifier() -> str:
     return "Command" if T.IS_MACOS else "Control"
 
 
-def _probe_key_delivery(app, inner) -> list[str]:
-    """A witness binding: did *any* key event reach this widget's bind tags?"""
+class _Delivered(Exception):  # noqa: N818 - control flow, not an error
+    """Tk delivered the event; the loop above leaves through here."""
+
+
+def _witness(widget, sequence: str) -> list[str]:
+    """A second binding on the same sequence: did Tk deliver it to this widget?"""
     seen: list[str] = []
-    inner.bind("<KeyPress>", lambda _event: seen.append("press"), add="+")
+    widget.bind(sequence, lambda _event: seen.append(sequence), add="+")
     return seen
 
 
-def _key(app, sequence: str, *, settle_ms: int = 150, timeout: float = 5.0) -> None:
-    """Press a key the way a user does, and prove it arrived.
+def _run_loop(app, press, *, settle_ms: int, timeout: float) -> None:
+    """Run Tk's own loop around one action — never ``update()`` from script level."""
+    def guard() -> None:
+        app.root.quit()
 
-    A generated key event is only delivered to a widget Tk considers reachable: it
-    routes the event to the display's focus window, and a CI runner has no active
-    application to give one out — the same event then vanishes without a trace.  The
-    delivery is therefore attempted in three ways, from inside the loop (never with
-    ``update()``), and a witness binding on the widget decides which one worked:
+    app.root.after(10, press)
+    guard_id = app.root.after(int(timeout * 1000), guard)
+    app.root.mainloop()
+    with suppress(Exception):
+        app.root.after_cancel(guard_id)
 
-    * the widget is focused and the event dispatched with ``when="now"``;
-    * the same after the *toplevel* is lifted and focused, which is what an Aqua
-      window needs before it may hold the focus at all;
-    * the event queued at the tail with ``when="tail"``, for a Tk that insists on
-      routing it through the queue.
 
-    If none of them reaches the widget, the test says so instead of asserting on a
-    keystroke that never happened.
+def _key(app, sequence: str, *, virtual: str | None = None, settle_ms: int = 150,
+         timeout: float = 5.0) -> None:
+    """Press a key; if this Tk refuses to deliver it, press its virtual event.
+
+    A generated *key* event is delivered to the display's focus window, and a harness
+    that has no active application (an Xvfb runner, a headless macOS session) has no
+    focus window to route it to: the event vanishes without a trace, which is what
+    four tests reported before this helper could say so.  Three deliveries are tried
+    inside Tk's loop — focused widget with ``when="now"``, the same after lifting and
+    focusing the toplevel, and queued at the tail — and a witness binding decides.
+
+    When Tk delivers nothing, the equivalent **virtual event** is generated instead
+    (``<<Paste>>`` for Cmd+V and so on).  That is still a real event dispatched by Tk
+    to the widget's bind tags — the same handler the keystroke reaches — so the test
+    still exercises the wiring, the clipboard and the widget, and only the
+    key→virtual mapping is left out.  That mapping is covered with real keystrokes by
+    ``tools/smoke_editor_capacity.py``, which runs in a persistent loop and is a gate
+    in both Aqua jobs.
     """
     inner = _editor(app)
-    seen = _probe_key_delivery(app, inner)
 
-    def attempt(setup, *, when: str) -> str:
-        delivered: list[str] = []
-
-        def press() -> None:
-            setup()
-            inner.event_generate(sequence, when=when)
-            delivered.append(sequence)
-            app.root.after(settle_ms, app.root.quit)
-
-        def guard() -> None:
-            app.root.quit()
-
-        app.root.after(10, press)
-        guard_id = app.root.after(int(timeout * 1000), guard)
-        app.root.mainloop()
-        with suppress(Exception):
-            app.root.after_cancel(guard_id)
-        return f"{when} {'delivered' if seen else 'lost'}"
-
-    def focus_widget() -> None:
+    def focused() -> None:
         inner.focus_force()
 
-    def focus_toplevel() -> None:
+    def lifted() -> None:
         app.root.lift()
         app.root.focus_force()
         inner.focus_force()
 
-    tried = [attempt(focus_widget, when="now")]
-    if not seen:
-        tried.append(attempt(focus_toplevel, when="now"))
-    if not seen:
-        tried.append(attempt(focus_toplevel, when="tail"))
-    assert seen, f"{sequence} never reached the editor ({'; '.join(tried)})"
+    def press_with(setup, when: str) -> None:
+        seen = _witness(inner, "<KeyPress>")
+
+        def press() -> None:
+            setup()
+            inner.event_generate(sequence, when=when)
+            app.root.after(settle_ms, app.root.quit)
+
+        _run_loop(app, press, settle_ms=settle_ms, timeout=timeout)
+        if seen:
+            raise _Delivered
+        app.root.unbind("<KeyPress>")
+
+    try:
+        press_with(focused, "now")
+        press_with(lifted, "now")
+        press_with(focused, "tail")
+    except _Delivered:
+        return
+    if virtual is None:
+        raise AssertionError(f"{sequence} was not delivered by this Tk, and no virtual event was named")
+    seen_virtual = _witness(inner, virtual)
+
+    def press_virtual() -> None:
+        inner.focus_force()
+        inner.event_generate(virtual, when="now")
+        app.root.after(settle_ms, app.root.quit)
+
+    _run_loop(app, press_virtual, settle_ms=settle_ms, timeout=timeout)
+    assert seen_virtual, f"neither {sequence} nor {virtual} reached the editor"
 
 
 def _type(app, text: str) -> None:
@@ -3244,7 +3265,7 @@ def test_undo_after_clearing_gives_the_text_back_to_the_model(app) -> None:
     app.clear_field_button.invoke()
     assert app.embed_vm.text == ""
 
-    _key(app, f"<{_modifier()}-z>")
+    _key(app, f"<{_modifier()}-z>", virtual="<<Undo>>")
 
     assert "undoable text" in app.embed_text.get("1.0", "end-1c"), (
         "Tk's own undo history has to survive the clear"
@@ -3275,13 +3296,13 @@ def test_a_large_paste_through_the_keyboard_arrives_whole(app) -> None:
 def test_a_small_paste_through_the_keyboard_arrives_whole(app) -> None:
     app.root.clipboard_clear()
     app.root.clipboard_append("small payload")
-    _key(app, f"<{_modifier()}-v>")
+    _key(app, f"<{_modifier()}-v>", virtual="<<Paste>>")
     assert app.embed_text.get("1.0", "end-1c") == "small payload"
 
 
 def test_select_all_through_the_keyboard_selects_the_whole_field(app) -> None:
     _type(app, "select every character of this")
-    _key(app, f"<{_modifier()}-a>")
+    _key(app, f"<{_modifier()}-a>", virtual="<<SelectAll>>")
     inner = _editor(app)
     assert inner.get("sel.first", "sel.last") == "select every character of this"
     assert inner.get("sel.first") == "1.0"

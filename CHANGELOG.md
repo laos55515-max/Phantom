@@ -6,8 +6,62 @@ All notable changes to PHANTOM are recorded here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **The payload field takes a large paste, and says how big it is.** Three
+  separate faults looked like one. Select-all left the caret *in front of* the
+  selection, so the next keystroke prepended text instead of replacing it, and
+  the tag was never raised above the text tags — on Aqua the highlight was
+  invisible. Tk's undo history was never switched on, so `Cmd+Z` did nothing at
+  all. And nothing told the model that the text had changed unless the widget
+  both saw a key press *and* its release: a paste whose release was routed
+  elsewhere left the counters and the size estimate describing the previous
+  text. The editor now listens to Tk's `<<Modified>>` flag (one edit, one
+  refresh), raises and re-anchors the selection like a native field,
+  enables the undo stack, and drives undo/redo from `Cmd+Z`,
+  `Cmd+Shift+Z`, `Ctrl+Z`, `Ctrl+Y` and `Ctrl+Shift+Z`. Measured on
+  Tk 8.6.16 in CI: 260 000 characters pasted by a real `Cmd+V` insert in
+  11–56 ms, and the whole clipboard arrives.
+- **A single enormous line no longer freezes the window.** Tk lays a line out
+  for display, and word wrap on one line costs seconds: the same 260 000
+  characters took 29 ms broken into document lines against 13.6 s as one
+  120 000-character line (8.6.16) and 75 s as one 260 000-character line
+  (9.1.0). Above `EDITOR_WRAP_LINE_LIMIT` (20 000 characters on one line) the
+  editor switches to `wrap="none"` and a hint under the counters says so. The
+  text itself is never split, trimmed or truncated; wrapping returns as soon as
+  no line is that long.
+- **Selecting all and copying work from the context menu too.** Every editing
+  command is one handler shared by the keystroke, the virtual event
+  (`<<Paste>>`, `<<Copy>>`, `<<Cut>>`, `<<SelectAll>>`, `<<Undo>>`, `<<Redo>>`)
+  and the menu, and each returns `"break"`, so a class binding cannot run the
+  command a second time.
+
 ### Added
 
+- **`ОЧИСТИТЬ ПОЛЕ` next to the counters.** It empties the payload field, the
+  model, the estimate and the counters, returns the caret to the field and
+  aborts the pending estimate. It does **not** touch the password, the carrier,
+  the output path, the payload mode or any setting — the tab-wide `СБРОС`
+  keeps doing that. The same command is in the editor's context menu, and
+  `Cmd+Z` after it brings the text back.
+- **A capacity panel, built from the numbers the engine already computes.** It
+  shows the container (name, format, on-disk size, resolution/mode or
+  duration/sample rate/bit depth/channels), the payload (characters, UTF-8
+  bytes, prepared size — compression plus header — from the estimate), and the
+  capacity (available, occupied, free, percent, and the excess when there is
+  one) on **one** scale: `SizeEstimate.payload_bytes` against
+  `Capacity.payload_bytes`, so nothing is counted twice. The fill bar stays
+  capped at 100 % while the number may pass it. The states are explicit — no
+  carrier, no payload, calculating, fits, does not fit, calculation error — and
+  the panel says in one line that the estimate is preliminary, that the engine's
+  own final check is what decides, and that capacity is measured in payload
+  bytes, not in the file size on disk.
+- **Embedding is blocked while the numbers are unknown or do not fit.** Over
+  capacity keeps every character, shows how much is missing and how much the
+  carrier really holds instead of letting the engine's final check refuse the
+  job. Each estimate carries the revision it was started for; a result for older
+  text or another carrier is dropped and re-measured rather than shown against
+  the text on screen.
 - **The window fits its own text at every size and in every language.**
   CustomTkinter keeps the width a button was created with, so
   «ВЫБРАТЬ ФАЙЛ (PNG / WAV / FLAC)» was clipped on both sides in a windowed
