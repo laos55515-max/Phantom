@@ -275,6 +275,27 @@ All notable changes to PHANTOM are recorded here. The format follows
   soon as the finished job's thread is gone, an abandoned start is rolled back
   before the error is re-raised, and the poll says in the log what it swallowed.
 
+- **Resizing and fullscreen no longer cost a full layout per event.** A drag-resize,
+  a zoom and the fullscreen transition deliver a stream of `<Configure>` events — a
+  child's configure reaches the toplevel's bind tags, so one step delivers thousands —
+  and every event that passed the width filter walked the whole widget tree to find
+  the wrapping rows and re-flowed all of them synchronously, inside the event that was
+  supposed to be painting. On real Aqua the same four resize steps cost **48.7 ms of
+  layout before and 0.4 ms after**; tree walks 29 → 0, `grid_forget` 37 → 0, handler
+  time 59.9 ms → 9.5 ms. The first event of a burst now owes one pass on the idle
+  queue (Tk's own queue: `update idletasks` is still never called), the rows are the
+  list `adopt` already collected, widths are measured once per caption change, a pass
+  moves only the children whose cell changed, and a tab nobody is looking at is laid
+  out when it is opened (a language switch still lays out all four at once). Same
+  breakpoints, same wrapping, same themes, same geometry restore.
+
+- **Drag and drop says it is unavailable when it is.** Tcl/Tk 9 imports
+  `tkinterdnd2` and then cannot create its Tcl commands, so every registration failed
+  with `invalid command name "tkdnd::drop_target"` while the window kept promising
+  drops. The hints now follow `DndProvider.usable` — the module loaded *and* a
+  registration succeeded — and the reason is kept for the log. Choosing a file with
+  the button never went through that path and still does not.
+
 - **The macOS window no longer crashes when it is built.** The build forced a
   display pass from the constructor, and again for a window that was not on
   screen yet; on Aqua both land in Tk's own idle drawing, which is where Tk's

@@ -117,7 +117,13 @@ window driven on Tk's own loop (`tools/smoke_tk91_theme.py --trace`):
 11.68s main loop finished cleanly
 ```
 
-Other jobs on the same commit (`44663561489`): `tests (Python 3.11)` green,
+`gui (macOS Aqua, Tk 9.1)` also runs a resize series: eight sizes, one per callback,
+frames in between, one layout pass each, our own passes 0.4 ms in 11 calls.
+
+`layout profile (macOS Aqua)` — the before/after comparison of §10 (run `44749622440`),
+a measurement job, not a gate.
+
+Other jobs on the same commit (`44749622440`): `tests (Python 3.11)` green,
 `tests (Python 3.12)` green, `lint and types` green (ruff + `mypy src`, 60 files),
 `slow benchmarks` green (all seven slow tests), `gui (macOS Aqua)` green (above).
 
@@ -205,6 +211,17 @@ ls -t ~/Library/Logs/DiagnosticReports/Python* | head -3
 ## 8. Commits
 
 ```
+5451ded measure: leave the loop with quit(), and cap the run that feeds itself
+ffcbb2a measure: instrument before the window exists, and resize sizes that really wrap
+5ca6ab9 measure: a watchdog, shorter series, and a job that cannot hang for 25 minutes
+dd30e6e smoke(tk9): give the loop another turn before calling the pass missing
+412e1ce smoke(tk9): resize the tab that has rows to wrap, and stop demanding beats Tk eats
+67b4ef0 test+smoke: separate our pass cost from Tk's, and count a burst honestly
+c36efde test+smoke: measure a size the window can actually take
+d0c56a7 fix(ui): the drop hints do not exist yet while the tabs are being built
+7ff03e9 test+fix(dnd,layout): the resize rules, the deferred tabs, and an honest drop status
+0a5b686 perf(ui): one layout pass per resize burst, measured widths, hidden tabs deferred
+9518ddf measure(ui): a resize profile that reports calls, not guesses
 2eb4301 ui: on Aqua under Tk 9 the window never asks Tk for a display pass
 d088052 ci(tk9): put src on the path, as the other Aqua job does
 37afc7c ci(tk9): gate the window, not the harness that cannot pump Tk
@@ -329,3 +346,113 @@ PHANTOM_QUIET_FLUSH=0  python -X faulthandler -u -m pytest -m gui -x -vv -s
 # Just one theme switch, no PHANTOM at all:
 python -u tools/repro_tk91_theme_crash.py --quiet
 ```
+
+## 10. The resize microfreeze: what was measured, what changed
+
+Owner's report, on a MacBook Pro M1 Pro, Python 3.12.16, Tcl/Tk 9.1.0: everything
+works — launch, Dark/Light/System, ten theme switches, four tabs, trackpad scroll,
+metadata cleaning, close and relaunch, smoke exit 0 — except "noticeable microfreezes
+when the window is enlarged or shrunk, and when going into and out of fullscreen".
+
+### What was measured, and how
+
+`tools/profile_resize.py` builds the real window and wraps the places that can do work
+when the size changes: `Responsive.flows` (the tree walk that finds the flow rows),
+`refit_flows`, `_apply` (wrapplength), `FlowRow.reflow`, `PhantomApp._on_window_resize`
+and Tk's own `grid`/`grid_forget`. A 10 ms heartbeat records the longest gap the event
+loop could not serve. The CI job `layout profile (macOS Aqua)` runs the same tool twice
+in the same kind of session — against `445a5cb` (the tree the owner tested, extracted
+with `git archive`) and against this branch — so the comparison is a log line, not a
+claim. Four resize steps, all in separate `after` callbacks with frames in between.
+
+Real Aqua, Tk 8.6.16, run `44749622440`:
+
+| | before `445a5cb` | after `5451ded` |
+| --- | --- | --- |
+| tree walks to find the flow rows | **29** | **0** |
+| reflow passes | 297 | 90 |
+| `grid()` calls | 37 | 12 |
+| `grid_forget()` calls | **37** | **0** |
+| wraplength re-applications | 76 | 76 |
+| `<Configure>` handler entries | 22 280 | 21 978 |
+| time in those handlers | **59.9 ms** | **9.5 ms** |
+| time inside the refit passes | **48.7 ms** | **0.4 ms** |
+| fullscreen round trip, refit time | 48.7 ms | 0.4 ms |
+
+The handler-entry count is not a typo: a child's `<Configure>` reaches the toplevel's
+bind tags, so one resize step delivers a few *thousand* events at the toplevel binding.
+Most are rejected by the width filter in both versions — the difference is what the
+ones that pass it cost.
+
+### What was wrong, in the order it cost
+
+1. **Every resize event ran a full synchronous refit.** A drag delivers a stream of
+   events; each one walked the whole widget tree to find the flow rows and re-flowed
+   all of them, inside the event that was supposed to be painting. Now the first event
+   of a burst owes one pass on the idle queue (`root.after_idle` — Tk's own queue;
+   `update idletasks` is still never called, which Aqua under Tk 9 cannot survive) and
+   the rest only move the number.
+2. **The tree was walked to find rows that `adopt` had already walked past.** The flow
+   rows and their ancestor chains are collected during the one walk the window already
+   does at build time; a refit now iterates a list.
+3. **Every child was measured on every pass.** `_item_width` reaches into Tk
+   (`winfo_reqwidth`) for labels. Widths are now measured once per caption change; a
+   language switch forces a re-measure (`refit_flows(force=True)`).
+4. **Every reflow forgot and re-placed every child.** `grid` re-places a widget; the
+   `grid_forget` calls were pure churn (37 → 0), and passes whose breakpoints did not
+   change now touch no widget at all.
+5. **Hidden tabs were laid out on every step.** A tab stacked behind another one still
+   resizes and still gets `<Configure>`. It now records the width it owes and is laid
+   out when it is opened; a language switch, which is rare and changes every caption,
+   still lays out all four at once.
+
+Nothing about the interface changed: same breakpoints, same wrapping, same three
+languages, same themes, same geometry restore. No cryptography, STC, LSB Matching,
+container format or metadata policy was touched.
+
+### Tk 9.1: the part that is not ours
+
+The Tk 9.1 smoke now walks a series of sizes, one per callback, with frames in between
+(the runner's display only allows 980x720 … 1024x720, so those are the sizes) and times
+our own passes next to the longest loop gap:
+
+```
+resize 0: asked 980x700, got 980x720 (clamped by the WM), frames served = 4, layout passes = 1
+resize 3: asked 980x720, got 980x720, frames served = 2, layout passes = 1
+resize 7: asked 1024x720, got 1024x720, frames served = 1, layout passes = 1
+resize series done: 8 steps, worst loop gap 358.1 ms, our own passes 0.4 ms in 11 calls
+WARNING the loop was blocked for 358.1 ms by something; our passes account for 0.4 ms
+```
+
+So on Aqua under Tcl/Tk 9.1 the window can still stall the event loop for a few hundred
+milliseconds when it is resized, and **our layout work is 0.4 ms of it**. What is left
+is Tk's own re-layout and CustomTkinter's canvas redraws on that build, both inside
+installed libraries: removing it would mean patching CustomTkinter or Tk, which this
+branch does not do. This is the documented limitation the task allows for: on Aqua
+under Tk 9.1 a resize is visibly slower than on Tk 8.6, and it is not the window's own
+Python work. On Tk 8.6 — what most users run — the same series costs 0.4 ms of layout
+per four steps.
+
+### Drag and drop on Tk 9: a status that was lying
+
+Tcl/Tk 9 imports `tkinterdnd2` and then fails to create its Tcl commands, so
+`drop_target_register` raises `invalid command name "tkdnd::drop_target"` for every
+zone. `DndProvider.available` was true (the module imported), so the window kept
+showing "drop a file here" hints that could never work. `usable` is now the question:
+the module loaded **and** at least one registration succeeded. When it is false the
+hints are hidden and the reason is kept for the log. Choosing a file with the button
+never went through that path, and a test now fails if it ever starts to.
+
+### Regression tests added
+
+- `test_a_resize_burst_owes_one_layout_pass` — ten events, no pass inside the handler,
+  exactly one pass when the loop runs.
+- `test_generated_configure_events_do_not_refit_one_by_one` — the same rule through
+  Tk's own delivery, where a pass per delivery round is expected and a pass per event
+  is not.
+- `test_the_flow_rows_are_found_without_walking_the_tree` — the collected list is used.
+- `test_reflow_moves_children_without_forgetting_them` — `grid_forget` never called,
+  children re-placed, no two in one cell.
+- `test_a_hidden_tab_is_laid_out_when_it_is_opened` — and only then.
+- `test_a_language_switch_lays_out_every_tab` — all four, hidden or not.
+- `test_a_dnd_that_cannot_register_hides_its_hints_and_keeps_the_button`.
