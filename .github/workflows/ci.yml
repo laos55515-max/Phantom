@@ -237,6 +237,14 @@ jobs:
           python -m pytest -ra -m gui -v --durations=20 \
             --timeout=120 --timeout-method=thread \
             -o faulthandler_timeout=120 2>&1 | tee gui-macos.log
+      - name: Editor and capacity, diagnosed on real Aqua
+        if: always()
+        continue-on-error: true
+        run: |
+          export PYTHONPATH=src
+          python -X faulthandler -u tools/smoke_editor_capacity.py --diagnose 2>&1 \
+            | tee -a gui-macos.log
+
       - name: GUI log
         if: always()
         run: |
@@ -345,6 +353,17 @@ jobs:
             python -X faulthandler -u tools/repro_tk91_theme_crash.py $mode \
               || echo "::warning::repro $mode exited $?"
           done
+
+      - name: Editor and capacity, diagnosed on real Aqua
+        # Diagnostic for the payload-editor defects: real keystrokes, real clipboard,
+        # a report instead of assertions.  It becomes a gate once the fixes are in.
+        if: always()
+        continue-on-error: true
+        run: |
+          . .venv-tk9/bin/activate 2>/dev/null || true
+          export PYTHONPATH=src
+          python -X faulthandler -u tools/smoke_editor_capacity.py --diagnose 2>&1 \
+            | tee editor-diagnose.log
 
       - name: Native backtrace of the crash (lldb)
         if: always()
