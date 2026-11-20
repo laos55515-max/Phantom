@@ -300,7 +300,10 @@ def run(label: str, steps: int, gap: int, watchdog: float = 45.0) -> int:
                 with contextlib.suppress(tk.TclError):
                     root.after_cancel(token)
                 setattr(app, token_name, None)
-        root.after(120, root.destroy)
+        # ``quit`` and not ``after(120, destroy)``: a window whose reflow feeds its own
+        # ``<Configure>`` handler never lets the queue empty, and a timer scheduled
+        # behind that stream is not something to rely on.
+        root.quit()
 
     # The build is not the subject: start counting once the window has settled.
     def begin() -> None:
@@ -315,6 +318,8 @@ def run(label: str, steps: int, gap: int, watchdog: float = 45.0) -> int:
     except tk.TclError:  # pragma: no cover - only on a broken build
         traceback.print_exc()
         return 1
+    with contextlib.suppress(tk.TclError):
+        root.destroy()
     say("main loop finished cleanly")
     return 0
 

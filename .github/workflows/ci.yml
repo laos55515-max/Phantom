@@ -426,20 +426,52 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r requirements-dev.txt
-      - name: Profile this branch, then the tree the owner tested
-        timeout-minutes: 5
+      - name: Profile the tree the owner tested, then this branch
+        timeout-minutes: 8
         run: |
-          set -o pipefail
-          export PYTHONPATH=src
-          python -u tools/profile_resize.py --label after --steps 12 --watchdog 40 2>&1 \
-            | tee profile-after.log || echo "::warning::the after run did not exit cleanly"
           mkdir -p /tmp/before
           git archive 445a5cb | tar -x -C /tmp/before
-          PYTHONPATH=/tmp/before/src python -u tools/profile_resize.py \
-            --label before --steps 12 --watchdog 40 2>&1 \
-            | tee profile-before.log || echo "::warning::the before run did not exit cleanly"
-          tail -25 profile-after.log
-          tail -25 profile-before.log
+          python - <<'PY'
+          """Each run in its own process with a hard cap.
+
+          The old tree can spend minutes inside a resize: its handler re-flows the
+          window synchronously, the re-flow delivers more <Configure> events, and the
+          handler answers those.  A cap turns "it never finished" into a number.
+          """
+          import os
+          import pathlib
+          import subprocess
+          import sys
+
+          runs = (
+              ("before", "/tmp/before/src"),
+              ("after", "src"),
+          )
+          for label, tree in runs:
+              env = dict(os.environ, PYTHONPATH=tree)
+              command = [
+                  sys.executable,
+                  "-u",
+                  "tools/profile_resize.py",
+                  "--label",
+                  label,
+                  "--steps",
+                  "4",
+                  "--watchdog",
+                  "30",
+              ]
+              try:
+                  done = subprocess.run(command, env=env, timeout=150, capture_output=True, text=True)
+                  output = done.stdout + done.stderr
+                  print(f"--- {label} exited {done.returncode}")
+              except subprocess.TimeoutExpired as exc:
+                  raw = exc.stdout or b""
+                  output = raw.decode(errors="replace") if isinstance(raw, bytes) else raw
+                  output += f"\n--- {label} HARD TIMEOUT after 150 s, it never finished\n"
+                  print(f"--- {label} hard timeout")
+              pathlib.Path(f"profile-{label}.log").write_text(output)
+              print(output[-3000:])
+          PY
       - name: The numbers
         if: always()
         run: |
