@@ -821,6 +821,40 @@ def test_dnd_provider_marks_broken_registration() -> None:
     target = DropTarget(widget=BrokenWidget(), on_drop=lambda paths: None, extensions=(".png",))
     assert provider.register(target) is False
     assert provider.reason is not None and "drop registration failed" in provider.reason
+    # The module loaded, but not one drop target did: `available` is a lie the
+    # window must not build on -- Tcl/Tk 9 imports tkinterdnd2 and then has no Tcl
+    # commands for it, which is exactly this failure.
+    assert provider.available is True
+    assert provider.usable is False
+
+
+def test_dnd_provider_is_usable_only_when_registration_worked(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import sys
+    import types
+
+    from phantom.ui.dnd import DndProvider, DropTarget
+
+    stub = types.ModuleType("tkinterdnd2")
+    stub.DND_FILES = "DND_Files"  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "tkinterdnd2", stub)
+
+    class WorkingWidget:
+        def __init__(self) -> None:
+            self.registered = False
+
+        def drop_target_register(self, *_args: object) -> None:
+            self.registered = True
+
+        def dnd_bind(self, *_args: object) -> None:
+            return None
+
+    provider = DndProvider()
+    provider._dnd_module = object()
+    target = DropTarget(widget=WorkingWidget(), on_drop=lambda paths: None, extensions=(".png",))
+    assert provider.register(target) is True
+    assert provider.usable is True
 
 
 def test_parse_drop_paths_with_nested_braces() -> None:

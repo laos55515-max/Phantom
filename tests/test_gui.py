@@ -238,6 +238,68 @@ def app(tmp_path: Path, isolated_settings: Path, monkeypatch: pytest.MonkeyPatch
             root.destroy()
 
 
+def test_a_dnd_that_cannot_register_hides_its_hints_and_keeps_the_button(
+    tmp_path: Path, isolated_settings: Path, monkeypatch: pytest.MonkeyPatch, dialogs
+) -> None:
+    """Tcl/Tk 9 imports tkinterdnd2 and then registers nothing.
+
+    The window used to decide from ``available`` alone, so it promised a drop that
+    always failed with ``invalid command name "tkdnd::drop_target"``.  What is
+    asserted: the hints are gone, the log says why, and picking a file with the
+    button still works — that path never goes through drag and drop.
+    """
+    import customtkinter as ctk
+
+    from phantom.ui.app import PhantomApp
+    from phantom.ui.dnd import DndProvider, DropTarget
+    from phantom.ui.settings import SettingsStore
+
+    ctk.set_default_color_theme("blue")
+
+    class Tk9LikeDnd(DndProvider):
+        """Imports fine, registers nothing -- the Tcl/Tk 9 behaviour."""
+
+        def __init__(self) -> None:
+            super().__init__()
+            self.reason = None
+            self._dnd_module = object()
+            self._registration_failed = False
+
+        def register(self, target: DropTarget) -> bool:
+            self.reason = 'drop registration failed: invalid command name "tkdnd::drop_target"'
+            self._registration_failed = True
+            return False
+
+    root = ctk.CTk()
+    root.deiconify()
+    instance = PhantomApp(
+        root,
+        settings_store=SettingsStore(path=isolated_settings / "settings.json"),
+        dnd=Tk9LikeDnd(),
+    )
+    try:
+        instance.root.update()
+        assert instance.dnd.available is True
+        assert instance.dnd.usable is False
+        assert "invalid command name" in (instance.dnd.reason or "")
+        for hint in (instance.dnd_carrier_hint, instance.dnd_stego_hint, instance.dnd_secret_hint):
+            assert hint.winfo_manager() == "", "a hint promised a drop that cannot happen"
+
+        # The button that picks a carrier must work regardless: it asks the dialog
+        # and hands the path to the same code the drop would have used.
+        carrier = tmp_path / "carrier.png"
+        carrier.write_bytes(b"\x89PNG\r\n\x1a\n")
+        chosen: list[str] = []
+        monkeypatch.setattr(instance, "_set_carrier", chosen.append)
+        dialogs.paths.append(str(carrier))
+        instance._choose_carrier()
+        assert chosen == [str(carrier)], "the file button did not deliver its path"
+    finally:
+        instance.worker.shutdown(timeout=2)
+        with suppress(Exception):
+            root.destroy()
+
+
 def test_clipboard_timer_clears_the_secret_natively(app, monkeypatch) -> None:
     """The 30 s promise must reach the OS clipboard, not just Tk's own copy."""
     from phantom.ui import app as ui_app
@@ -2022,6 +2084,134 @@ def test_a_growing_paragraph_re_wraps_with_the_card(app) -> None:
     wide = int(app.limitations_label.cget("wraplength"))
 
     assert wide > narrow, f"wraplength stayed {narrow} while the card grew"
+
+
+def test_a_resize_burst_owes_one_layout_pass(app) -> None:
+    """Ten <Configure> events must cost one pass, not ten.
+
+    A drag-resize, a zoom and a fullscreen transition all deliver a stream of
+    events; each one used to walk the widget tree and re-flow every row inside the
+    event itself.  What is asserted is the rule that makes a resize cheap: the
+    events are recorded, one pass is owed, and it runs from the loop.
+    """
+    app.root.deiconify()
+    passes = app._refit_passes
+    events = app._resize_events
+    calls: list[int] = []
+    real = app.responsive.refit_flows
+
+    def counted(*args, **kwargs):
+        calls.append(1)
+        return real(*args, **kwargs)
+
+    app.responsive.refit_flows = counted  # type: ignore[method-assign]
+    try:
+        for width in range(1100, 1300, 20):
+            app.root.event_generate("<Configure>", width=width, height=820)
+        assert app._refit_token is not None, "the burst was not coalesced into one pass"
+    finally:
+        app.responsive.refit_flows = real  # type: ignore[method-assign]
+
+    app.root.update()
+
+    assert app._resize_events >= events + 5, "the events never reached the handler"
+    assert len(calls) == 1, f"{len(calls)} refit passes for one burst"
+    assert app._refit_passes == passes + 1
+    assert app._refit_token is None, "the pass is still queued after the loop ran"
+
+
+def test_the_flow_rows_are_found_without_walking_the_tree(app) -> None:
+    """The rows are collected once, when the window is adopted."""
+    rows = app.responsive.flows()
+    assert rows, "the window has no flow rows at all"
+    walks = app.responsive.walks
+
+    for _ in range(3):
+        app.responsive.refit_flows()
+
+    assert app.responsive.walks == walks, "a refit walked the widget tree again"
+    assert len(app.responsive.flows()) == len(rows)
+
+
+def test_reflow_moves_children_without_forgetting_them(app) -> None:
+    """``grid`` re-places a child; nothing has to be forgotten first."""
+    import tkinter as tk
+
+    import customtkinter as ctk
+
+    from phantom.ui.responsive import FlowRow
+
+    row = FlowRow(app.root)
+    row.grid(row=90, column=0)
+    try:
+        labels = [ctk.CTkLabel(row, text=f"row item {index}", width=90) for index in range(6)]
+        for label in labels:
+            row.add(label)
+
+        forgotten: list[int] = []
+        original = tk.Grid.grid_forget
+
+        def counting(self, *args, **kwargs):
+            forgotten.append(1)
+            return original(self, *args, **kwargs)
+
+        tk.Grid.grid_forget = counting  # type: ignore[method-assign]
+        try:
+            row.reflow(available=200)
+            narrow = row.rows()
+            row.reflow(available=600)
+            wide = row.rows()
+            row.reflow(available=200)
+        finally:
+            tk.Grid.grid_forget = original  # type: ignore[method-assign]
+
+        assert narrow > wide, "the row did not wrap when it was narrowed"
+        assert not forgotten, "the reflow forgot its children before placing them"
+        assert row.placements >= 6, "the children were never re-placed"
+        cells = {(index, row_) for index, row_ in enumerate(row._layout)}
+        assert len(cells) == len(labels), "two children ended up in the same cell"
+    finally:
+        row.destroy()
+
+
+def test_a_hidden_tab_is_laid_out_when_it_is_opened(app) -> None:
+    """A resize must not lay out a tab nobody can see — but opening it must."""
+    app.root.deiconify()
+    app._show_tab("embed")
+    app.root.update()
+
+    hidden = [row for row in app.responsive.flows() if row.suspended]
+    assert hidden, "no tab was deferred: every row re-flowed while it was hidden"
+    counts = {id(row): row.reflows for row in hidden}
+
+    app.root.geometry("1400x820")
+    app.root.update()
+
+    for row in hidden:
+        assert row.reflows == counts[id(row)], "a hidden tab was laid out on a resize"
+
+    app._show_tab("metadata")
+
+    for row in hidden:
+        assert row.reflows > counts[id(row)], "opening the tab did not lay it out"
+
+
+def test_a_language_switch_lays_out_every_tab(app) -> None:
+    """Captions changed everywhere, so every tab is measured, hidden or not."""
+    app.root.deiconify()
+    app._show_tab("embed")
+    app.root.update()
+    hidden = [row for row in app.responsive.flows() if row.suspended]
+    assert hidden, "no tab was deferred"
+    counts = {id(row): row.reflows for row in hidden}
+
+    other = next(code for code in app.i18n.languages if code != app.i18n.language)
+    label = app._label_by_lang[other]
+    app._on_language_click(label)
+    app.root.update()
+
+    for row in hidden:
+        assert row.reflows > counts[id(row)], "the new captions were never measured"
 
 
 def test_the_window_starts_at_its_saved_geometry_not_a_default(app, tmp_path: Path) -> None:

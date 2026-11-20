@@ -1046,9 +1046,17 @@ class PhantomApp:
         self.binder.bind(self.dnd_carrier_hint, "dnd_hint_carrier")
         self.binder.bind(self.dnd_stego_hint, "dnd_hint_stego")
         self.binder.bind(self.dnd_secret_hint, "dnd_hint_secret")
-        if not self.dnd.available:
-            for hint in (self.dnd_carrier_hint, self.dnd_stego_hint, self.dnd_secret_hint):
-                hint.pack_forget()
+        # ``usable``, not ``available``: on Tcl/Tk 9 ``tkinterdnd2`` imports and then
+        # fails to register a single drop target, and a hint that promises a drop the
+        # window cannot accept is worse than no hint at all.  Choosing a file by
+        # button never goes through here.
+        if not self.dnd.usable:
+            self._hide_drop_hints()
+
+    def _hide_drop_hints(self) -> None:
+        """Stop promising a drop the window cannot accept."""
+        for hint in (self.dnd_carrier_hint, self.dnd_stego_hint, self.dnd_secret_hint):
+            hint.pack_forget()
 
     def _render_all_labels(self) -> None:
         self._render_language_labels()
@@ -1411,7 +1419,7 @@ class PhantomApp:
             C.APP_VERSION,
             self.i18n.language,
             self.settings.theme,
-            "on" if self.dnd.available else f"off ({self.dnd.reason})",
+            "on" if self.dnd.usable else f"off ({self.dnd.reason})",
         )
         if self.metadata_panel is not None:
             LOGGER.info("%s", self.metadata_panel.summary_for_log())
@@ -1448,8 +1456,10 @@ class PhantomApp:
             on_leave=_leave,
         )
         self._drop_zones.append(target)
-        if self.dnd.available:
-            self.dnd.register(target)
+        if self.dnd.usable and not self.dnd.register(target):
+            # The registration failed, so drops do not work: say so on screen too,
+            # not only in the log.  The buttons that pick a file are unaffected.
+            self._hide_drop_hints()
 
     def _highlight_zone(self, widget: Any, active: bool) -> None:
         color = T.CLR_BORDER_OVER if active else T.CLR_BORDER
