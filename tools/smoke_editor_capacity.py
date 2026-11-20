@@ -381,7 +381,8 @@ def main(argv: list[str] | None = None) -> int:
             state = (
                 f"button {app.editor_redo_button.cget('state')!r}, "
                 f"can_redo={app._editor_can_redo}, busy={app._busy}, "
-                f"worker={app.worker.busy}, undo={app._editor_can_undo}"
+                f"worker={app.worker.busy}, undo={app._editor_can_undo}, "
+                f"events={app._editor_event_log}"
             )
             app.editor_redo_button.invoke()
 
