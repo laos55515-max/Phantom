@@ -26,6 +26,7 @@ The last line is a machine-readable ``SUMMARY`` so CI can diff two runs.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import sys
 import time
 import tkinter as tk
@@ -125,7 +126,7 @@ def instrument(numbers: Numbers) -> None:
     tk.Grid.grid_forget = grid_forget  # type: ignore[method-assign]
 
 
-def run(label: str, steps: int, gap: int) -> int:
+def run(label: str, steps: int, gap: int, watchdog: float = 45.0) -> int:
     import customtkinter as ctk
 
     from phantom.ui.app import PhantomApp
@@ -153,6 +154,18 @@ def run(label: str, steps: int, gap: int) -> int:
     root.after(10, beat)
 
     marks: list[tuple[str, dict[str, float]]] = []
+    finished = [False]
+
+    # A native window and a generated event stream can always surprise a tool like
+    # this; a run that does not end by itself must still end, with its numbers.
+    def watchdog_fire() -> None:
+        if finished[0]:
+            return
+        say(f"WATCHDOG: {watchdog:.0f}s elapsed, destroying the window")
+        with contextlib.suppress(tk.TclError):
+            root.destroy()
+
+    root.after(int(watchdog * 1000), watchdog_fire)
 
     def snapshot(name: str) -> None:
         marks.append(
@@ -228,6 +241,7 @@ def run(label: str, steps: int, gap: int) -> int:
         root.after(gap * 3, leave)
 
     def finish() -> None:
+        finished[0] = True
         net_snapshot("fullscreen")
         say("")
         say(f"--- {label}")
@@ -288,8 +302,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--label", default="run", help="name for this run in the summary")
     parser.add_argument("--steps", type=int, default=len(WIDTHS), help="resize steps")
     parser.add_argument("--gap", type=int, default=90, help="milliseconds between steps")
+    parser.add_argument(
+        "--watchdog",
+        type=float,
+        default=45.0,
+        help="seconds after which the window is destroyed and the run gives up",
+    )
     args = parser.parse_args(argv)
-    return run(args.label, args.steps, args.gap)
+    return run(args.label, args.steps, args.gap, args.watchdog)
 
 
 if __name__ == "__main__":

@@ -407,7 +407,7 @@ jobs:
     # estimate.  Not a gate: it prints, it does not decide.
     name: layout profile (macOS Aqua)
     runs-on: macos-latest
-    timeout-minutes: 25
+    timeout-minutes: 12
     steps:
       - uses: actions/checkout@v4
         with:
@@ -430,11 +430,13 @@ jobs:
         run: |
           set -o pipefail
           export PYTHONPATH=src
-          python -u tools/profile_resize.py --label after --steps 12 2>&1 | tee profile-after.log
+          python -u tools/profile_resize.py --label after --steps 6 --watchdog 40 2>&1 \
+            | tee profile-after.log || echo "::warning::the after run did not exit cleanly"
           mkdir -p /tmp/before
           git archive 445a5cb | tar -x -C /tmp/before
           PYTHONPATH=/tmp/before/src python -u tools/profile_resize.py \
-            --label before --steps 12 2>&1 | tee profile-before.log
+            --label before --steps 6 --watchdog 40 2>&1 \
+            | tee profile-before.log || echo "::warning::the before run did not exit cleanly"
       - name: The numbers
         if: always()
         run: |
