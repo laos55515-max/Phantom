@@ -399,6 +399,24 @@ jobs:
               text = path.read_text(errors="replace").splitlines()
               print(f"::error::{name} ({len(text)} lines): {'\n'.join(text[-25:])[:4000]}")
           PY
+      - name: E — theme refusal off, the build batching on
+        id: gui-e
+        continue-on-error: true
+        timeout-minutes: 20
+        run: |
+          . .venv-tk9/bin/activate
+          PHANTOM_QUIET_REDRAW=0 python -m pytest -m gui -q --timeout=120 \
+            --timeout-method=thread -o faulthandler_timeout=120 > gui-tk9-e.log 2>&1
+          echo "::notice::E exit $?"
+      - name: F — build batching off, the theme refusal on
+        id: gui-f
+        continue-on-error: true
+        timeout-minutes: 20
+        run: |
+          . .venv-tk9/bin/activate
+          PHANTOM_QUIET_FLUSH=0 python -m pytest -m gui -q --timeout=120 \
+            --timeout-method=thread -o faulthandler_timeout=120 > gui-tk9-f.log 2>&1
+          echo "::notice::F exit $?"
       - name: Native backtrace of the crash (lldb)
         id: lldb
         if: always()

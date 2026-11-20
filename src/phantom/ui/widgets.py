@@ -150,11 +150,13 @@ def quiet_redraws() -> Iterator[None]:
     and runs it from a task of its own
     (:meth:`PhantomApp._schedule_layout_flush`).
 
-    ``PHANTOM_QUIET_FLUSH=0`` turns the refusal off — the old behaviour, where a
-    theme click flushes once per widget.  It exists for the machine this project
-    cannot reach: run the case both ways and the difference is the answer.
+    ``PHANTOM_QUIET_REDRAW=0`` turns the refusal off — the old behaviour, where a
+    theme click flushes once per widget.  It is a separate switch from
+    ``PHANTOM_QUIET_FLUSH`` (the build's batching) on purpose: the two are different
+    places in Tk's display path, and a machine that fails must be able to say which
+    one it needs.
     """
-    if os.environ.get("PHANTOM_QUIET_FLUSH", "1") == "0":
+    if os.environ.get("PHANTOM_QUIET_REDRAW", "1") == "0":
         yield
         return
 
