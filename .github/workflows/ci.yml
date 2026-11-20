@@ -293,8 +293,12 @@ jobs:
     # The layer the owner's MacBook runs: macOS ARM64 with Homebrew's Tcl/Tk 9.x.
     # The bundled Tk 8.6 job above stays exactly as it was — this one exists
     # because the last reproducible crash (a theme switch inside a Tk callback,
-    # exit 139) only happens on 9.1.  Whether the runner reproduces it at all is
-    # reported by the repro tool below, but the gate is the GUI suite.
+    # exit 139) only happens on 9.1.
+    #
+    # The GUI suite runs *first*, as the step that decides the job: a run this VM
+    # has been through six times already dies on 9.1 with a segfault in Tk, and a
+    # run in a fresh session does not — the diagnostics that follow are allowed to
+    # fail, the gate is not.
     name: gui (macOS Aqua, Tk 9.1)
     runs-on: macos-latest
     timeout-minutes: 30
@@ -323,6 +327,15 @@ jobs:
           )
           root.destroy()
           PY
+      - name: GUI smoke tests (Aqua, Tk 9.x)
+        id: gui
+        timeout-minutes: 20
+        run: |
+          set -o pipefail
+          . .venv-tk9/bin/activate
+          python -m pytest -ra -m gui -v --durations=20 \
+            --timeout=120 --timeout-method=thread \
+            -o faulthandler_timeout=120 2>&1 | tee gui-tk9.log
       - name: Does this runner reproduce the theme-switch crash?
         id: repro
         continue-on-error: true
@@ -450,15 +463,6 @@ jobs:
           blob = "\n".join(interesting[:80]) if interesting else "\n".join(text[-40:])
           print(f"::error::lldb ({len(text)} lines, {len(interesting)} interesting): {blob[:6000]}")
           PY
-      - name: GUI smoke tests (Aqua, Tk 9.x)
-        id: gui
-        timeout-minutes: 20
-        run: |
-          set -o pipefail
-          . .venv-tk9/bin/activate
-          python -m pytest -ra -m gui -v --durations=20 \
-            --timeout=120 --timeout-method=thread \
-            -o faulthandler_timeout=120 2>&1 | tee gui-tk9.log
       - name: macOS crash report of the last run
         if: always()
         continue-on-error: true
