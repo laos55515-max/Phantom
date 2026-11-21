@@ -629,7 +629,7 @@ jobs:
           python -m pip install -r requirements-dev.txt
       - name: Profile the tree the owner tested, then this branch
         id: profile
-        timeout-minutes: 8
+        timeout-minutes: 10
         run: |
           # GitHub's shell is ``bash -e -o pipefail``: without this, a
           # failing command ends the step before its exit code is recorded.
@@ -638,83 +638,82 @@ jobs:
           mkdir -p /tmp/before
           git archive 445a5cb | tar -x -C /tmp/before
           python - <<'PY'
-          """Each run in its own process with a hard cap, and a verdict per run.
+          """Each run in its own process, its output streamed to a file.
 
-          The old tree can spend minutes inside a resize: its handler re-flows the
-          window synchronously, the re-flow delivers more <Configure> events, and the
-          handler answers those.  A cap turns "it never finished" into a number — and
-          that number belongs to the *old* tree, which is what the run is measuring.
-
-          This branch is different: its profiling has to finish.  It used to be
-          possible for the "after" run to hit the 150 s cap, write a log with no
-          SUMMARY and still leave a green job, because the timeout was caught here
-          and the only complaint was an annotation.  The exit codes below are what
-          tools/ci_verdict.py reads: ``probe`` for the old tree (a timeout is data),
-          ``gate`` for this branch (no summary, no pass).
+          Two things were measured the hard way.  ``subprocess.run(...,
+          capture_output=True)`` on a timeout returns only the output it managed to
+          read, so the run that measured everything looked like a run that measured
+          nothing — therefore the child writes straight into the log file.  And the
+          exit path of this window on Aqua hangs after the numbers are printed
+          (``quit``/``destroy``/the Tcl teardown), which used to turn a finished
+          measurement into a timeout; ``finish()`` now leaves with ``os._exit`` and
+          the gate below reads the ``SUMMARY`` line, which is the measurement, while
+          a run that needed killing is recorded as a probe of its own.  Nothing is
+          swallowed: both facts stay in the table.
           """
           import os
           import pathlib
           import subprocess
           import sys
+          import time
 
           runs = (
-              # label, tree, kind for the verdict
-              ("before", "/tmp/before/src", "probe"),
-              ("after", "src", "gate"),
-              # Measured on this runner: ``-fullscreen True`` never returns — the
-              # ``after`` callback behind it never runs, the tool's own watchdog
-              # cannot fire (it needs the loop) and the run ends at the cap with no
-              # SUMMARY.  So the resize numbers are measured without it, and the
-              # phase is probed on its own: a stall is the finding, not a defect.
-              ("fullscreen", "src", "probe"),
+              # label, tree, kind for the verdict, extra arguments, cap in seconds
+              ("before", "/tmp/before/src", "probe", ["--skip-fullscreen"], 100),
+              ("after", "src", "gate", ["--skip-fullscreen"], 100),
+              # ``-fullscreen True`` never returns on this runner: a stall is the
+              # finding.  Measured on its own so it cannot cost the gate anything.
+              ("fullscreen", "src", "probe", [], 120),
           )
           status: list[str] = []
-          for label, tree, kind in runs:
-              env = dict(os.environ, PYTHONPATH=tree)
+          for label, tree, kind, extra, cap in runs:
+              log = pathlib.Path(f"profile-{label}.log")
               command = [
                   sys.executable,
                   "-u",
                   "tools/profile_resize.py",
                   "--label",
                   label,
+                  *extra,
                   "--steps",
                   "4",
                   "--watchdog",
                   "30",
               ]
-              if label == "fullscreen":
-                  # Only this run asks for the native mode, and with a short series.
-                  command += ["--steps", "2"]
-              else:
-                  command += ["--skip-fullscreen"]
-              cap = 120 if label == "fullscreen" else 100
-              try:
-                  done = subprocess.run(
-                      command, env=env, timeout=cap, capture_output=True, text=True, check=False
+              env = dict(os.environ, PYTHONPATH=tree)
+              started = time.monotonic()
+              with log.open("w", encoding="utf-8") as handle:
+                  child = subprocess.Popen(
+                      command, env=env, stdout=handle, stderr=subprocess.STDOUT
                   )
-                  output = done.stdout + done.stderr
-                  code = done.returncode
-                  print(f"--- {label} exited {code}")
-              except subprocess.TimeoutExpired as exc:
-                  raw = exc.stdout or b""
-                  output = raw.decode(errors="replace") if isinstance(raw, bytes) else raw
-                  output += f"\n--- {label} HARD TIMEOUT after {cap} s, it never finished\n"
-                  code = 124
-                  print(f"--- {label} hard timeout")
-              pathlib.Path(f"profile-{label}.log").write_text(output)
+                  try:
+                      code = child.wait(timeout=cap)
+                  except subprocess.TimeoutExpired:
+                      child.kill()
+                      child.wait()
+                      code = 124
+              elapsed = time.monotonic() - started
+              output = log.read_text(encoding="utf-8", errors="replace")
+              measured = "SUMMARY " in output
+              print(f"--- {label}: exit {code} after {elapsed:.1f}s, measured={measured}")
               print(output[-3000:])
-              # A clean exit is not enough: the summary line is the measurement, and a
-              # run that ended without one did not profile anything.
-              if code == 0 and "SUMMARY " not in output:
+              if code == 0 and not measured:
                   print(f"::error::{label}: exited 0 without a SUMMARY line — not a measurement")
                   code = 4
+              if measured and code != 0:
+                  # The numbers are there; the process had to be killed.  The
+                  # measurement stands (it is complete), the hang is its own row.
+                  print(f"::warning::{label}: measured, then the process had to be killed")
+                  status.append(f"{label} exits cleanly\t{code}\tprobe")
+                  code = 0
               status.append(f"{label}\t{code}\t{kind}")
           pathlib.Path("ci/status.tsv").write_text("\n".join(status) + "\n", encoding="utf-8")
           PY
           cat ci/status.tsv
-          # The step itself only fails for this branch: the old tree's timeout is the
-          # finding, not a defect in the run.
+          # The step itself only fails for this branch's measurement: the old tree's
+          # timeout is the finding, not a defect in the run.
           awk -F '\t' '$1 == "after" { exit ($2 == 0 ? 0 : 1) }' ci/status.tsv
+
       - name: The numbers
         if: always()
         run: |

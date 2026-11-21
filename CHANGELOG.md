@@ -54,8 +54,10 @@ All notable changes to PHANTOM are recorded here. The format follows
   grew `--skip-fullscreen` for the gate run, and the phase is probed on its own where
   a stall is the finding. The next run showed the tool then stops on its *exit* path
   as well, after the numbers are printed and before the process returns: `finish()`
-  now flushes and exits with the measurement, so the gate sees the `SUMMARY` it
-  measured instead of a timeout.
+  now flushes and exits with the measurement, and the step streams each child's
+  output into its log instead of capturing it (a capture returns only what it read
+  when the timeout fires), gates on the `SUMMARY` line and gives a run that had to be
+  killed after the numbers a `probe` row of its own.
 - **The crash that leaves no traceback is readable now.** `tools/parse_crash_report.py`
   prints the faulting thread of a macOS `.ips` report with symbols, and
   `tools/diagnose_tk_crash.py` runs one candidate per process — bare Tk, CustomTkinter,

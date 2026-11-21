@@ -85,6 +85,7 @@ def _window(clipboard: str = "") -> object:
     class _Window:
         _copy_to_clipboard = PhantomApp._copy_to_clipboard
         _verify_clipboard = PhantomApp._verify_clipboard
+        _needs_system_check = staticmethod(PhantomApp._needs_system_check)
         _clipboard_holds = PhantomApp._clipboard_holds
         _report_copied = PhantomApp._report_copied
 

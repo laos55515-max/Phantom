@@ -184,4 +184,8 @@ def test_the_profile_gate_leaves_out_the_phase_that_never_returns() -> None:
     """
     text = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
     assert "--skip-fullscreen" in text
-    assert '("fullscreen", "src", "probe")' in text
+    assert '"fullscreen", "src", "probe"' in text
+    # The gate reads the SUMMARY line, and a process that needed killing after the
+    # numbers still gets a row of its own.
+    assert 'measured = "SUMMARY " in output' in text
+    assert "exits cleanly" in text

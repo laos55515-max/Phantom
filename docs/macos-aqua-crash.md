@@ -721,7 +721,16 @@ ever reached, so there is no `SUMMARY`.
 series and the burst and must finish; the fullscreen phase is a `probe` of its own,
 with a 120-second cap, where a stall is the finding.
 
-The next run showed that the phase was not the only place the tool stops: with the
+The run after that measured everything twice and still reported a timeout, and the
+answer is in how the step read it: `subprocess.run(..., capture_output=True)` returns
+only the output it managed to read when the timeout fires, so a run that printed its
+whole summary could be filed as a run that printed nothing. The step now streams each
+child's output straight into `profile-<label>.log` and decides on the `SUMMARY` line —
+the measurement — while a run that had to be killed *after* the numbers gets its own
+`probe` row (`<label> exits cleanly`). Nothing is swallowed: the hang and the numbers
+are separate rows.
+
+The run before that showed the phase was not the only place the tool stops: with the
 fullscreen round left out, both runs still ended at the cap, and their logs ended at
 `phase final` — the last mark `finish()` takes, printed a few microseconds before the
 `SUMMARY` line that the numbers step looks for. So the numbers *were* measured and
