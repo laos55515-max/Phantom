@@ -112,53 +112,6 @@ def _passes_are_attempted() -> bool:
     return not DISPLAY_PASSES_UNSAFE
 
 
-#: Whether the harness drives Tk with its own loop instead of ``update()``.
-#: ``None`` means "ask the build": see :func:`_loop_pump`.
-_LOOP_PUMP: bool | None = None
-
-
-def _loop_pump() -> bool:
-    """Whether a script-level ``update()`` has to be replaced by the loop.
-
-    ``DISPLAY_PASSES_UNSAFE`` is Aqua under Tk 9, where a display pass from script
-    level segfaults: Tk runs its idle *drawing* handlers there, and those hold window
-    pointers that are freed under them (`docs/macos-aqua-crash.md` §9, §14).  The
-    application never calls ``update()`` — it runs inside ``mainloop`` — so on that
-    build the harness does what the product does.  ``PHANTOM_TEST_LOOP_PUMP=1`` /
-    ``=0`` forces either behaviour, so both can be measured on one interpreter.
-    """
-    global _LOOP_PUMP  # noqa: PLW0603 - one decision per process, on purpose
-    if _LOOP_PUMP is None:
-        import os
-
-        from phantom.ui.app import DISPLAY_PASSES_UNSAFE
-
-        switch = os.environ.get("PHANTOM_TEST_LOOP_PUMP")
-        _LOOP_PUMP = DISPLAY_PASSES_UNSAFE if switch is None else switch != "0"
-    return _LOOP_PUMP
-
-
-def process_events(root, milliseconds: int = 40) -> None:
-    """Let Tk serve its queue — through its own loop where ``update()`` is not safe.
-
-    ``update()`` enters Tk's display idle handlers *re-entrantly from Tcl script
-    level*; that is the call the CI crash report names
-    (``tkinter/__init__.py:1373 update`` → ``Tk_UpdateObjCmd``) and the one the
-    window's own code refuses to make on this build (``quiet_redraws``).  Arming a
-    ``quit`` and entering ``mainloop`` serves the same queue from the place Tk
-    expects to be driven from, and returns when the timer fires.
-    """
-    if not _loop_pump():
-        root.update()
-        return
-    token = root.after(milliseconds, root.quit)
-    try:
-        root.mainloop()
-    finally:
-        with suppress(Exception):
-            root.after_cancel(token)
-
-
 def _after_scripts(app) -> list[str]:
     """The callbacks Tk says are armed, by name — for the failure message only."""
     names = []
@@ -200,13 +153,13 @@ def _pump(app, seconds: float = 30.0) -> None:
     update_max = 0.0
     while not settled() and time.monotonic() < deadline:
         started = time.monotonic()
-        process_events(app.root)
+        app.root.update()
         spent = time.monotonic() - started
         iterations += 1
         update_total += spent
         update_max = max(update_max, spent)
         time.sleep(0.02)
-    process_events(app.root)
+    app.root.update()
     if app.worker.busy or app._busy:
         # Stop the wedged job before failing: a worker thread that keeps running
         # outlives this test and steals the CPU of every test after it, which is
@@ -325,7 +278,7 @@ def test_a_dnd_that_cannot_register_hides_its_hints_and_keeps_the_button(
         dnd=Tk9LikeDnd(),
     )
     try:
-        process_events(instance.root)
+        instance.root.update()
         assert instance.dnd.available is True
         assert instance.dnd.usable is False
         assert "invalid command name" in (instance.dnd.reason or "")
@@ -486,7 +439,7 @@ def test_a_theme_switch_refuses_every_display_pass(app) -> None:
     assert ctk_mode() == wanted, "the appearance mode did not change"
     assert tk.Misc.update_idletasks is original, "the refusal outlived the click"
     assert app._layout_token is not None, "the window owes a pass but never asked"
-    process_events(app.root)
+    app.root.update()
     assert app._layout_token is None, "the owed pass never ran"
 
 
@@ -500,7 +453,7 @@ def test_switching_the_theme_six_times_keeps_the_window_alive(app) -> None:
     order = ["Light", "Dark", "System", "Light", "Dark", "System"]
     for mode in order:
         app._on_theme_click(labels[mode])
-        process_events(app.root)
+        app.root.update()
         assert app.settings.theme == mode
         if mode in ("Light", "Dark"):
             assert ctk_mode() == mode
@@ -519,7 +472,7 @@ def test_a_hidden_window_switches_the_theme_without_a_display_pass(app) -> None:
     """
     from phantom.ui import widgets as W
 
-    process_events(app.root)
+    app.root.update()
     app.root.withdraw()
     before = W.suppressed_flush_count()
     passes = app._display_passes
@@ -532,7 +485,7 @@ def test_a_hidden_window_switches_the_theme_without_a_display_pass(app) -> None:
     assert app._layout_token is not None, "the pass the theme owes is not scheduled"
 
     app.root.deiconify()
-    process_events(app.root)
+    app.root.update()
     if _passes_are_attempted():
         assert app._display_passes == passes + 1, "the owed pass never ran on <Map>"
     else:
@@ -561,7 +514,7 @@ def test_the_system_theme_tick_never_flushes_from_the_timer(app, monkeypatch) ->
 
     assert armed, "the tick did not change the appearance mode at all"
     assert all(armed), "the tick changed the mode with no refusal armed"
-    process_events(app.root)
+    app.root.update()
 
 
 def test_a_resize_after_a_theme_switch_still_fits_every_caption(app) -> None:
@@ -569,14 +522,14 @@ def test_a_resize_after_a_theme_switch_still_fits_every_caption(app) -> None:
     app.root.deiconify()
     app.root.geometry("980x720")
     _switch_appearance(app)
-    process_events(app.root)
+    app.root.update()
     app.root.geometry("1140x900")
-    process_events(app.root)
+    app.root.update()
 
     problems = []
     for ident in ("embed", "extract", "metadata", "settings"):
         app._show_tab(ident)
-        process_events(app.root)
+        app.root.update()
         for widget in _captioned(app.tab_frames[ident]):
             issue = _clipped(widget)
             if issue:
@@ -844,7 +797,7 @@ def test_worker_poll_drains_events(app) -> None:
 
     deadline = time.monotonic() + 10
     while app.worker.busy and time.monotonic() < deadline:
-        process_events(app.root)
+        app.root.update()
         time.sleep(0.01)
     app._poll()
     assert app.worker.busy is False
@@ -1001,7 +954,7 @@ def _reveal(app) -> None:
     """CustomTkinter starts withdrawn: routing needs a mapped window."""
     app.root.deiconify()
     app.root.geometry("1000x760+0+0")
-    process_events(app.root)
+    app.root.update()
     app.root.update_idletasks()
 
 
@@ -1084,13 +1037,13 @@ def _point_over(app, area) -> tuple[int, int]:
 def _wheel_on_root(app, *, delta: int, x: int, y: int) -> None:
     """Deliver a wheel event to the *root window*, the way Aqua does."""
     app.root.event_generate("<MouseWheel>", delta=delta, x=x, y=y, rootx=x, rooty=y, when="now")
-    process_events(app.root)
+    app.root.update()
 
 
 def _touchpad_on_root(app, *, raw: int, x: int, y: int) -> None:
     """Deliver a Tk 9 ``<TouchpadScroll>``; ``-delta`` is the packed ``%D``."""
     app.root.event_generate("<TouchpadScroll>", delta=raw, x=x, y=y, rootx=x, rooty=y, when="now")
-    process_events(app.root)
+    app.root.update()
 
 
 def _descendants(widget) -> list:
@@ -1127,7 +1080,7 @@ def test_the_pointer_chooses_the_area_not_the_event_widget(app) -> None:
     extract = _area_for_tab(app, "extract")
     assert embed is not None and extract is not None
     app._show_tab("extract")
-    process_events(app.root)
+    app.root.update()
     before_extract = _make_scrollable(extract.canvas)
     before_embed = _make_scrollable(embed.canvas)
     x, y = _point_over(app, extract)
@@ -1170,7 +1123,7 @@ def test_a_textbox_keeps_its_own_wheel_handling(app) -> None:
     inner = inner_text_widget(box)
     inner.delete("1.0", "end")
     inner.insert("1.0", "\n".join(f"line {index}" for index in range(400)))
-    process_events(app.root)
+    app.root.update()
     before = _make_scrollable(area.canvas, top=0.5)
     x, y = _screen_centre(box)
 
@@ -1374,7 +1327,7 @@ def test_undo_and_redo_buttons_follow_the_history(app) -> None:
     app.embed_text.insert("1.0", "undo me")
     app.embed_text.edit_separator()
     app._on_editor_modified()
-    process_events(app.root)
+    app.root.update()
     _pump(app)
     assert str(app.editor_undo_button.cget("state")) == "normal"
     app.editor_undo_button.invoke()
@@ -1437,7 +1390,7 @@ def test_a_full_reset_drops_the_undo_history(app) -> None:
     app._on_text_changed()
     _pump(app)
     app._clear_embed()
-    process_events(app.root)
+    app.root.update()
     with pytest.raises(tk.TclError):
         app._editor_inner.edit_undo()
     assert app._editor_can_undo is False and app._editor_can_redo is False
@@ -1642,7 +1595,7 @@ RESULT_LABELS = {
 def test_expand_opens_a_large_read_only_window(app) -> None:
     _show_text_payload(app, "readable result body")
     app._expand_result()
-    process_events(app.root)
+    app.root.update()
     window = app._result_window
     assert window is not None
     assert window.text_box.get("1.0", "end-1c") == "readable result body"
@@ -1656,7 +1609,7 @@ def test_expand_opens_a_large_read_only_window(app) -> None:
     assert window.copy_text() is True
     assert app.root.clipboard_get() == "readable result body"
     window.close()
-    process_events(app.root)
+    app.root.update()
     assert app._result_window is None
 
 
@@ -1683,7 +1636,7 @@ def test_result_window_reveals_the_saved_file(app, tmp_path, monkeypatch) -> Non
         copy_callback=lambda value: True,
         on_close=None,
     )
-    process_events(app.root)
+    app.root.update()
     assert window.reveal() is True
     assert calls == [target]
     assert window.feedback.cget("text") == RESULT_LABELS["status_revealed"]
@@ -1697,7 +1650,7 @@ def test_result_window_without_a_path_disables_path_actions(app) -> None:
     window = ResultWindow(
         app.root, title="RESULT", text="text only", labels=RESULT_LABELS
     )
-    process_events(app.root)
+    app.root.update()
     assert window.copy_path_button.cget("state") == "disabled"
     assert window.reveal_button.cget("state") == "disabled"
     assert window.copy_path() is False
@@ -2141,7 +2094,7 @@ def test_the_metadata_cards_belong_to_the_tab_area(app) -> None:
     """
     _reveal(app)
     app._show_tab("metadata")
-    process_events(app.root)
+    app.root.update()
     panel = app.metadata_panel
     assert panel is not None
     area = _area_for_tab(app, "metadata")
@@ -2428,13 +2381,13 @@ def test_no_captioned_widget_clips_its_text_at_any_supported_size(app, size: str
     """The owner's defect: a button narrower than «ВЫБРАТЬ ФАЙЛ (PNG / WAV / FLAC)»."""
     app.root.deiconify()
     app.root.geometry(size)
-    process_events(app.root)
+    app.root.update()
     app.root.update_idletasks()
 
     problems = []
     for ident in ("embed", "extract", "metadata", "settings"):
         app._show_tab(ident)
-        process_events(app.root)
+        app.root.update()
         for widget in _captioned(app.tab_frames[ident]):
             issue = _clipped(widget)
             if issue:
@@ -2449,12 +2402,12 @@ def test_a_language_switch_re_measures_every_caption(app, code: str) -> None:
     app.root.deiconify()
     app.root.geometry("980x720")
     app._on_language_click(app._label_by_lang[code])
-    process_events(app.root)
+    app.root.update()
 
     problems = []
     for ident in ("embed", "extract", "metadata", "settings"):
         app._show_tab(ident)
-        process_events(app.root)
+        app.root.update()
         for widget in _captioned(app.tab_frames[ident]):
             issue = _clipped(widget)
             if issue:
@@ -2468,7 +2421,7 @@ def test_every_button_of_a_crowded_row_stays_inside_its_card(app) -> None:
     app.root.deiconify()
     app._show_tab("extract")
     app.root.geometry("980x720")
-    process_events(app.root)
+    app.root.update()
     app.root.update_idletasks()
     row = app.extract_buttons_row
     card = row.master  # the card the row lives in, not the whole tab
@@ -2492,7 +2445,7 @@ def test_a_narrow_row_wraps_and_a_wide_one_does_not(app) -> None:
     """The wrapping rule, driven by the width the frame is really given."""
     app.root.deiconify()
     app._show_tab("extract")
-    process_events(app.root)
+    app.root.update()
     row = app.extract_buttons_row
 
     narrow = row.reflow(available=40)
@@ -2511,7 +2464,7 @@ def test_shrinking_and_growing_the_window_does_not_break_the_layout(app) -> None
 
     for size in ("980x720", "1440x900", "980x720", "1280x800"):
         app.root.geometry(size)
-        process_events(app.root)
+        app.root.update()
         app.root.update_idletasks()
         problems = [_clipped(widget) for widget in _captioned(app.tab_frames["extract"])]
         assert not [problem for problem in problems if problem], size
@@ -2524,12 +2477,12 @@ def test_a_growing_paragraph_re_wraps_with_the_card(app) -> None:
     app.root.deiconify()
     app._show_tab("settings")
     app.root.geometry("980x720")
-    process_events(app.root)
+    app.root.update()
     app.root.update_idletasks()
     narrow = int(app.limitations_label.cget("wraplength"))
 
     app.root.geometry("1440x900")
-    process_events(app.root)
+    app.root.update()
     app.root.update_idletasks()
     wide = int(app.limitations_label.cget("wraplength"))
 
@@ -2547,7 +2500,7 @@ def test_a_resize_burst_owes_one_layout_pass(app) -> None:
     import types
 
     app.root.deiconify()
-    process_events(app.root)  # let whatever the window did while it was built settle
+    app.root.update()  # let whatever the window did while it was built settle
 
     passes = app._refit_passes
     events = app._resize_events
@@ -2566,7 +2519,7 @@ def test_a_resize_burst_owes_one_layout_pass(app) -> None:
         assert not calls, "the handler ran the pass instead of owing it"
         assert app._refit_token is not None, "the burst was not coalesced into one pass"
 
-        process_events(app.root)
+        app.root.update()
     finally:
         app.responsive.refit_flows = real  # type: ignore[method-assign]
 
@@ -2583,7 +2536,7 @@ def test_generated_configure_events_do_not_refit_one_by_one(app) -> None:
     passes is expected — one per round.  One per *event* is what used to happen.
     """
     app.root.deiconify()
-    process_events(app.root)
+    app.root.update()
     calls: list[int] = []
     real = app.responsive.refit_flows
 
@@ -2595,8 +2548,8 @@ def test_generated_configure_events_do_not_refit_one_by_one(app) -> None:
         app.responsive.refit_flows = counted  # type: ignore[method-assign]
         for width in range(1100, 1300, 20):
             app.root.event_generate("<Configure>", width=width, height=820)
-        process_events(app.root)
-        process_events(app.root)
+        app.root.update()
+        app.root.update()
     finally:
         app.responsive.refit_flows = real  # type: ignore[method-assign]
 
@@ -2662,14 +2615,14 @@ def test_a_hidden_tab_is_laid_out_when_it_is_opened(app) -> None:
     """A resize must not lay out a tab nobody can see — but opening it must."""
     app.root.deiconify()
     app._show_tab("embed")
-    process_events(app.root)
+    app.root.update()
 
     hidden = [row for row in app.responsive.flows() if row.suspended]
     assert hidden, "no tab was deferred: every row re-flowed while it was hidden"
     counts = {id(row): row.reflows for row in hidden}
 
     app.root.geometry("1400x820")
-    process_events(app.root)
+    app.root.update()
 
     for row in hidden:
         assert row.reflows == counts[id(row)], "a hidden tab was laid out on a resize"
@@ -2689,7 +2642,7 @@ def test_a_language_switch_lays_out_every_tab(app) -> None:
     """Captions changed everywhere, so every tab is measured, hidden or not."""
     app.root.deiconify()
     app._show_tab("embed")
-    process_events(app.root)
+    app.root.update()
     hidden = [row for row in app.responsive.flows() if row.suspended]
     assert hidden, "no tab was deferred"
     counts = {id(row): row.reflows for row in hidden}
@@ -2697,7 +2650,7 @@ def test_a_language_switch_lays_out_every_tab(app) -> None:
     other = next(code for code in app.i18n.languages if code != app.i18n.language)
     label = app._label_by_lang[other]
     app._on_language_click(label)
-    process_events(app.root)
+    app.root.update()
 
     for row in hidden:
         assert row.reflows > counts[id(row)], "the new captions were never measured"
@@ -2745,7 +2698,7 @@ def test_the_window_starts_at_its_saved_geometry_not_a_default(app, tmp_path: Pa
             settings_store=SettingsStore(path=tmp_path / "geometry" / "settings.json"),
             dnd=DndProvider(),
         )
-        process_events(root)
+        root.update()
 
         assert applied, "the saved geometry was never applied"
         restored = [(value, children) for value, children in applied if value.startswith("800x600")]
@@ -2794,7 +2747,7 @@ def _wheel_on_widget(app, widget, *, delta: int) -> None:
     target.event_generate(
         "<MouseWheel>", delta=delta, x=2, y=2, rootx=x, rooty=y, when="now"
     )
-    process_events(app.root)
+    app.root.update()
 
 
 def _text_view(box) -> tuple[float, float]:
@@ -2813,7 +2766,7 @@ def test_the_page_scrolls_over_an_empty_text_box(app) -> None:
     if box is None:
         pytest.skip("this Tk build has no text area in the embed tab")
     app.embed_text.delete("1.0", "end")
-    process_events(app.root)
+    app.root.update()
     before = _make_scrollable(area.canvas)
     assert _text_view(box) == (0.0, 1.0), "the text box is supposed to be empty here"
 
@@ -2835,7 +2788,7 @@ def test_a_text_box_with_its_own_room_keeps_the_gesture(app) -> None:
         pytest.skip("this Tk build has no text area in the embed tab")
     app.embed_text.delete("1.0", "end")
     app.embed_text.insert("1.0", "\n".join(f"line {index}" for index in range(400)))
-    process_events(app.root)
+    app.root.update()
     before_page = _make_scrollable(area.canvas, top=0.5)
     first, _last = _text_view(box)
     assert first == pytest.approx(0.0)
@@ -2858,12 +2811,12 @@ def test_at_the_end_of_the_text_the_page_takes_over(app) -> None:
         pytest.skip("this Tk build has no text area in the embed tab")
     app.embed_text.delete("1.0", "end")
     app.embed_text.insert("1.0", "\n".join(f"line {index}" for index in range(400)))
-    process_events(app.root)
+    app.root.update()
     from phantom.ui.widgets import inner_text_widget
 
     inner = inner_text_widget(app.embed_text)
     inner.yview_moveto(1.0)
-    process_events(app.root)
+    app.root.update()
     # Keep the page at the top: scrolling it first moves the text box out from
     # under the point we are about to compute, and the router would then be asked
     # about the window itself.
@@ -2887,7 +2840,7 @@ def test_a_card_wheel_still_scrolls_the_tab(app) -> None:
     area = _area_for_tab(app, "metadata")
     assert area is not None
     app._show_tab("metadata")
-    process_events(app.root)
+    app.root.update()
     before = _make_scrollable(area.canvas)
     x, y = _point_over(app, area)
 
@@ -3052,7 +3005,7 @@ def test_the_launch_records_its_stages(app) -> None:
 
 
 def test_the_first_frame_hook_marks_the_window_ready(app) -> None:
-    process_events(app.root)
+    app.root.update()
     app._after_first_frame()
 
     assert app.trace.at("first_frame") is not None
@@ -3148,7 +3101,7 @@ def test_a_whole_window_builds_its_fonts_once(app, tmp_path: Path) -> None:
             settings_store=SettingsStore(path=tmp_path / "fonts" / "settings.json"),
             dnd=DndProvider(),
         )
-        process_events(root)
+        root.update()
 
         families = W._FAMILIES[root]
         fonts = W._FONTS[root]
@@ -3208,7 +3161,7 @@ def test_the_build_never_enters_the_event_loop(app, tmp_path: Path) -> None:
         assert instance._layout_token is not None, "no pass was scheduled either"
         assert instance.trace.at("init:done") is not None
 
-        process_events(root)
+        root.update()
 
         assert passes, "the scheduled pass never ran"
         if _passes_are_attempted():
@@ -3291,7 +3244,7 @@ def test_a_hidden_window_is_never_asked_to_display(tmp_path: Path) -> None:
             assert instance._layout_pending is True, "the pass was forgotten, not deferred"
 
         root.deiconify()
-        process_events(root)
+        root.update()
 
         if _passes_are_attempted():
             assert instance._display_passes >= 1, "the mapping did not run the owed pass"
@@ -3339,13 +3292,13 @@ def test_a_second_mapping_does_not_repeat_the_pass(tmp_path: Path) -> None:
     """
     root, instance = _build(tmp_path / "once", map_window=True)
     try:
-        process_events(root)
+        root.update()
         first = instance._display_passes
         assert first >= 1
 
         root.withdraw()
         root.deiconify()
-        process_events(root)
+        root.update()
 
         assert instance._display_passes == first, "the build's pass was repeated"
     finally:
@@ -3362,7 +3315,7 @@ def test_windows_survive_being_built_and_destroyed_repeatedly(tmp_path: Path) ->
     for index in range(5):
         root, instance = _build(tmp_path / f"cycle{index}", map_window=True)
         try:
-            process_events(root)
+            root.update()
             fonts.append(len(W._FONTS.get(root, {})))
         finally:
             instance.worker.shutdown(timeout=2)
@@ -3378,7 +3331,7 @@ def test_closing_the_window_leaves_no_callbacks_of_its_own(app) -> None:
     """Every token this window armed is cancelled before the root is destroyed."""
     tokens = ("_poll_token", "_clipboard_token", "_stage_tick_token", "_anim_token",
               "_theme_token", "_layout_token")
-    process_events(app.root)
+    app.root.update()
     assert app._layout_token is None
 
     app._on_close()
@@ -3599,7 +3552,7 @@ def _key(app, sequence: str, *, virtual: str | None = None, settle_ms: int = 150
     # passes and this harness is the thing that has to ask for them.
     app.root.deiconify()
     app.root.geometry("1000x760+0+0")
-    process_events(app.root)
+    app.root.update()
     inner.update_idletasks()
     assert inner.winfo_ismapped(), (
         "the editor is not mapped in this window, so no key event can reach it: "
@@ -3936,18 +3889,18 @@ def test_an_edit_without_a_key_still_reaches_the_model(app) -> None:
         """
         deadline = time.monotonic() + 5.0
         while app._editor_dirty and time.monotonic() < deadline:
-            process_events(app.root)
+            app.root.update()
             time.sleep(0.02)
         assert not app._editor_dirty, "the edit never reached the model"
 
     inner = inner_text_widget(app.embed_text)
     inner.insert("1.0", "dropped in by a menu")
-    process_events(app.root)
+    app.root.update()
     committed()
     assert app.embed_vm.text == "dropped in by a menu"
     assert "20" in app.char_label.cget("text")
 
     inner.delete("1.0", "end")
-    process_events(app.root)
+    app.root.update()
     committed()
     assert app.embed_vm.text == ""

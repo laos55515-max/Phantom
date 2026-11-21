@@ -81,6 +81,19 @@ All notable changes to PHANTOM are recorded here. The format follows
   raises, and `--skip-fullscreen` keeps the phase out of the gate; the step streams
   each log and reads `SUMMARY`. On run `44852903515` the old tree costs 2.0 ms per
   resize handler and this branch 0.26 ms, with refit passes 130× cheaper.
+- **The Tk 9.1 SIGSEGV has a name and a guard.** The macOS `.ips` report puts the
+  fault inside Tk's own idle handler — `showRootWindow` ← `TclServiceIdle` ←
+  `Tcl_DoOneEvent`, `KERN_INVALID_ADDRESS at 0x170` — with no PHANTOM,
+  CustomTkinter or pytest frame in it. Tk's Aqua menu code arms an idle callback that
+  points at the menu of the interpreter that armed it; every test that closes its
+  window destroys an interpreter, and the next event-loop service runs the callback
+  against freed memory. Measured in two processes: the crashing test alone is green
+  (1 passed, 172 deselected), the suite without it still dies with 139. The
+  application opens one interpreter per process and is not exposed; the Tk 9.1 CI job
+  now runs the suite in chunks of eight tests, one process each — every test still
+  runs, every chunk must pass, a crash still fails the job — while the Tk 8.6 job
+  keeps running the whole suite in one process. The crash report and the diagnosis
+  table are annotated on every run instead of only being written to a step log.
 - **`PHANTOM_DND=0` turns drag-and-drop off before anything is imported.** The switch
   exists for a machine where the Tk build cannot survive the tkdnd library, and the
   crash diagnosis uses it to tell the window apart from the window plus tkdnd.

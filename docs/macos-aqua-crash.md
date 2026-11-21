@@ -804,3 +804,88 @@ either the suite stops pumping with `update()` (the fixture would use `mainloop`
 `after`, which is how the application itself runs), or the crash is shown to be a Tk
 9.1 defect and the suite is pinned to 8.6 with the 9.1 job reduced to the smokes that
 do not pump.
+
+## 15. The Tk 9.1 crash, named: `showRootWindow` on a freed menu
+
+The crash had a reproduction, then a stack, then a cause. This section is in that
+order, because the two earlier hypotheses (tkdnd, the `update()` pump) were both
+wrong and both are recorded above.
+
+### 15.1 The stack, from the `.ips` macOS writes
+
+`tools/parse_crash_report.py --annotate` now puts the faulting thread of the report
+into the pull request, and the frame list is the whole answer:
+
+```
+CRASH proc=Python signal=SIGSEGV type=EXC_BAD_ACCESS thread=0
+  indicator='Segmentation fault: 11'
+  subtype='KERN_INVALID_ADDRESS at 0x0000000000000170'
+#5  libtcl9tk9.1.dylib            showRootWindow
+#6  libtcl9.1.dylib               TclServiceIdle
+#7  libtcl9.1.dylib               Tcl_DoOneEvent
+#8  _tkinter.cpython-312-darwin.so _tkinter_tkapp_mainloop
+```
+
+Not one frame belongs to PHANTOM, to CustomTkinter or to pytest: the process dies
+inside **Tk's own idle handler**. `showRootWindow` is Tk's Aqua menu-bar code; it is
+armed as a Tcl *idle* callback and it points at the menu of the interpreter that armed
+it. `0x170` is a field of the object it dereferences — memory that is no longer there.
+
+### 15.2 Why the suite dies and one test does not
+
+Two measurements made in the Tk 9.1 job, in separate processes, on the same build:
+
+| case | what ran | result |
+| --- | --- | --- |
+| one test, one window | `pytest tests/test_gui.py -k dnd_that_cannot_register` | **ok, 1 passed, 172 deselected** |
+| the whole suite without that test | `pytest tests/test_gui.py -k "not dnd_that_cannot_register"` | **exit 139, SIGSEGV** |
+
+So the crashing test is not the cause of anything: the *history* is. Every test builds
+a `ctk.CTk()` root and closes it, which destroys a Tcl interpreter; Tk's Aqua menu
+idle handler still points at the destroyed interpreter's menu, and the next event-loop
+service runs it against freed memory. Whichever test happens to be pumping at that
+moment dies — the frame moved from
+`test_a_dnd_that_cannot_register_hides_its_hints_and_keeps_the_button` to
+`test_a_theme_switch_refuses_every_display_pass` between two runs of the same code.
+
+That also explains the shape of the evidence collected in §9–§14: the smokes never
+crash (one interpreter, one long loop), the app never crashes in normal use (one
+interpreter per process), and `update()` versus `mainloop()` makes no difference —
+both service Tcl idles. Driving the harness with `mainloop` was measured and did not
+fix it, so that change was reverted rather than kept as decoration.
+
+### 15.3 What the product does about it
+
+Nothing needs to change in PHANTOM: the application creates exactly one interpreter
+and never calls `Tk_DoOneEvent` from script level on Aqua/Tk 9 (`quiet_redraws`,
+§9). The defect is exposed by a **test process that builds and destroys dozens of
+windows**, which is not a thing the product does.
+
+### 15.4 What CI does about it
+
+The Tk 9.1 job runs the suite in **chunks of eight tests, one process per chunk**:
+
+* every test still runs — this is process isolation, not exclusion, and the chunk list
+  comes from `pytest --collect-only`, so a new test is picked up automatically;
+* every chunk must pass, and the worst exit code is what the verdict sees, with a
+  signal outranking a plain failure — a crash still turns the job red (it did, twice,
+  while this was being measured);
+* a probe row (`one window alone`) re-measures the claim on every run: if a single
+  interpreter ever crashes there, the isolation is hiding something and this section
+  is wrong;
+* `gui (macOS Aqua)` — Tk 8.6.16 — still runs the whole suite in **one** process, so
+  cross-test interference remains covered on the build where it is safe.
+
+### 15.5 Supported platforms, stated plainly
+
+| platform | Tk | status |
+| --- | --- | --- |
+| macOS Aqua, Python 3.11/3.12 | 8.6.16 | **supported** — the whole GUI suite in one process, plus the editor/capacity smoke |
+| macOS Aqua, Python 3.12 | 9.1 (Homebrew) | **supported for the application**, which is what the theme smoke, the editor smoke and the layout profile exercise; the *test process* must not accumulate interpreters, so the suite runs chunked |
+| Linux Xvfb | 8.6 | supported, unchanged |
+
+A user never sees the crash; a CI process that opens and closes dozens of windows
+does, and that is an upstream Tk 9.1 defect (idle menu handler, freed interpreter).
+The two ways to make Tk 9.1 survive an unbounded number of interpreters would be a
+one-interpreter test fixture (a redesign of every GUI fixture, untestable from this
+sandbox) or a fix in Tk itself. Neither is claimed here.

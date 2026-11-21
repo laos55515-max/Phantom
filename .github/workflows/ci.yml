@@ -426,36 +426,28 @@ jobs:
           printf 'crash diagnosis\t%s\tgate\n' "$code" >> ci/status.tsv
           exit "$code"
 
-      - name: The pytest suite, on Tk's own loop where ``update()`` is unsafe
-        # A gate, on 9.1 as well.  It was a diagnostic because the harness pumped Tk
-        # with ``update()``, and a display pass from script level is where Aqua under
-        # Tk 9 dies; the harness now drives Tk's own loop on that build (what the
-        # product does), so the same suite is a real requirement here — and a crash
-        # fails the job through the verdict either way.
-        continue-on-error: true
-        run: |
-          # GitHub's shell is ``bash -e -o pipefail``: without this, a
-          # failing command ends the step before its exit code is recorded.
-          set +e
-          . .venv-tk9/bin/activate
-          set -o pipefail
-          mkdir -p ci
-          export PYTHONPATH=src
-          python -X faulthandler -u -m pytest -m gui -v --durations=20 \
-            --timeout=120 --timeout-method=thread -o faulthandler_timeout=120 2>&1 \
-            | tee gui-tk9.log
-          code=${PIPESTATUS[0]}
-          printf 'gui suite (tk9)\t%s\tgate\n' "$code" >> ci/status.tsv
-          exit 0
-
-      - name: Is it the pump or the history? Two processes, one question
-        # The crash frame is ``update()`` — a display pass entered from script level.
-        # Two candidate causes and one measurement each: the test body on its own
-        # (with Tk's own loop instead of ``update()``) and the whole suite without
-        # that test (does the *history* of windows matter at all?).  The suite step
-        # above is the third cell: everything, with the loop pump.  Both rows are
-        # probes: a crash in either is a real signal, a failure is data.
-        if: always()
+      - name: The pytest suite, one interpreter per chunk (Tk 9.1 dies otherwise)
+        # Root cause, from the ``.ips`` report this job now annotates:
+        #
+        #   EXC_BAD_ACCESS (KERN_INVALID_ADDRESS at 0x170)
+        #   #5 libtcl9tk9.1.dylib  showRootWindow
+        #   #6 libtcl9.1.dylib     TclServiceIdle
+        #   #7 libtcl9.1.dylib     Tcl_DoOneEvent
+        #   #8 _tkinter            _tkinter_tkapp_mainloop
+        #
+        # Tk's Aqua menu code arms an *idle* handler for the application menu bar, and
+        # that handler points at a menu owned by the interpreter that armed it.  Each
+        # test closes its window, which destroys its interpreter; the next event-loop
+        # service then runs the handler against freed memory (the ``0x170`` is a field
+        # of the freed object).  That is why the crash lands in whichever test happens
+        # to be pumping — it moved from the DnD test to the theme test between runs —
+        # and why one test on its own never crashes.  Nothing in PHANTOM or
+        # CustomTkinter appears in the faulting stack: the fault is inside Tk 9.1.
+        #
+        # So the suite runs in chunks, one process each: every test still runs and
+        # every chunk must pass, and a crash still fails the job (a signal outranks a
+        # failure when the worst code is chosen below).  Tk 8.6 on the other job runs
+        # the whole suite in one process, so cross-test interference stays covered.
         continue-on-error: true
         timeout-minutes: 25
         run: |
@@ -465,30 +457,74 @@ jobs:
           . .venv-tk9/bin/activate
           mkdir -p ci
           export PYTHONPATH=src
-          run_case() {
-            name="$1"; shift
-            echo "=== case $name: $*"
-            python -X faulthandler -u -m pytest tests/test_gui.py -x -q "$@" \
-              > "case-$name.log" 2>&1
-            code=$?
-            echo "case $name exited $code"
-            tail -8 "case-$name.log"
-            python - "$name" "$code" <<'PY'
+          python -m pytest tests/test_gui.py --collect-only -q 2>/dev/null \
+            | grep -F '::' > gui-ids.txt
+          python - <<'PY'
+          import os
+          import pathlib
+          import subprocess
+          import sys
+
+          ids = [
+              line.strip()
+              for line in pathlib.Path("gui-ids.txt").read_text().splitlines()
+              if "::" in line
+          ]
+          if not ids:
+              print("::error::gui suite: the collection produced no test ids")
+              pathlib.Path("ci/worst.txt").write_text("3")
+              raise SystemExit(0)
+          size = int(os.environ.get("PHANTOM_GUI_CHUNK", "8"))
+          print(f"::notice::gui suite: {len(ids)} tests, chunks of {size}")
+          worst = 0
+          for start in range(0, len(ids), size):
+              part = ids[start : start + size]
+              label = f"tests {start + 1}-{start + len(part)}"
+              code = subprocess.call([sys.executable, "-m", "pytest", "-q", *part])
+              if code == 0:
+                  print(f"::notice::gui chunk {label}: ok")
+                  continue
+              print(f"::error::gui chunk {label}: exit {code} (first: {part[0]})")
+              # A signal outranks a plain failure: the job must stay red for a crash.
+              if code >= 128 or worst == 0:
+                  worst = code
+          pathlib.Path("ci/worst.txt").write_text(str(worst))
+          PY
+          code=$(cat ci/worst.txt)
+          printf 'gui suite (tk9)\t%s\tgate\n' "$code" >> ci/status.tsv
+          exit "$code"
+
+      - name: One interpreter on its own is healthy (the isolation claim, measured)
+        # If this ever crashes, the chunking above is hiding something and the claim
+        # in docs/macos-aqua-crash.md §15 is wrong: one window, one process, Tk's own
+        # loop.  A probe: a failure is data, a crash is still a crash.
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 10
+        run: |
+          set +e
+          . .venv-tk9/bin/activate
+          mkdir -p ci
+          export PYTHONPATH=src
+          python -X faulthandler -u -m pytest tests/test_gui.py -q -x \
+            -k dnd_that_cannot_register > case-alone.log 2>&1
+          code=$?
+          tail -5 case-alone.log
+          python - "$code" <<'PY'
           import pathlib
           import sys
 
-          name, code = sys.argv[1], sys.argv[2]
-          path = pathlib.Path(f"case-{name}.log")
-          lines = [line.rstrip() for line in path.read_text(errors="replace").splitlines()]
-          tail = [line for line in lines if line.strip()][-3:]
-          fatal = [line for line in lines if "Fatal Python error" in line]
-          level = "error" if fatal or int(code) >= 128 else "notice"
-          print(f"::{level}::case {name} (exit {code}): {' ¦ '.join(tail)[:1200]}")
+          code = int(sys.argv[1])
+          lines = [
+              line.rstrip()
+              for line in pathlib.Path("case-alone.log").read_text(errors="replace").splitlines()
+          ]
+          tail = [line for line in lines if line.strip()][-2:]
+          level = "error" if code >= 128 else "notice"
+          print(f"::{level}::one interpreter (exit {code}): {' ¦ '.join(tail)[:900]}")
           PY
-            printf 'case %s\t%s\tprobe\n' "$name" "$code" >> ci/status.tsv
-          }
-          PHANTOM_TEST_LOOP_PUMP=1 run_case alone -k dnd_that_cannot_register
-          run_case rest -k "not dnd_that_cannot_register"
+          printf 'one window alone\t%s\tprobe\n' "$code" >> ci/status.tsv
+          exit 0
 
       - name: The minimal reproduction, default and with the refusal
         continue-on-error: true
