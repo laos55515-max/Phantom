@@ -653,44 +653,11 @@ class PhantomApp:
         self.embed_carrier_error_dismiss.grid(row=0, column=1, padx=(0, 10), pady=8)
         self.binder.bind(self.embed_carrier_error_dismiss, "btn_dismiss")
 
-        carrier_info = inset_panel(carrier_card)
-        carrier_info.pack(fill="x", padx=18, pady=(0, 6))
-        self.carrier_label = value_label(carrier_info, self.root, "")
-        self.carrier_label.pack(fill="x", padx=12, pady=(6, 1))
-        cap_strip = ctk.CTkFrame(carrier_info, fg_color="transparent")
-        cap_strip.pack(fill="x", padx=12, pady=(1, 2))
-        cap_strip.grid_columnconfigure(0, weight=1)
-        self.usage_label = ctk.CTkLabel(
-            cap_strip,
-            text="",
-            font=sans_font(self.root, T.FONT_SIZE_LABEL),
-            text_color=T.CLR_MUTED,
-            anchor="w",
-        )
-        self.usage_label.grid(row=0, column=0, sticky="w")
-        self.capacity_label = value_label(cap_strip, self.root, "", mono=True)
-        self.capacity_label.grid(row=0, column=1, padx=(10, 0), sticky="e")
-        self.fill_bar = ctk.CTkProgressBar(
-            carrier_info,
-            height=5,
-            corner_radius=3,
-            progress_color=T.CLR_ACCENT,
-            fg_color=T.CLR_PROGRESS_TROUGH,
-        )
-        self.fill_bar.set(0)
-        self.fill_bar.pack(fill="x", padx=12, pady=(2, 3))
-        self.capacity_panel = value_label(carrier_info, self.root, "", mono=True)
-        self.capacity_panel.pack(fill="x", padx=12, pady=(0, 1))
-        self.capacity_note = hint_label(carrier_info, self.root, "", wrap=620)
-        self.capacity_note.pack(fill="x", padx=12, pady=(0, 2))
-        self.binder.bind(self.capacity_note, "cap_note")
-        self.notice_label = hint_label(carrier_info, self.root, "", wrap=620)
-        self.notice_label.pack(fill="x", padx=12, pady=(0, 1))
-        self.format_label = hint_label(carrier_info, self.root, "", wrap=620)
-        self.format_label.pack(fill="x", padx=12, pady=(0, 6))
+        self.carrier_label = value_label(carrier_card, self.root, "")
+        self.carrier_label.pack(fill="x", padx=18, pady=(0, 6))
 
         output_row = ctk.CTkFrame(carrier_card, fg_color="transparent")
-        output_row.pack(fill="x", padx=18, pady=(0, 10))
+        output_row.pack(fill="x", padx=18, pady=(0, 12))
         self.output_title = ctk.CTkLabel(
             output_row,
             text="",
@@ -741,11 +708,14 @@ class PhantomApp:
         )
         self.mode_bar.grid(row=0, column=2, padx=(10, 0), sticky="e")
 
-        self.text_frame = ctk.CTkFrame(payload_card, fg_color="transparent")
+        payload_body = ctk.CTkFrame(payload_card, fg_color="transparent")
+        payload_body.pack(fill="both", expand=True)
+
+        self.text_frame = ctk.CTkFrame(payload_body, fg_color="transparent")
         self.text_frame.pack(fill="both", expand=True, padx=18, pady=(0, 4))
         self.embed_text = ctk.CTkTextbox(
             self.text_frame,
-            height=136,
+            height=144,
             font=sans_font(self.root, T.FONT_SIZE_BODY),
             wrap="word",
             fg_color=T.CLR_FIELD,
@@ -767,7 +737,7 @@ class PhantomApp:
         self._editor_inner.edit_modified(False)
         self.embed_text.bind("<FocusOut>", self._on_text_changed)
 
-        self.counter_row = ctk.CTkFrame(payload_card, fg_color="transparent")
+        self.counter_row = ctk.CTkFrame(payload_body, fg_color="transparent")
         self.char_label = ctk.CTkLabel(
             self.counter_row,
             text="",
@@ -780,8 +750,8 @@ class PhantomApp:
 
         # The action bar: visible clipboard, selection and history actions
         # using quiet link buttons in a FlowRow so nothing clips at 980px.
-        self.editor_actions = self.editor_actions_row = FlowRow(payload_card)
-        self.editor_actions.pack(fill="x", padx=18, pady=(0, 12))
+        self.editor_actions = self.editor_actions_row = FlowRow(payload_body)
+        self.editor_actions.pack(fill="x", padx=18, pady=(0, 8))
         self.editor_paste_button = self.editor_actions.add(
             link_button(self.editor_actions, self.root, "", self._editor_paste)
         )
@@ -819,11 +789,11 @@ class PhantomApp:
             (self.clear_field_button, "btn_clear_field"),
         ):
             self.binder.bind(widget, key)
-        self.line_hint = hint_label(payload_card, self.root, "", wrap=620)
+        self.line_hint = hint_label(payload_body, self.root, "", wrap=620)
         self.line_hint.pack(fill="x", padx=18, pady=(0, 8))
         self.line_hint.pack_forget()
 
-        self.file_frame = inset_panel(payload_card, border_width=1)
+        self.file_frame = inset_panel(payload_body, border_width=1)
         self.file_frame.grid_columnconfigure(0, weight=1)
         secret_copy = ctk.CTkFrame(self.file_frame, fg_color="transparent")
         secret_copy.grid(row=0, column=0, sticky="ew", padx=(14, 10), pady=12)
@@ -854,6 +824,40 @@ class PhantomApp:
         )
         self.secret_button.grid(row=0, column=1, padx=(0, 14), pady=12, sticky="e")
         self._seat_drop_zone("secret", self.file_frame)
+
+        capacity_info = inset_panel(payload_card)
+        capacity_info.pack(fill="x", padx=18, pady=(0, 12))
+        cap_strip = ctk.CTkFrame(capacity_info, fg_color="transparent")
+        cap_strip.pack(fill="x", padx=12, pady=(8, 2))
+        cap_strip.grid_columnconfigure(0, weight=1)
+        self.usage_label = ctk.CTkLabel(
+            cap_strip,
+            text="",
+            font=sans_font(self.root, T.FONT_SIZE_LABEL),
+            text_color=T.CLR_MUTED,
+            anchor="w",
+        )
+        self.usage_label.grid(row=0, column=0, sticky="w")
+        self.capacity_label = value_label(cap_strip, self.root, "", mono=True)
+        self.capacity_label.grid(row=0, column=1, padx=(10, 0), sticky="e")
+        self.fill_bar = ctk.CTkProgressBar(
+            capacity_info,
+            height=5,
+            corner_radius=3,
+            progress_color=T.CLR_ACCENT,
+            fg_color=T.CLR_PROGRESS_TROUGH,
+        )
+        self.fill_bar.set(0)
+        self.fill_bar.pack(fill="x", padx=12, pady=(2, 3))
+        self.capacity_panel = value_label(capacity_info, self.root, "", mono=True)
+        self.capacity_panel.pack(fill="x", padx=12, pady=(0, 1))
+        self.capacity_note = hint_label(capacity_info, self.root, "", wrap=620)
+        self.capacity_note.pack(fill="x", padx=12, pady=(0, 2))
+        self.binder.bind(self.capacity_note, "cap_note")
+        self.notice_label = hint_label(capacity_info, self.root, "", wrap=620)
+        self.notice_label.pack(fill="x", padx=12, pady=(0, 1))
+        self.format_label = hint_label(capacity_info, self.root, "", wrap=620)
+        self.format_label.pack(fill="x", padx=12, pady=(0, 8))
 
         # Step 3: password card ---------------------------------------------
         password_card = card(scroll)
@@ -1566,7 +1570,10 @@ class PhantomApp:
         for name in ("dnd_carrier_hint", "dnd_stego_hint", "dnd_secret_hint"):
             hint = getattr(self, name, None)
             if hint is not None:
-                hint.pack_forget()
+                if hint.winfo_manager() == "grid":
+                    hint.grid_forget()
+                else:
+                    hint.pack_forget()
 
     def _render_all_labels(self) -> None:
         self._render_language_labels()
