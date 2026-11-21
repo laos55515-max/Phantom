@@ -70,7 +70,19 @@ jobs:
         env:
           PYTHONPATH: src
       - name: Tests (headless, without a display)
-        run: python -m pytest -ra -m "not gui"
+        # The log is echoed as annotations: Actions log downloads are not always
+        # reachable, and "Process completed with exit code 1" names no test.
+        run: |
+          set +e
+          set -o pipefail
+          python -m pytest -ra -m "not gui" 2>&1 | tee pytest.log
+          code=${PIPESTATUS[0]}
+          awk '/^(FAILED|ERROR) / { print "::error::test: " $0 }' pytest.log | head -25
+          if [ "$code" -ne 0 ]; then
+            awk '/^=+ .*(short test summary|FAILURES|ERRORS)/ { print "::warning::summary: " $0 }' \
+              pytest.log | head -5
+          fi
+          exit "$code"
         env:
           MPLBACKEND: Agg
       - name: GUI smoke tests (Xvfb)

@@ -32,6 +32,15 @@ All notable changes to PHANTOM are recorded here. The format follows
   The TXT export keeps using the payload bytes and is unchanged;
   `tools/smoke_editor_capacity.py` prints both views so the difference stays
   measured.
+- **What Tk does to non-ASCII is measured, gated and reported separately.** A
+  260 000-character Cyrillic document came back from the pasteboard as Latin-1 and
+  every emoji in a 37 800-character result became four characters: Tk converts on
+  both sides of `NSPasteboard`, so a copied non-ASCII payload is not what another
+  application pastes. The window asks the exact reader for the payload shapes where
+  this was measured, and the footer says *"not exact — use the file"* instead of
+  *"copied"*. `tools/smoke_editor_capacity.py` gates what PHANTOM controls (the
+  window's own value, byte for byte) and prints the conversion as a `note` with the
+  diff, counted in its `SUMMARY`.
 - **A failing step no longer loses the record of its own exit code.** GitHub runs
   every `run:` block with `bash -e -o pipefail`, so the GUI job's `ci/status.tsv` was
   never created (verdict exit 2) and the Tk 9.1 job's two *failing* steps were the
@@ -43,7 +52,10 @@ All notable changes to PHANTOM are recorded here. The format follows
   own watchdog cannot fire, so the run ended at the 150-second cap with no `SUMMARY`
   line — and the job was green because that timeout was swallowed. `profile_resize.py`
   grew `--skip-fullscreen` for the gate run, and the phase is probed on its own where
-  a stall is the finding.
+  a stall is the finding. The next run showed the tool then stops on its *exit* path
+  as well, after the numbers are printed and before the process returns: `finish()`
+  now flushes and exits with the measurement, so the gate sees the `SUMMARY` it
+  measured instead of a timeout.
 - **The crash that leaves no traceback is readable now.** `tools/parse_crash_report.py`
   prints the faulting thread of a macOS `.ips` report with symbols, and
   `tools/diagnose_tk_crash.py` runs one candidate per process — bare Tk, CustomTkinter,

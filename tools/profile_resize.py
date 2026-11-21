@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import os
 import sys
 import time
 import tkinter as tk
@@ -311,18 +312,19 @@ def run(
                 f"handler_ms={values['handler_ms']:.1f} pass_ms={values['pass_ms']:.1f}",
                 flush=True,
             )
-        # Not ``_on_close``: it asks a modal question when a job is running, and a
-        # modal dialog in CI waits for a click nobody makes.
-        for token_name in ("_refit_token", "_layout_token", "_poll_token", "_theme_token"):
-            token = getattr(app, token_name, None)
-            if token is not None:
-                with contextlib.suppress(tk.TclError):
-                    root.after_cancel(token)
-                setattr(app, token_name, None)
-        # ``quit`` and not ``after(120, destroy)``: a window whose reflow feeds its own
-        # ``<Configure>`` handler never lets the queue empty, and a timer scheduled
-        # behind that stream is not something to rely on.
-        root.quit()
+        # The measurement is on stdout and flushed: leave now.  Measured on the macOS
+        # runner, the exit path past this point (``quit``, ``destroy``, the Tcl
+        # teardown) can hang for longer than any cap, and a hang *after* the numbers
+        # must not turn a finished measurement into a timeout — that is the shape
+        # this job had for months without anyone seeing it.
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os._exit(0)
+
+        # Everything below this point — cancelling the app's timers, ``quit``,
+        # ``destroy``, the Tcl teardown — used to run here.  Measured on the macOS
+        # runner, the exit path past the numbers can hang for longer than any cap,
+        # and a hang *after* the measurement must not turn it into a timeout.
 
     # The build is not the subject: start counting once the window has settled.
     def begin() -> None:

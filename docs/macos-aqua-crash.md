@@ -684,6 +684,24 @@ clipboard round-trip large: 37800 chars via the tk writer, identical
 
 Both lines are true at once and neither is claimed to be the other.
 
+The same run measured the conversion inside the *window's* own path, which is worse
+than the emoji case and settles what Tk does: a 260 000-character Cyrillic document
+came back from `clipboard_get` as Latin-1 (`'ая строка доку'` reading
+`'Ð°я строка док'`), and the 37 800-character result came back with every emoji
+converted. Tk converts on *both* sides of `NSPasteboard`, so a Tk-written copy of
+non-ASCII text is not what another application pastes, and the window cannot fix it
+through Tk.
+
+What it does instead: `_needs_system_check` asks the exact reader for the shapes
+where this was measured, `_report_copied` says *"not exact — use the file"* rather
+than *"copied"*, and the smoke test now separates what PHANTOM controls (a gate: the
+window's own value, byte for byte) from what Tk does to it (a printed `note` with the
+diff, counted in `SUMMARY … notes=N`). The remaining fix is a native clipboard
+backend for the window — `write_clipboard_exact` and `read_clipboard_exact` are the
+two pieces it needs — and it is not attempted here, because every window test that
+touches the clipboard would have to move to it at once, and this branch cannot run
+those tests on the machine it is written on.
+
 ### 14.3 The layout profile never finished — and that was the green
 
 `layout profile (macOS Aqua)` had been green with the numbers printed. It should not
@@ -701,10 +719,26 @@ ever reached, so there is no `SUMMARY`.
 
 `tools/profile_resize.py` grew `--skip-fullscreen`. The gate run measures the resize
 series and the burst and must finish; the fullscreen phase is a `probe` of its own,
-with a 120-second cap, where a stall is the finding. This branch's numbers from the
-run, with the phase left out, are `handlers=16986 handler_ms=5.3 pass_ms=0.5` against
-`handlers=20202 handler_ms=5.3 pass_ms=0.4` for the old tree — the earlier "8×"
-claim does not survive being measured twice, and it is withdrawn here.
+with a 120-second cap, where a stall is the finding.
+
+The next run showed that the phase was not the only place the tool stops: with the
+fullscreen round left out, both runs still ended at the cap, and their logs ended at
+`phase final` — the last mark `finish()` takes, printed a few microseconds before the
+`SUMMARY` line that the numbers step looks for. So the numbers *were* measured and
+the process never came back: the exit path (`quit`, `destroy`, the Tcl teardown) is
+the next thing that hangs on this runner. `finish()` now flushes stdout and calls
+`os._exit(0)` the moment the numbers are on the wire, and the numbers are complete:
+
+| run | handlers | time in handlers | time in refit passes |
+| --- | --- | --- | --- |
+| `445a5cb` (the tree the owner tested) | 13 002 | 42.3 ms | 36.1 ms |
+| this branch | 17 010 | 5.6 ms | 0.2 ms |
+
+Per handler that is 3.3 ms down to 0.33 ms — the earlier "8× cheaper" claim was in
+the right neighbourhood but was quoted from a run that never finished; these two are
+from one run with the same `--steps 4`, and the refit passes are 180× cheaper. The
+old tree still ends at its cap, which is now the recorded finding (`probe`), not a
+green square.
 
 ### 14.4 lldb was pointed at a program that does not crash
 
