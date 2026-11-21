@@ -7,6 +7,8 @@ pass would hide a broken Tk layer.
 
 from __future__ import annotations
 
+import subprocess
+import sys
 import threading
 import time
 from contextlib import suppress
@@ -19,46 +21,46 @@ from phantom.core import constants as C
 pytestmark = pytest.mark.gui
 
 
-#: The root the availability probe opened.  Kept alive on purpose — see below.
-_PROBE_ROOT: object | None = None
-
-
 def _tk_usable() -> tuple[bool, str]:
-    """Can this build open a display?  The probe root is **not** destroyed.
+    """Can this build open a display?  Asked in a **child process**.
 
-    On Aqua under Tk 9 this matters, and it is measured rather than guessed.  The
-    ``.ips`` report of the ``exit 139`` names Tk's own idle handler:
+    On Aqua under Tk 9 this is not a detail.  The ``.ips`` report of the ``exit 139``
+    names Tk's own idle handler:
 
         Tk_MacOSXGetTkWindow ← showRootWindow ← TclServiceIdle ← Tcl_DoOneEvent
         SIGTRAP inside objc_opt_respondsToSelector (a message to a freed object)
+        EXC_BAD_ACCESS, KERN_INVALID_ADDRESS at 0x170
 
-    Tk's Aqua menu code arms an idle callback for the application menu bar that
-    points at the window of the interpreter which armed it.  Destroy that
-    interpreter — which is what ``root.destroy()`` here used to do, before a single
-    test had run — and the *next* interpreter to service idles runs the callback
-    against freed memory.  A process that only ever creates and destroys windows
-    therefore dies at a random point, which is exactly what CI showed: the same
-    suite crashed at the DnD test, then at the theme test, and a run of one test
-    alone crashed once and passed once.
+    Tk's Aqua menu code arms an idle callback for the application menu bar pointing at
+    the window of the interpreter that armed it.  Destroy that interpreter and the
+    callback stays on the thread's idle list; the next interpreter to service idles
+    runs it against freed memory.  A probe that opened a root here and destroyed it
+    therefore armed the fault before a single test had run — measured: one test alone
+    crashed once in three runs, and keeping the probe root alive fixed that but put a
+    second, hidden root in front of every test (it made the theme test hang and the
+    touchpad test scroll the wrong way on 8.6).
 
-    Keeping the probe alive costs one hidden window per process and removes the
-    first stale pointer; ``PHANTOM_GUI_CHUNK=1`` in the Tk 9.1 job removes the
-    cross-test ones (docs/macos-aqua-crash.md §15).
+    A child process answers the same question with no interpreter left behind.
     """
-    global _PROBE_ROOT  # noqa: PLW0603 - one probe per process, by design
     try:
-        import tkinter
+        import tkinter  # noqa: F401 - the question is whether it imports here
     except ImportError as exc:
         return False, f"tkinter is not installed: {exc}"
+    probe = "import tkinter; tkinter.Tk()"
     try:
-        _PROBE_ROOT = tkinter.Tk()
-    except Exception as exc:  # noqa: BLE001 - no display, or Tk rejects the connection
-        return False, f"Tk cannot open a display: {exc}"
-    with suppress(Exception):
-        _PROBE_ROOT.withdraw()  # type: ignore[attr-defined]
-    return True, ""
-
-
+        done = subprocess.run(
+            [sys.executable, "-c", probe],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:  # pragma: no cover - no python?
+        return False, f"could not ask a child process about Tk: {exc}"
+    if done.returncode == 0:
+        return True, ""
+    reason = (done.stderr or done.stdout or "no output").strip().splitlines()
+    return False, f"Tk cannot open a display: {reason[-1] if reason else 'no output'}"
 TK_OK, TK_REASON = _tk_usable()
 
 if not TK_OK:  # pragma: no cover - environment dependent

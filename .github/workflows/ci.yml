@@ -336,7 +336,12 @@ jobs:
               print(f"::warning::callback: {line.strip()[:900]}")
           if noise:
               print(f"::notice::callback-noise: {len(noise)} lines")
-          for line in lines[-3:]:
+          # A pytest-timeout kill leaves no `FAILED` line: without this the step just
+          # said "exit code 1" and named nothing (measured on run 44857802606).
+          stalls = [line for line in lines if "Timeout" in line or "+++ " in line]
+          if stalls:
+              print(f"::error::stalls: {' ¦ '.join(stalls)[:2000]}")
+          for line in lines[-6:]:
               print(f"::notice::tail: {line[:900]}")
           print(f"::notice::gui-macos.log: {len(lines)} lines, {len(failures)} failing tests")
           # The editor matrix: every ok/FAIL line the diagnostic printed, in full.

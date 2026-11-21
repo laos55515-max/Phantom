@@ -887,8 +887,12 @@ root: `tests/test_gui.py` opened a `tkinter.Tk()` at import and **destroyed** it
 process began with an already-freed interpreter and the first test's loop serviced its
 stale menu idle. Two changes followed, both measured by the table above:
 
-* the availability probe keeps its root **alive** for the process (`_PROBE_ROOT`); it
-  costs one hidden window and removes the first stale pointer;
+* the availability probe stops opening a root **in this process**: it asks a child
+  (`python -c "import tkinter; tkinter.Tk()"`), so the test process never destroys an
+  interpreter before its first test. Keeping the probe root alive instead was tried
+  and rejected — it fixed the crash but put a second, hidden root in front of every
+  test, which made the theme test hang and the touchpad test scroll the wrong way on
+  Tk 8.6, where the suite had been green;
 * the Tk 9.1 job runs **one test per process** (`PHANTOM_GUI_CHUNK=1`), so nothing
   ever services an idle belonging to a destroyed interpreter: the last thing a chunk
   process does is the destroy, and then it exits.
