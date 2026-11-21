@@ -918,6 +918,18 @@ chunks of 1, worst exit 0`, `no crash report was written by this job`. All seven
 of that run are green, including `gui (macOS Aqua)` on Tk 8.6.16 with the whole suite
 in one process.
 
+One hole was left in the verdict itself, and it is closed here: a step that is skipped
+writes no row, so counting the rows that *are* present cannot see a missing one. Measured
+against `tools/ci_verdict.py`: a `ci/status.tsv` with every other row green and
+`gui suite (tk9)` absent returned 0. The tool now takes `--require NAME` for every
+mandatory step, and an absent one is a failure that names itself
+(`::error::missing: gui suite (tk9)`). The Tk 9.1 job requires its five gate rows
+(`theme smoke`, `crash diagnosis`, `gui suite (tk9)`, `editor smoke`, `crash reports`),
+the Tk 8.6 job its two, and
+`tests/test_repo.py::test_the_macos_jobs_require_every_gate_row_they_write` keeps each
+list equal to the gate rows that job writes — a new mandatory step, or a renamed one,
+fails a test instead of passing quietly.
+
 ### 15.6 What per-test isolation exposed
 
 Once every test ran on its own, four of them failed — and none had ever run on

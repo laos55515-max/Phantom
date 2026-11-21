@@ -122,6 +122,66 @@ def test_a_command_that_never_started_is_not_a_test_failure(code: int) -> None:
     assert any("::error::unstarted: x" in line for line in lines)
 
 
+def test_a_missing_mandatory_row_fails_the_run_even_when_every_row_is_green(
+    tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The measured hole: all green, ``gui suite (tk9)`` never written, exit 0.
+
+    A step that is skipped writes nothing, so counting the rows that are there
+    cannot see it: the file had five green rows and the one that decides the
+    platform was absent.
+    """
+    path = tmp_path / "incomplete.tsv"
+    path.write_text(
+        "theme smoke\t0\tgate\neditor smoke\t0\tgate\ncrash reports\t0\tgate\n",
+        encoding="utf-8",
+    )
+    assert ci_verdict.main([str(path)]) == 0, "without a requirement the rows are green"
+    capsys.readouterr()
+
+    code = ci_verdict.main([str(path), "--require", "gui suite (tk9)"])
+    out = capsys.readouterr().out
+    assert code == 1, "a mandatory step that recorded nothing cannot pass the run"
+    assert "::error::missing: gui suite (tk9)" in out, "the failure must name the step"
+    assert "1 of 1 required steps missing" in out
+
+
+def test_a_required_row_that_is_present_keeps_the_run_green(tmp_path: pathlib.Path) -> None:
+    path = tmp_path / "complete.tsv"
+    path.write_text(
+        "gui suite (tk9)\t0\tgate\ncrash reports\t0\tgate\n", encoding="utf-8"
+    )
+    assert ci_verdict.main([str(path), "--require", "gui suite (tk9)", "--require", "crash reports"]) == 0
+
+
+def test_a_required_name_must_match_exactly() -> None:
+    """``gui suite`` is not ``gui suite (tk9)``: the near miss is the whole point."""
+    steps = _steps(("gui suite", 0, "gate"))
+    acceptable, lines = ci_verdict.verdict(steps, ["gui suite (tk9)"])
+    assert acceptable is False
+    assert any("::error::missing: gui suite (tk9)" in line for line in lines)
+    assert ci_verdict.missing_rows(steps, ["gui suite"]) == []
+
+
+def test_every_missing_name_is_reported_once_and_in_order() -> None:
+    steps = _steps(("theme smoke", 0, "gate"))
+    required = ["gui suite (tk9)", "theme smoke", "crash reports"]
+    assert ci_verdict.missing_rows(steps, required) == ["gui suite (tk9)", "crash reports"]
+    acceptable, lines = ci_verdict.verdict(steps, required)
+    assert acceptable is False
+    missing = [line for line in lines if "::error::missing: " in line]
+    assert len(missing) == 2
+    assert "gui suite (tk9)" in missing[0] and "crash reports" in missing[1]
+
+
+def test_a_crash_and_a_missing_row_are_both_reported() -> None:
+    """Neither may mask the other: the run has to say everything that went wrong."""
+    acceptable, lines = ci_verdict.verdict(_steps(("suite", -11, "gate")), ["gui suite (tk9)"])
+    assert acceptable is False
+    assert any("::error::crash: suite" in line for line in lines)
+    assert any("::error::missing: gui suite (tk9)" in line for line in lines)
+
+
 def test_the_table_reaches_the_pr_when_annotations_are_on(
     tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

@@ -6,6 +6,16 @@ All notable changes to PHANTOM are recorded here. The format follows
 
 ## [Unreleased]
 
+- **A green run that verified nothing is now red.** `tools/ci_verdict.py` counted the
+  rows in `ci/status.tsv`, so a step that was skipped — and therefore wrote no row —
+  could not be told apart from one that passed: with every other row green and
+  `gui suite (tk9)` absent, the verdict was 0. Mandatory steps are now named with
+  `--require`, an absent one fails the job with its own name
+  (`::error::missing: gui suite (tk9)`), and the Tk 9.1 job requires all five of its
+  gate rows. `tests/test_repo.py` keeps each job's list equal to the gate rows it
+  writes.
+
+
 ### Fixed
 
 - **CI can no longer call a segmentation fault a success.** A step marked

@@ -367,7 +367,9 @@ jobs:
           # GitHub's shell is ``bash -e -o pipefail``: without this, a
           # failing command ends the step before its exit code is recorded.
           set +e
-          python tools/ci_verdict.py ci/status.tsv --annotate
+          python tools/ci_verdict.py ci/status.tsv --annotate \
+            --require 'gui suite' \
+            --require 'editor smoke'
 
   gui-tk9:
     # Tcl/Tk 9.1 on macOS, next to the 8.6 job: the build the theme switch segfaulted
@@ -717,7 +719,12 @@ jobs:
           # GitHub's shell is ``bash -e -o pipefail``: without this, a
           # failing command ends the step before its exit code is recorded.
           set +e
-          python tools/ci_verdict.py ci/status.tsv --annotate
+          python tools/ci_verdict.py ci/status.tsv --annotate \
+            --require 'theme smoke' \
+            --require 'crash diagnosis' \
+            --require 'gui suite (tk9)' \
+            --require 'editor smoke' \
+            --require 'crash reports'
 
   layout-profile:
     # The measurement job for the resize work: the same profiling tool, the same

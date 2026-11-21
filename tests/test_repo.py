@@ -189,3 +189,37 @@ def test_the_profile_gate_leaves_out_the_phase_that_never_returns() -> None:
     # numbers still gets a row of its own.
     assert 'measured = "SUMMARY " in output' in text
     assert "exits cleanly" in text
+
+
+def test_the_macos_jobs_require_every_gate_row_they_write() -> None:
+    """A green run is not a run that verified anything: the rows must be there.
+
+    Measured: with every other row green and `gui suite (tk9)` absent from
+    `ci/status.tsv`, `tools/ci_verdict.py` returned 0 — a step that is skipped writes
+    nothing, and counting the rows that *are* there cannot see the one that is not.
+    Both macOS jobs now name their mandatory rows with `--require`, and this test keeps
+    that list equal to the `gate` rows the job writes, so a new mandatory step cannot
+    be added without a name (and a renamed step cannot leave a stale one behind).
+    """
+    text = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    jobs_text = text.split("\njobs:\n", 1)[1]
+    jobs = {
+        job.split(":", 1)[0]: job
+        for job in re.split(r"^  (?=[a-z][a-z0-9-]*:\s*$)", jobs_text, flags=re.MULTILINE)
+        if job.strip()
+    }
+    for name in ("gui-macos", "gui-tk9"):
+        job = jobs[name]
+        written = set(
+            re.findall(r"printf '([^']+)\\t%s\\t(gate|diagnostic|probe)\\n'", job)
+        )
+        gates = {row for row, kind in written if kind == "gate"}
+        required = set(re.findall(r"--require '([^']+)'", job))
+        assert gates, f"{name} writes no gate rows at all"
+        assert required == gates, (
+            f"{name}: mandatory rows {sorted(gates - required)} are never required as present; "
+            f"required rows that no step writes: {sorted(required - gates)}"
+        )
+        # The decisive row of this platform must be among them, by name.
+        assert ("gui suite (tk9)" if name == "gui-tk9" else "gui suite") in required
+

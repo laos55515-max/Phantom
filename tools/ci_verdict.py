@@ -19,9 +19,23 @@ Kinds, and what a non-zero code means for each:
                 never finishes a resize): a failure or a timeout is tolerated and
                 printed; a crash is not.
 
+A row that was never written
+---------------------------
+A step that was skipped — because an earlier step failed, or because a condition did
+not hold — leaves no row, and a *missing* row cannot be told apart from a green one by
+counting what is there.  Measured: with every other row green and ``gui suite (tk9)``
+absent, the verdict was 0.  So the steps that must always report are named on the
+command line with ``--require``, and an absent one is a failure that names itself::
+
+    python tools/ci_verdict.py ci-status.tsv \
+        --require 'gui suite (tk9)' --require 'crash reports'
+
+``tests/test_repo.py`` keeps that list equal to the gate rows the job actually writes,
+so a new mandatory step cannot be added without a name here.
+
 Usage::
 
-    python tools/ci_verdict.py ci-status.tsv
+    python tools/ci_verdict.py ci-status.tsv [--require NAME ...] [--annotate]
 
 Exit codes: 0 the run is acceptable, 1 it is not, 2 the file is missing or empty.
 """
@@ -31,6 +45,7 @@ from __future__ import annotations
 import argparse
 import pathlib
 import sys
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Final
 
@@ -113,9 +128,20 @@ def describe(step: Step) -> str:
     return f"failed (exit {step.code})"
 
 
-def verdict(steps: list[Step]) -> tuple[bool, list[str]]:
-    """``(acceptable, lines)``: the lines are the annotations, in order of weight."""
+def missing_rows(steps: list[Step], required: Sequence[str]) -> list[str]:
+    """The mandatory step names that recorded nothing, in the order asked for."""
+    seen = {step.name for step in steps}
+    return [name for name in required if name not in seen]
+
+
+def verdict(steps: list[Step], required: Sequence[str] = ()) -> tuple[bool, list[str]]:
+    """``(acceptable, lines)``: the lines are the annotations, in order of weight.
+
+    ``required`` names steps that must have written a row: a job whose decisive step
+    was skipped is not a job that passed, and the counts alone cannot say so.
+    """
     lines: list[str] = []
+    unseen = missing_rows(steps, required)
     crashes = [step for step in steps if step.crashed]
     unstarted = [step for step in steps if step.code in BROKEN_CODES]
     timed_out = [step for step in steps if step.broken and not step.crashed and step.code != 0]
@@ -127,6 +153,11 @@ def verdict(steps: list[Step]) -> tuple[bool, list[str]]:
         lines.append(f"::error::crash: {step.name} {describe(step)} — a signal is never a pass")
     for step in unstarted:
         lines.append(f"::error::unstarted: {step.name} {describe(step)}")
+    for name in unseen:
+        lines.append(
+            f"::error::missing: {name} — a mandatory step recorded no exit code "
+            f"(it was skipped, or it died before it could write one)"
+        )
     for step in timed_out:
         level = "warning" if step.acceptable else "error"
         lines.append(f"::{level}::timeout: {step.name} {describe(step)}")
@@ -140,15 +171,24 @@ def verdict(steps: list[Step]) -> tuple[bool, list[str]]:
         )
     lines.append(
         f"::notice::verdict: {len(steps)} steps, {len(crashes)} crashed, "
-        f"{len(blocking)} blocking failures, {len(tolerated)} tolerated"
+        f"{len(blocking)} blocking failures, {len(tolerated)} tolerated, "
+        f"{len(unseen)} of {len(required)} required steps missing"
     )
     stuck = any(step.broken and not step.acceptable and step.code != 0 for step in steps)
-    return (not crashes and not unstarted and not blocking and not stuck), lines
+    acceptable = not crashes and not unstarted and not blocking and not stuck and not unseen
+    return acceptable, lines
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("status", help="the TSV written by the steps")
+    parser.add_argument(
+        "--require",
+        action="append",
+        default=[],
+        metavar="NAME",
+        help="a step that must have written a row; repeat for each one",
+    )
     parser.add_argument(
         "--annotate",
         action="store_true",
@@ -177,7 +217,7 @@ def main(argv: list[str] | None = None) -> int:
             # annotation: the table used to live only in the raw step log, so a row
             # that was never written could not be told apart from a row that passed.
             print(f"::notice::step: {step.name} — {step.kind} — {describe(step)}")
-    acceptable, lines = verdict(steps)
+    acceptable, lines = verdict(steps, args.require)
     for line in lines:
         print(line)
     return 0 if acceptable else 1
