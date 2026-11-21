@@ -171,6 +171,10 @@ def run(
         # SUMMARY line was never written, and the run ended at the cap "without a
         # measurement".  A helper that cannot take the keyword its callers use is not
         # a helper; the error handler below is what makes the next one loud.
+        # ``flush`` is accepted and dropped: callers pass it, ``print`` is already
+        # told to flush, and passing it twice raised "got multiple values for keyword
+        # argument 'flush'" inside the same Tk callback this comment is about.
+        kwargs.pop("flush", None)
         print(what, flush=True, **kwargs)  # type: ignore[arg-type]
 
     say(f"built: tk {tk.TkVersion}, tcl {tk.TclVersion}, flow rows {rows}")

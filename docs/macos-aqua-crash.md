@@ -733,7 +733,9 @@ Getting to the cause took four runs, and each run removed one wrong answer:
    Every run raised `TypeError: <lambda>() got an unexpected keyword argument
    'flush'` *inside a Tk callback*. Tk prints a callback exception and carries on, so
    the loop kept turning with nothing left to do, `SUMMARY` was never written, and the
-   job reported a timeout with no measurement. `say` takes the keyword now — and
+   job reported a timeout with no measurement. `say` takes the keyword now (it is
+   dropped rather than forwarded, because forwarding it produced the same mistake a
+   second time: `print() got multiple values for keyword argument 'flush'`) — and
    `root.report_callback_exception` is wired to print the traceback and exit non-zero,
    so the next swallowed callback failure fails the run instead of hanging it.
 
