@@ -12,39 +12,41 @@ from typing import Final, Literal
 
 AppearanceTuple = tuple[str, str]
 
-CLR_BG: Final[AppearanceTuple] = ("#F3F4F6", "#0B0F19")
-CLR_LAYER: Final[AppearanceTuple] = ("#EAECF1", "#0F1523")
-CLR_CARD: Final[AppearanceTuple] = ("#FFFFFF", "#151B2B")
-CLR_CARD_ALT: Final[AppearanceTuple] = ("#F3F4F6", "#1C2438")
-CLR_FIELD: Final[AppearanceTuple] = ("#FFFFFF", "#0D121E")
-CLR_BORDER: Final[AppearanceTuple] = ("#E5E7EB", "#1F2937")
-CLR_BORDER_ACTIVE: Final[AppearanceTuple] = ("#2563EB", "#3B82F6")
+CLR_BG: Final[AppearanceTuple] = ("#F5F6F8", "#15181E")
+CLR_LAYER: Final[AppearanceTuple] = ("#EAECEF", "#191D24")
+CLR_CARD: Final[AppearanceTuple] = ("#FFFFFF", "#1D2129")
+CLR_CARD_ALT: Final[AppearanceTuple] = ("#EBEEF3", "#262A33")
+CLR_FIELD: Final[AppearanceTuple] = ("#F1F3F6", "#12151B")
+CLR_BORDER: Final[AppearanceTuple] = ("#DCE1EA", "#282D38")
+CLR_BORDER_ACTIVE: Final[AppearanceTuple] = ("#0071E3", "#0A84FF")
 CLR_BORDER_OVER: Final[AppearanceTuple] = ("#93C5FD", "#1D4ED8")
 
-CLR_ACCENT: Final[AppearanceTuple] = ("#2563EB", "#2563EB")
-CLR_ACCENT_HOVER: Final[AppearanceTuple] = ("#1D4ED8", "#3B82F6")
-CLR_ACCENT_SOFT: Final[AppearanceTuple] = ("#2563EB", "#93B4FC")
-CLR_ACCENT_DIM: Final[AppearanceTuple] = ("#DBEAFE", "#1B2E4D")
+CLR_ACCENT: Final[AppearanceTuple] = ("#0071E3", "#0071E3")
+CLR_ACCENT_HOVER: Final[AppearanceTuple] = ("#0077ED", "#0A84FF")
+CLR_ACCENT_SOFT: Final[AppearanceTuple] = ("#0071E3", "#6CB6FF")
+CLR_ACCENT_DIM: Final[AppearanceTuple] = ("#DBEAFE", "#162942")
+CLR_ACCENT_BG: Final[AppearanceTuple] = ("#E8F2FF", "#162942")
 #: A disabled button keeps its shape but loses its accent: CustomTkinter only greys
 #: the caption, so an unavailable "save" still looked like a blue, clickable button.
-CLR_DISABLED_FILL: Final[AppearanceTuple] = ("#DCE3EE", "#1B2333")
+CLR_DISABLED_FILL: Final[AppearanceTuple] = ("#D6DCE6", "#232833")
 
-CLR_TEXT: Final[AppearanceTuple] = ("#111827", "#F9FAFB")
-CLR_TEXT_DIM: Final[AppearanceTuple] = ("#4B5563", "#9CA3AF")
-#: Secondary text: card headings, captions, the footer stage line.  These used to
-#: be one mid-grey for both modes, which is ~4.8:1 on a white card and only
-#: ~3.4:1 on the dark one — the mode where "the text melts into the card" was
-#: reported.  Now each mode gets its own value, both at WCAG AA or better.
+CLR_TEXT: Final[AppearanceTuple] = ("#111827", "#F3F5F8")
+CLR_TEXT_DIM: Final[AppearanceTuple] = ("#4B5563", "#A4ADBC")
+#: Secondary text: card headings, captions, the footer stage line.  Each mode
+#: gets its own value, both at WCAG AA or better on CLR_CARD and CLR_FIELD.
 CLR_MUTED: Final[AppearanceTuple] = ("#4B5563", "#9CA3AF")
 CLR_ON_ACCENT: Final[AppearanceTuple] = ("#FFFFFF", "#FFFFFF")
 
-CLR_GREEN: Final[AppearanceTuple] = ("#047857", "#34D399")
-CLR_RED: Final[AppearanceTuple] = ("#B91C1C", "#F87171")
-CLR_YELLOW: Final[AppearanceTuple] = ("#B45309", "#FBBF24")
+CLR_GREEN: Final[AppearanceTuple] = ("#047857", "#30D158")
+CLR_GREEN_BG: Final[AppearanceTuple] = ("#ECFDF5", "#172A21")
+CLR_RED: Final[AppearanceTuple] = ("#B91C1C", "#FF453A")
+CLR_RED_BG: Final[AppearanceTuple] = ("#FEF2F2", "#2C181C")
+CLR_YELLOW: Final[AppearanceTuple] = ("#B45309", "#FFD60A")
+CLR_YELLOW_BG: Final[AppearanceTuple] = ("#FFFBEB", "#2B2516")
 
-CLR_PROGRESS_TROUGH: Final[AppearanceTuple] = ("#E5E7EB", "#1A2233")
-CLR_SCROLL: Final[AppearanceTuple] = ("#D1D5DB", "#243044")
-CLR_SCROLL_HOVER: Final[AppearanceTuple] = ("#2563EB", "#3B82F6")
+CLR_PROGRESS_TROUGH: Final[AppearanceTuple] = ("#DCE1EA", "#232833")
+CLR_SCROLL: Final[AppearanceTuple] = ("#D1D5DB", "#2A303C")
+CLR_SCROLL_HOVER: Final[AppearanceTuple] = ("#0071E3", "#0A84FF")
 
 #: Type scale, in points, as the widgets ask for them.  One place instead of a
 #: literal at every call site: the 2026 pass raised body text to 14 and card

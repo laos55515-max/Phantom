@@ -1,0 +1,3918 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PHANTOM — Прототип macOS (все 4 экрана)</title>
+  <style>
+    :root {
+      --canvas-bg: #090b0f;
+      --window-bg: #15181e;
+      --toolbar-bg: rgba(25, 29, 36, 0.86);
+      --surface: rgba(255, 255, 255, 0.036);
+      --surface-inset: rgba(0, 0, 0, 0.28);
+      --surface-pill: rgba(255, 255, 255, 0.075);
+      --surface-pill-hover: rgba(255, 255, 255, 0.13);
+
+      --text: #f3f5f8;
+      --text-secondary: #9aa3b2;
+      --text-muted: #667085;
+
+      --accent: #0a84ff;
+      --accent-hover: #2492ff;
+      --accent-active: #0070e0;
+
+      --green: #30d158;
+      --green-soft: rgba(48, 209, 88, 0.1);
+      --amber: #ffd60a;
+      --red: #ff453a;
+      --red-soft: rgba(255, 69, 58, 0.12);
+
+      --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", "Helvetica Neue", Inter, system-ui, sans-serif;
+      --font-mono: "SF Mono", ui-monospace, Menlo, Monaco, Consolas, monospace;
+
+      --radius-window: 16px;
+      --radius-block: 14px;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html, body {
+      margin: 0;
+      padding: 0;
+      min-height: 100%;
+      background:
+        radial-gradient(900px 520px at 50% 8%, rgba(10, 132, 255, 0.08), transparent 70%),
+        var(--canvas-bg);
+      color: var(--text);
+      font-family: var(--font-sans);
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+    }
+
+    body {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 20px 20px 44px;
+      gap: 14px;
+    }
+
+    /* Studio demo-scenario bar outside the macOS window */
+    .proto-bar {
+      width: min(880px, 100%);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+      padding: 0 4px;
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+
+    .proto-bar__label {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      letter-spacing: 0.01em;
+    }
+
+    .proto-bar__dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--accent);
+      opacity: 0.9;
+    }
+
+    .proto-presets {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+
+    .proto-chip {
+      appearance: none;
+      border: 0;
+      background: rgba(255, 255, 255, 0.05);
+      color: var(--text-secondary);
+      font-family: var(--font-sans);
+      font-size: 11.5px;
+      font-weight: 500;
+      padding: 5px 10px;
+      border-radius: 999px;
+      cursor: pointer;
+      transition: background 140ms ease, color 140ms ease;
+    }
+
+    .proto-chip:hover:not(:disabled) {
+      background: rgba(255, 255, 255, 0.1);
+      color: var(--text);
+    }
+
+    .proto-chip:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
+    }
+
+    .proto-chip.is-active {
+      background: rgba(10, 132, 255, 0.18);
+      color: #7cc0ff;
+    }
+
+    /* macOS Window */
+    .mac-window {
+      width: min(880px, 100%);
+      background: var(--window-bg);
+      border-radius: var(--radius-window);
+      box-shadow:
+        0 0 0 1px rgba(255, 255, 255, 0.08),
+        0 32px 80px rgba(0, 0, 0, 0.68),
+        0 6px 18px rgba(0, 0, 0, 0.35);
+      overflow: hidden;
+      position: relative;
+    }
+
+    /* Unified macOS Titlebar */
+    .titlebar {
+      height: 58px;
+      padding: 0 20px;
+      background: var(--toolbar-bg);
+      backdrop-filter: blur(18px);
+      -webkit-backdrop-filter: blur(18px);
+      display: grid;
+      grid-template-columns: 1fr auto 1fr;
+      align-items: center;
+      gap: 12px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+    }
+
+    .titlebar__left {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      min-width: 0;
+    }
+
+    .traffic-lights {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-shrink: 0;
+    }
+
+    .tl {
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+      box-shadow: inset 0 0 0 0.5px rgba(0, 0, 0, 0.28);
+    }
+    .tl--close { background: #ff5f57; }
+    .tl--min { background: #febc2e; }
+    .tl--zoom { background: #28c840; }
+
+    .app-brand {
+      font-size: 13px;
+      font-weight: 600;
+      letter-spacing: 0.06em;
+      color: var(--text-secondary);
+      user-select: none;
+    }
+
+    /* 4-Tab Segmented Navigation */
+    .tabs {
+      display: inline-flex;
+      align-items: center;
+      background: rgba(0, 0, 0, 0.32);
+      padding: 3px;
+      border-radius: 10px;
+      gap: 2px;
+    }
+
+    .tab-btn {
+      appearance: none;
+      border: 0;
+      background: transparent;
+      color: var(--text-secondary);
+      font-family: var(--font-sans);
+      font-size: 13px;
+      font-weight: 500;
+      padding: 6px 14px;
+      border-radius: 7.5px;
+      cursor: pointer;
+      transition: background 150ms ease, color 150ms ease, box-shadow 150ms ease;
+      white-space: nowrap;
+    }
+
+    .tab-btn:hover:not(:disabled) {
+      color: var(--text);
+    }
+
+    .tab-btn:disabled {
+      opacity: 0.45;
+      cursor: not-allowed;
+    }
+
+    .tab-btn.is-active {
+      background: rgba(255, 255, 255, 0.13);
+      color: #ffffff;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3), inset 0 0.5px 0 rgba(255, 255, 255, 0.14);
+    }
+
+    .titlebar__right {
+      display: flex;
+      justify-content: flex-end;
+      align-items: center;
+    }
+
+    .crypto-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 11.5px;
+      color: var(--text-muted);
+      padding: 4px 10px;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.035);
+      user-select: none;
+      white-space: nowrap;
+    }
+
+    .crypto-pill svg {
+      width: 12px;
+      height: 12px;
+      opacity: 0.75;
+    }
+
+    /* Main Content Area */
+    .window-body {
+      padding: 24px 28px 26px;
+    }
+
+    .embed-stack {
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+
+    /* Borderless tonal step surface */
+    .step-block {
+      background: var(--surface);
+      border-radius: var(--radius-block);
+      padding: 18px 20px;
+      transition: background 160ms ease, box-shadow 160ms ease, opacity 160ms ease;
+    }
+
+    .step-block.is-dragover {
+      background: rgba(10, 132, 255, 0.1);
+      box-shadow: inset 0 0 0 1.5px rgba(10, 132, 255, 0.7);
+    }
+
+    .step-block.is-locked {
+      opacity: 0.62;
+      pointer-events: none;
+    }
+
+    .step-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 14px;
+      flex-wrap: wrap;
+    }
+
+    .step-title-wrap {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .step-num {
+      width: 22px;
+      height: 22px;
+      border-radius: 50%;
+      background: rgba(255, 255, 255, 0.08);
+      color: var(--text-secondary);
+      font-size: 12px;
+      font-weight: 600;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+      transition: background 180ms ease, color 180ms ease;
+    }
+
+    .step-block.is-done .step-num {
+      background: rgba(48, 209, 88, 0.18);
+      color: var(--green);
+    }
+
+    .step-title {
+      font-size: 14.5px;
+      font-weight: 600;
+      color: var(--text);
+      margin: 0;
+      letter-spacing: -0.01em;
+    }
+
+    .step-meta {
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+
+    /* Inline error & info banners */
+    .inline-error {
+      margin-top: 10px;
+      padding: 11px 13px;
+      border-radius: 10px;
+      background: var(--red-soft);
+      color: #ff9f99;
+      font-size: 12.5px;
+      line-height: 1.45;
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 10px;
+    }
+
+    .inline-error__body {
+      display: flex;
+      align-items: flex-start;
+      gap: 9px;
+    }
+
+    .inline-error__title {
+      font-weight: 600;
+      color: #ffd0cd;
+      margin-bottom: 2px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .inline-error svg {
+      flex-shrink: 0;
+      margin-top: 2px;
+      color: var(--red);
+    }
+
+    .inline-notice {
+      padding: 11px 14px;
+      border-radius: 10px;
+      background: rgba(255, 255, 255, 0.045);
+      color: var(--text-secondary);
+      font-size: 12.5px;
+      line-height: 1.45;
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+    }
+
+    .inline-notice svg {
+      flex-shrink: 0;
+      margin-top: 2px;
+      color: var(--text-muted);
+    }
+
+    /* Quiet secondary buttons */
+    .btn-quiet {
+      appearance: none;
+      border: 0;
+      background: var(--surface-pill);
+      color: var(--text);
+      font-family: var(--font-sans);
+      font-size: 13px;
+      font-weight: 500;
+      padding: 8px 14px;
+      border-radius: 9px;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      transition: background 140ms ease, transform 90ms ease;
+      white-space: nowrap;
+    }
+
+    .btn-quiet:hover:not(:disabled) {
+      background: var(--surface-pill-hover);
+    }
+
+    .btn-quiet:active:not(:disabled) {
+      transform: scale(0.985);
+    }
+
+    .btn-quiet:disabled {
+      opacity: 0.45;
+      cursor: not-allowed;
+    }
+
+    .btn-quiet--sm {
+      font-size: 12px;
+      padding: 6px 11px;
+      border-radius: 8px;
+    }
+
+    .btn-link {
+      appearance: none;
+      border: 0;
+      background: transparent;
+      color: var(--text-secondary);
+      font-family: var(--font-sans);
+      font-size: 12px;
+      font-weight: 500;
+      padding: 5px 8px;
+      border-radius: 7px;
+      cursor: pointer;
+      transition: color 140ms ease, background 140ms ease;
+    }
+
+    .btn-link:hover:not(:disabled) {
+      color: var(--text);
+      background: rgba(255, 255, 255, 0.06);
+    }
+
+    .btn-link:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
+    }
+
+    /* Dropzone & Selected File */
+    .drop-area {
+      background: var(--surface-inset);
+      border-radius: 11px;
+      padding: 18px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      flex-wrap: wrap;
+      cursor: pointer;
+      transition: background 150ms ease;
+    }
+
+    .drop-area:hover {
+      background: rgba(0, 0, 0, 0.36);
+    }
+
+    .drop-area__left {
+      display: flex;
+      align-items: center;
+      gap: 13px;
+      min-width: 0;
+    }
+
+    .file-tile {
+      width: 40px;
+      height: 40px;
+      border-radius: 10px;
+      background: rgba(255, 255, 255, 0.06);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--text-secondary);
+      flex-shrink: 0;
+    }
+
+    .file-tile--carrier {
+      background: rgba(10, 132, 255, 0.14);
+      color: #6cb6ff;
+    }
+
+    .file-tile--payload {
+      background: rgba(191, 90, 242, 0.14);
+      color: #d98aff;
+    }
+
+    .drop-area__copy {
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+    }
+
+    .drop-area__title {
+      font-size: 13.5px;
+      font-weight: 500;
+      color: var(--text);
+    }
+
+    .drop-area__sub {
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+
+    .sample-row {
+      margin-top: 10px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+
+    .sample-row__label {
+      font-size: 11.5px;
+      color: var(--text-muted);
+      margin-right: 2px;
+    }
+
+    .sample-pill {
+      appearance: none;
+      border: 0;
+      background: rgba(255, 255, 255, 0.045);
+      color: var(--text-secondary);
+      font-family: var(--font-mono);
+      font-size: 11px;
+      padding: 4px 9px;
+      border-radius: 6px;
+      cursor: pointer;
+      transition: background 140ms ease, color 140ms ease;
+    }
+
+    .sample-pill:hover:not(:disabled) {
+      background: rgba(255, 255, 255, 0.1);
+      color: var(--text);
+    }
+
+    .sample-pill--reject {
+      color: #c88d8b;
+    }
+
+    .sample-pill--reject:hover:not(:disabled) {
+      background: rgba(255, 69, 58, 0.14);
+      color: #ffb1ad;
+    }
+
+    .selected-file {
+      background: var(--surface-inset);
+      border-radius: 11px;
+      padding: 14px 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 11px;
+    }
+
+    .selected-file__row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+
+    .selected-file__info {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      min-width: 0;
+      flex: 1;
+    }
+
+    .selected-file__text {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      min-width: 0;
+    }
+
+    .selected-file__tag {
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      color: var(--text-muted);
+    }
+
+    .selected-file__name {
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--text);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .selected-file__details {
+      font-size: 12px;
+      color: var(--text-secondary);
+    }
+
+    .selected-file__actions {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-shrink: 0;
+    }
+
+    .cap-wrap {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .cap-track {
+      height: 4px;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.08);
+      overflow: hidden;
+    }
+
+    .cap-fill {
+      height: 100%;
+      width: 0%;
+      border-radius: 999px;
+      background: var(--green);
+      transition: width 200ms ease, background 200ms ease;
+    }
+
+    .cap-fill.is-warn { background: var(--amber); }
+    .cap-fill.is-over { background: var(--red); }
+
+    .cap-meta {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-size: 11.5px;
+      color: var(--text-muted);
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+
+    .cap-meta__status.is-ok { color: var(--green); }
+    .cap-meta__status.is-over { color: var(--red); font-weight: 500; }
+
+    .cap-demo-note {
+      font-size: 11px;
+      color: var(--text-muted);
+      opacity: 0.85;
+    }
+
+    /* Step 2: Prominent Text / File Switcher */
+    .mode-switch {
+      display: inline-flex;
+      align-items: center;
+      background: rgba(0, 0, 0, 0.36);
+      padding: 4px;
+      border-radius: 11px;
+      gap: 4px;
+      box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.05);
+    }
+
+    .mode-switch__btn {
+      appearance: none;
+      border: 0;
+      background: transparent;
+      color: var(--text-secondary);
+      font-family: var(--font-sans);
+      font-size: 13px;
+      font-weight: 600;
+      padding: 7px 18px;
+      border-radius: 8px;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      transition: background 150ms ease, color 150ms ease, box-shadow 150ms ease;
+    }
+
+    .mode-switch__btn:hover:not(:disabled) {
+      color: var(--text);
+    }
+
+    .mode-switch__btn.is-active {
+      background: #f2f4f8;
+      color: #11141a;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+    }
+
+    .mode-switch__btn svg {
+      width: 14px;
+      height: 14px;
+    }
+
+    /* Compact segmented controls (Settings) */
+    .seg-control {
+      display: inline-flex;
+      align-items: center;
+      background: rgba(0, 0, 0, 0.34);
+      padding: 3px;
+      border-radius: 9px;
+      gap: 2px;
+      flex-wrap: wrap;
+    }
+
+    .seg-control__btn {
+      appearance: none;
+      border: 0;
+      background: transparent;
+      color: var(--text-secondary);
+      font-family: var(--font-sans);
+      font-size: 12.5px;
+      font-weight: 500;
+      padding: 6px 13px;
+      border-radius: 7px;
+      cursor: pointer;
+      transition: background 140ms ease, color 140ms ease;
+      white-space: nowrap;
+    }
+
+    .seg-control__btn:hover {
+      color: var(--text);
+    }
+
+    .seg-control__btn.is-active {
+      background: rgba(255, 255, 255, 0.14);
+      color: #ffffff;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.28);
+    }
+
+    /* Text Editor Mode */
+    .text-editor-wrap {
+      background: var(--surface-inset);
+      border-radius: 11px;
+      padding: 12px 14px 10px;
+      transition: box-shadow 150ms ease;
+    }
+
+    .text-editor-wrap:focus-within {
+      box-shadow: inset 0 0 0 1.5px rgba(10, 132, 255, 0.65);
+    }
+
+    .text-editor {
+      width: 100%;
+      min-height: 98px;
+      resize: vertical;
+      border: 0;
+      outline: 0;
+      background: transparent;
+      color: var(--text);
+      font-family: var(--font-sans);
+      font-size: 13.5px;
+      line-height: 1.5;
+    }
+
+    .text-editor::placeholder {
+      color: var(--text-muted);
+    }
+
+    .text-editor[readonly] {
+      color: #e6ebf2;
+    }
+
+    .text-editor__foot {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-top: 8px;
+      padding-top: 8px;
+      border-top: 1px solid rgba(255, 255, 255, 0.045);
+      font-size: 11.5px;
+      color: var(--text-muted);
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    /* File Attachment Mode */
+    .payload-file-box {
+      background: var(--surface-inset);
+      border-radius: 11px;
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .payload-empty {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 14px;
+      flex-wrap: wrap;
+    }
+
+    .payload-empty__copy {
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+    }
+
+    .payload-empty__title {
+      font-size: 13.5px;
+      font-weight: 500;
+      color: var(--text);
+    }
+
+    .payload-empty__sub {
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+
+    .btn-pick-payload {
+      appearance: none;
+      border: 0;
+      background: rgba(255, 255, 255, 0.11);
+      color: #ffffff;
+      font-family: var(--font-sans);
+      font-size: 13px;
+      font-weight: 500;
+      padding: 9px 16px;
+      border-radius: 9px;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      transition: background 140ms ease, transform 90ms ease;
+    }
+
+    .btn-pick-payload:hover:not(:disabled) {
+      background: rgba(255, 255, 255, 0.17);
+    }
+
+    .btn-pick-payload:active:not(:disabled) {
+      transform: scale(0.985);
+    }
+
+    /* Password */
+    .password-box {
+      background: var(--surface-inset);
+      border-radius: 11px;
+      padding: 4px 8px 0 14px;
+      overflow: hidden;
+      transition: box-shadow 150ms ease;
+    }
+
+    .password-box:focus-within {
+      box-shadow: inset 0 0 0 1.5px rgba(10, 132, 255, 0.65);
+    }
+
+    .password-box.has-error {
+      box-shadow: inset 0 0 0 1.5px rgba(255, 69, 58, 0.72);
+    }
+
+    .password-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-height: 44px;
+    }
+
+    .password-input {
+      flex: 1;
+      min-width: 0;
+      border: 0;
+      outline: 0;
+      background: transparent;
+      color: var(--text);
+      font-family: var(--font-sans);
+      font-size: 14px;
+      padding: 10px 0;
+      letter-spacing: 0.02em;
+    }
+
+    .password-input::placeholder {
+      color: var(--text-muted);
+      letter-spacing: normal;
+    }
+
+    .pw-meter {
+      height: 2px;
+      margin-left: -14px;
+      margin-right: -8px;
+      background: rgba(255, 255, 255, 0.05);
+    }
+
+    .pw-meter__fill {
+      height: 100%;
+      width: 0%;
+      transition: width 180ms ease, background 180ms ease;
+    }
+
+    .pw-strength-label {
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+    .pw-strength-label.is-weak { color: var(--red); }
+    .pw-strength-label.is-mid { color: var(--amber); }
+    .pw-strength-label.is-strong { color: var(--green); }
+
+    .pw-policy-hint {
+      margin-top: 8px;
+      font-size: 11.5px;
+      color: var(--text-muted);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .pw-policy-hint.is-short {
+      color: #ff8b84;
+    }
+
+    /* Action Row */
+    .action-block {
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+
+    .action-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      flex-wrap: wrap;
+    }
+
+    .summary-col {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      min-width: 0;
+      flex: 1;
+    }
+
+    .summary-pairs {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+      font-size: 12.5px;
+      color: var(--text-secondary);
+    }
+
+    .summary-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 9px;
+      border-radius: 7px;
+      background: rgba(255, 255, 255, 0.05);
+      max-width: 100%;
+    }
+
+    .summary-chip__k {
+      color: var(--text-muted);
+      font-size: 11.5px;
+    }
+
+    .summary-chip__v {
+      color: var(--text);
+      font-weight: 500;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      max-width: 240px;
+    }
+
+    .summary-hint {
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+
+    .summary-hint.is-error {
+      color: var(--red);
+    }
+
+    /* THE ONE prominent primary CTA button */
+    .btn-primary {
+      appearance: none;
+      border: 0;
+      background: var(--accent);
+      color: #ffffff;
+      font-family: var(--font-sans);
+      font-size: 14px;
+      font-weight: 600;
+      padding: 12px 24px;
+      border-radius: 11px;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 9px;
+      box-shadow:
+        inset 0 1px 0 rgba(255, 255, 255, 0.24),
+        0 6px 20px rgba(10, 132, 255, 0.34);
+      transition: background 140ms ease, box-shadow 140ms ease, transform 90ms ease, opacity 140ms ease;
+      white-space: nowrap;
+      min-width: 228px;
+    }
+
+    .btn-primary:hover:not(:disabled) {
+      background: var(--accent-hover);
+      box-shadow:
+        inset 0 1px 0 rgba(255, 255, 255, 0.28),
+        0 8px 24px rgba(10, 132, 255, 0.44);
+    }
+
+    .btn-primary:active:not(:disabled) {
+      background: var(--accent-active);
+      transform: scale(0.985);
+    }
+
+    .btn-primary:disabled {
+      background: rgba(255, 255, 255, 0.08);
+      color: rgba(255, 255, 255, 0.34);
+      box-shadow: none;
+      cursor: not-allowed;
+    }
+
+    /* Progress bar during simulated operation */
+    .progress-row {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      background: var(--surface-inset);
+      border-radius: 11px;
+      padding: 12px 14px;
+    }
+
+    .progress-row__top {
+      display: flex;
+      justify-content: space-between;
+      font-size: 12.5px;
+      color: var(--text-secondary);
+      gap: 8px;
+    }
+
+    .progress-track {
+      height: 4px;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.08);
+      overflow: hidden;
+    }
+
+    .progress-fill {
+      height: 100%;
+      width: 0%;
+      border-radius: 999px;
+      background: var(--accent);
+      transition: width 120ms linear;
+    }
+
+    /* Result card */
+    .result-panel {
+      background: var(--green-soft);
+      border-radius: 12px;
+      padding: 15px 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .result-panel__top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+
+    .result-panel__status {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .result-check {
+      width: 24px;
+      height: 24px;
+      border-radius: 50%;
+      background: rgba(48, 209, 88, 0.22);
+      color: var(--green);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+    }
+
+    .result-panel__title {
+      font-size: 13.5px;
+      font-weight: 600;
+      color: var(--text);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .demo-tag {
+      font-size: 10.5px;
+      font-weight: 600;
+      letter-spacing: 0.03em;
+      text-transform: uppercase;
+      padding: 2px 7px;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.1);
+      color: var(--text-secondary);
+    }
+
+    .result-panel__sub {
+      font-size: 12px;
+      color: var(--text-secondary);
+      margin-top: 2px;
+    }
+
+    .result-path-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      flex-wrap: wrap;
+      background: rgba(0, 0, 0, 0.28);
+      border-radius: 9px;
+      padding: 9px 12px;
+    }
+
+    .result-path {
+      font-family: var(--font-mono);
+      font-size: 12px;
+      color: #d7e9dc;
+      word-break: break-all;
+      user-select: all;
+      flex: 1;
+      min-width: 180px;
+    }
+
+    .result-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+      flex-shrink: 0;
+    }
+
+    .btn-finder {
+      appearance: none;
+      border: 0;
+      background: rgba(255, 255, 255, 0.14);
+      color: #ffffff;
+      font-family: var(--font-sans);
+      font-size: 12.5px;
+      font-weight: 600;
+      padding: 7px 13px;
+      border-radius: 8px;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      transition: background 140ms ease;
+    }
+
+    .btn-finder:hover {
+      background: rgba(255, 255, 255, 0.22);
+    }
+
+    /* Extract tab result block */
+    .extract-result-card {
+      background: var(--surface);
+      border-radius: var(--radius-block);
+      padding: 18px 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+
+    .extract-result-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+
+    .extract-result-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    /* ==================== METADATA TAB ==================== */
+    .meta-overview {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+      margin-bottom: 12px;
+    }
+
+    .meta-counters {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .meta-stat-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 5px 10px;
+      border-radius: 8px;
+      font-size: 12px;
+      font-weight: 500;
+      background: rgba(255, 255, 255, 0.05);
+      color: var(--text-secondary);
+    }
+
+    .meta-stat-pill--selected {
+      background: rgba(10, 132, 255, 0.16);
+      color: #8cc8ff;
+    }
+
+    .meta-stat-pill--removable {
+      background: rgba(48, 209, 88, 0.12);
+      color: #7ee29a;
+    }
+
+    .meta-stat-pill--protected {
+      background: rgba(255, 255, 255, 0.05);
+      color: var(--text-secondary);
+    }
+
+    .meta-toolbar {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+
+    .meta-fields {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .meta-field-row {
+      background: var(--surface-inset);
+      border-radius: 10px;
+      padding: 11px 14px;
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 14px;
+      transition: background 140ms ease;
+    }
+
+    .meta-field-row.is-removable {
+      cursor: pointer;
+    }
+
+    .meta-field-row.is-removable:hover {
+      background: rgba(0, 0, 0, 0.36);
+    }
+
+    .meta-field-row.is-selected {
+      box-shadow: inset 0 0 0 1px rgba(10, 132, 255, 0.45);
+      background: rgba(10, 132, 255, 0.08);
+    }
+
+    .meta-field-left {
+      display: flex;
+      align-items: flex-start;
+      gap: 11px;
+      min-width: 0;
+      flex: 1;
+    }
+
+    .meta-check {
+      width: 17px;
+      height: 17px;
+      margin-top: 2px;
+      accent-color: var(--accent);
+      cursor: pointer;
+      flex-shrink: 0;
+    }
+
+    .meta-lock-icon {
+      width: 17px;
+      height: 17px;
+      margin-top: 2px;
+      color: var(--text-muted);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+    }
+
+    .meta-field-body {
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+      min-width: 0;
+      flex: 1;
+    }
+
+    .meta-field-top {
+      display: flex;
+      align-items: baseline;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .meta-field-name {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text);
+    }
+
+    .meta-field-origin {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--text-muted);
+    }
+
+    .meta-field-val {
+      font-family: var(--font-mono);
+      font-size: 12px;
+      color: var(--text-secondary);
+      word-break: break-word;
+    }
+
+    .meta-field-reason {
+      font-size: 11.5px;
+      color: var(--text-muted);
+    }
+
+    .meta-badges {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-shrink: 0;
+      flex-wrap: wrap;
+    }
+
+    .meta-badge {
+      font-size: 11px;
+      font-weight: 600;
+      padding: 3px 9px;
+      border-radius: 999px;
+      white-space: nowrap;
+    }
+
+    .meta-badge--remove {
+      background: rgba(10, 132, 255, 0.2);
+      color: #85c4ff;
+    }
+
+    .meta-badge--available {
+      background: rgba(255, 255, 255, 0.07);
+      color: var(--text-secondary);
+    }
+
+    .meta-badge--protected {
+      background: rgba(255, 255, 255, 0.055);
+      color: var(--text-muted);
+    }
+
+    .meta-report-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .meta-report-box {
+      background: rgba(0, 0, 0, 0.25);
+      border-radius: 10px;
+      padding: 11px 13px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .meta-report-box--full {
+      grid-column: 1 / -1;
+    }
+
+    .meta-report-box__k {
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      color: var(--text-muted);
+    }
+
+    .meta-report-box__v {
+      font-size: 12.5px;
+      line-height: 1.45;
+      color: var(--text);
+    }
+
+    .meta-hash-line {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--text-secondary);
+      word-break: break-all;
+    }
+
+    /* ==================== SETTINGS TAB ==================== */
+    .settings-group-title {
+      font-size: 12px;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      color: var(--text-muted);
+      margin: 0 0 10px 2px;
+    }
+
+    .settings-list {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      border-radius: 12px;
+      overflow: hidden;
+    }
+
+    .setting-row {
+      background: var(--surface-inset);
+      padding: 14px 16px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      flex-wrap: wrap;
+    }
+
+    .setting-row__copy {
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+      min-width: 220px;
+      flex: 1;
+    }
+
+    .setting-row__title {
+      font-size: 13.5px;
+      font-weight: 500;
+      color: var(--text);
+    }
+
+    .setting-row__sub {
+      font-size: 12px;
+      line-height: 1.42;
+      color: var(--text-muted);
+    }
+
+    /* Native macOS Switch */
+    .mac-switch {
+      position: relative;
+      display: inline-flex;
+      align-items: center;
+      cursor: pointer;
+      flex-shrink: 0;
+    }
+
+    .mac-switch input {
+      position: absolute;
+      opacity: 0;
+      width: 0;
+      height: 0;
+    }
+
+    .mac-switch__track {
+      width: 40px;
+      height: 24px;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.14);
+      position: relative;
+      transition: background 160ms ease;
+      box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.06);
+    }
+
+    .mac-switch__thumb {
+      width: 18px;
+      height: 18px;
+      border-radius: 50%;
+      background: #ffffff;
+      position: absolute;
+      top: 3px;
+      left: 3px;
+      box-shadow: 0 1px 4px rgba(0, 0, 0, 0.45);
+      transition: transform 160ms ease;
+    }
+
+    .mac-switch input:checked + .mac-switch__track {
+      background: var(--accent);
+    }
+
+    .mac-switch input:checked + .mac-switch__track .mac-switch__thumb {
+      transform: translateX(16px);
+    }
+
+    .mac-switch input:focus-visible + .mac-switch__track {
+      box-shadow: 0 0 0 2px rgba(10, 132, 255, 0.55);
+    }
+
+    .about-grid {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .about-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+
+    .about-version {
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--text);
+    }
+
+    .about-stack {
+      font-family: var(--font-mono);
+      font-size: 11.5px;
+      color: var(--text-secondary);
+      background: var(--surface-inset);
+      padding: 10px 13px;
+      border-radius: 10px;
+      line-height: 1.55;
+    }
+
+    .about-notes {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      font-size: 12px;
+      line-height: 1.48;
+      color: var(--text-secondary);
+    }
+
+    .about-note-item {
+      background: rgba(255, 255, 255, 0.025);
+      border-radius: 9px;
+      padding: 10px 12px;
+    }
+
+    .about-note-item strong {
+      color: var(--text);
+      font-weight: 600;
+    }
+
+    /* macOS Toast */
+    .toast {
+      position: fixed;
+      bottom: 22px;
+      left: 50%;
+      transform: translate(-50%, 16px);
+      background: rgba(32, 36, 44, 0.94);
+      backdrop-filter: blur(14px);
+      -webkit-backdrop-filter: blur(14px);
+      color: var(--text);
+      font-size: 12.5px;
+      font-weight: 500;
+      padding: 10px 16px;
+      border-radius: 999px;
+      box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.1), 0 12px 30px rgba(0, 0, 0, 0.5);
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 180ms ease, transform 180ms ease;
+      z-index: 50;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      max-width: calc(100vw - 32px);
+      text-align: center;
+    }
+
+    .toast.is-visible {
+      opacity: 1;
+      transform: translate(-50%, 0);
+    }
+
+    .hidden {
+      display: none !important;
+    }
+
+    @media (max-width: 720px) {
+      .titlebar {
+        height: auto;
+        padding: 12px 14px;
+        grid-template-columns: 1fr;
+        justify-items: start;
+      }
+      .titlebar__right {
+        display: none;
+      }
+      .tabs {
+        width: 100%;
+        overflow-x: auto;
+      }
+      .window-body {
+        padding: 16px;
+      }
+      .btn-primary {
+        width: 100%;
+      }
+      .meta-report-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <!-- Studio preset switcher outside the macOS window -->
+  <div class="proto-bar">
+    <div class="proto-bar__label">
+      <span class="proto-bar__dot"></span>
+      <span id="proto-screen-label">Демо-прототип macOS · Экран «Скрыть»</span>
+    </div>
+    <div id="proto-presets-embed" class="proto-presets" aria-label="Демо-сценарии для экрана «Скрыть»">
+      <button type="button" class="proto-chip" data-preset-embed="empty">Пустой старт</button>
+      <button type="button" class="proto-chip" data-preset-embed="text-ready">Текст + PNG</button>
+      <button type="button" class="proto-chip" data-preset-embed="file-ready">Файл + WAV</button>
+      <button type="button" class="proto-chip" data-preset-embed="saved">После сохранения (демо)</button>
+    </div>
+    <div id="proto-presets-extract" class="proto-presets hidden" aria-label="Демо-сценарии для экрана «Извлечь»">
+      <button type="button" class="proto-chip" data-preset-extract="empty">Пустой старт</button>
+      <button type="button" class="proto-chip" data-preset-extract="text">Результат: Текст</button>
+      <button type="button" class="proto-chip" data-preset-extract="file">Результат: Файл</button>
+      <button type="button" class="proto-chip" data-preset-extract="failed">Не удалось извлечь</button>
+    </div>
+    <div id="proto-presets-meta" class="proto-presets hidden" aria-label="Демо-сценарии для экрана «Метаданные»">
+      <button type="button" class="proto-chip" data-preset-meta="empty">Файл не выбран</button>
+      <button type="button" class="proto-chip" data-preset-meta="found">Метаданные найдены</button>
+      <button type="button" class="proto-chip" data-preset-meta="protected">Удаляемых полей нет</button>
+      <button type="button" class="proto-chip" data-preset-meta="cleaned">Копия сохранена</button>
+    </div>
+    <div id="proto-presets-settings" class="proto-presets hidden" aria-label="Демо-сценарии для экрана «Настройки»">
+      <button type="button" class="proto-chip" data-preset-settings="default">По умолчанию</button>
+      <button type="button" class="proto-chip" data-preset-settings="custom">Изменённые (демо)</button>
+    </div>
+  </div>
+
+  <!-- macOS App Window -->
+  <main class="mac-window" aria-label="Окно PHANTOM">
+    <header class="titlebar">
+      <div class="titlebar__left">
+        <div class="traffic-lights" aria-hidden="true">
+          <span class="tl tl--close"></span>
+          <span class="tl tl--min"></span>
+          <span class="tl tl--zoom"></span>
+        </div>
+        <span class="app-brand">PHANTOM</span>
+      </div>
+
+      <nav class="tabs" role="tablist" aria-label="Разделы PHANTOM">
+        <button type="button" class="tab-btn is-active" role="tab" aria-selected="true" data-tab="embed">Скрыть</button>
+        <button type="button" class="tab-btn" role="tab" aria-selected="false" data-tab="extract">Извлечь</button>
+        <button type="button" class="tab-btn" role="tab" aria-selected="false" data-tab="metadata">Метаданные</button>
+        <button type="button" class="tab-btn" role="tab" aria-selected="false" data-tab="settings">Настройки</button>
+      </nav>
+
+      <div class="titlebar__right">
+        <span class="crypto-pill" title="Локальное шифрование Argon2id + AES-256-GCM">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
+            <rect x="3.2" y="7.2" width="9.6" height="6.4" rx="2"/>
+            <path d="M5.4 7.2V5.1a2.6 2.6 0 0 1 5.2 0v2.1"/>
+          </svg>
+          AES-256-GCM
+        </span>
+      </div>
+    </header>
+
+    <!-- ==================== TAB 1: СКРЫТЬ ==================== -->
+    <section id="tab-embed" class="window-body">
+      <div class="embed-stack">
+
+        <!-- Шаг 1: Носитель PNG / WAV / FLAC -->
+        <section id="step-1" class="step-block">
+          <div class="step-head">
+            <div class="step-title-wrap">
+              <span class="step-num" id="num-1">1</span>
+              <h2 class="step-title">Выберите носитель</h2>
+            </div>
+            <span class="step-meta">Только PNG, WAV или FLAC</span>
+          </div>
+
+          <div id="carrier-empty">
+            <div id="carrier-drop" class="drop-area" role="button" tabindex="0" aria-label="Выбрать файл-носитель PNG, WAV или FLAC">
+              <div class="drop-area__left">
+                <div class="file-tile">
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+                    <rect x="3" y="3" width="18" height="18" rx="4"/>
+                    <circle cx="8.5" cy="8.5" r="1.5"/>
+                    <path d="M21 15l-5-5L5 21"/>
+                  </svg>
+                </div>
+                <div class="drop-area__copy">
+                  <span class="drop-area__title">Перетащите PNG, WAV или FLAC сюда или выберите на диске</span>
+                  <span class="drop-area__sub">Форматы со сжатием с потерями (MP3, AAC, OGG, Opus) не поддерживаются</span>
+                </div>
+              </div>
+              <button type="button" id="btn-pick-carrier" class="btn-quiet">Выбрать носитель…</button>
+            </div>
+            <div class="sample-row">
+              <span class="sample-row__label">Демо-носители:</span>
+              <button type="button" class="sample-pill" data-sample-carrier="png">sunset_raw.png</button>
+              <button type="button" class="sample-pill" data-sample-carrier="wav">podcast_master.wav</button>
+              <button type="button" class="sample-pill" data-sample-carrier="flac">ambient_loop.flac</button>
+              <button type="button" class="sample-pill sample-pill--reject" data-sample-carrier="mp3">track_demo.mp3 (тест отказа)</button>
+            </div>
+          </div>
+
+          <div id="carrier-selected" class="selected-file hidden">
+            <div class="selected-file__row">
+              <div class="selected-file__info">
+                <div class="file-tile file-tile--carrier" id="carrier-icon"></div>
+                <div class="selected-file__text">
+                  <span class="selected-file__tag">Носитель</span>
+                  <span class="selected-file__name" id="carrier-name">—</span>
+                  <span class="selected-file__details" id="carrier-details">—</span>
+                </div>
+              </div>
+              <div class="selected-file__actions">
+                <button type="button" id="btn-replace-carrier" class="btn-quiet btn-quiet--sm">Заменить</button>
+                <button type="button" id="btn-clear-carrier" class="btn-link" title="Убрать носитель">Убрать</button>
+              </div>
+            </div>
+            <div class="cap-wrap">
+              <div class="cap-track"><div id="cap-fill" class="cap-fill"></div></div>
+              <div class="cap-meta">
+                <span id="cap-usage">0 Б занято</span>
+                <span id="cap-status" class="cap-meta__status">Доступно 0 Б</span>
+              </div>
+              <div class="cap-demo-note">Демо-расчёт ёмкости: в прототипе показана ориентировочная оценка; точный предел проверяет движок PHANTOM при записи.</div>
+            </div>
+          </div>
+
+          <div id="carrier-error" class="inline-error hidden" role="alert">
+            <div class="inline-error__body">
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6">
+                <circle cx="8" cy="8" r="6.5"/>
+                <path d="M8 4.8v3.8M8 11.2h.01" stroke-linecap="round"/>
+              </svg>
+              <span id="carrier-error-text"></span>
+            </div>
+            <button type="button" id="btn-dismiss-carrier-error" class="btn-link">Скрыть</button>
+          </div>
+          <input id="input-carrier" type="file" accept=".png,.wav,.wave,.flac,image/png,audio/wav,audio/flac" class="hidden" />
+        </section>
+
+        <!-- Шаг 2: Переключатель Текст / Файл -->
+        <section id="step-2" class="step-block">
+          <div class="step-head">
+            <div class="step-title-wrap">
+              <span class="step-num" id="num-2">2</span>
+              <h2 class="step-title">Что нужно скрыть</h2>
+            </div>
+
+            <div class="mode-switch" role="radiogroup" aria-label="Тип содержимого">
+              <button type="button" class="mode-switch__btn is-active" id="mode-text" role="radio" aria-checked="true">
+                <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round">
+                  <path d="M2.5 4h11M2.5 8h8.5M2.5 12h6"/>
+                </svg>
+                Текст
+              </button>
+              <button type="button" class="mode-switch__btn" id="mode-file" role="radio" aria-checked="false">
+                <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M9.5 2.5H4.8A1.8 1.8 0 0 0 3 4.3v7.4a1.8 1.8 0 0 0 1.8 1.8h6.4a1.8 1.8 0 0 0 1.8-1.8V6L9.5 2.5Z"/>
+                  <path d="M9.5 2.5V6H13"/>
+                </svg>
+                Файл
+              </button>
+            </div>
+          </div>
+
+          <div id="payload-text-pane">
+            <div class="text-editor-wrap">
+              <textarea
+                id="secret-text"
+                class="text-editor"
+                placeholder="Введите секретный текст, ключи доступа или заметку…"
+              ></textarea>
+              <div class="text-editor__foot">
+                <span id="text-counter">0 символов · 0 Б UTF-8</span>
+                <div>
+                  <button type="button" id="btn-fill-sample-text" class="btn-link">Вставить пример</button>
+                  <button type="button" id="btn-clear-text" class="btn-link hidden">Очистить</button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div id="payload-file-pane" class="hidden">
+            <div class="payload-file-box">
+              <div id="payload-file-empty">
+                <div class="payload-empty">
+                  <div class="payload-empty__copy">
+                    <span class="payload-empty__title">Любой файл — документ, архив или ключ</span>
+                    <span class="payload-empty__sub">Имя и содержимое вложения будут зашифрованы перед записью в носитель</span>
+                  </div>
+                  <button type="button" id="btn-pick-payload" class="btn-pick-payload">
+                    <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                      <path d="M13.5 7.6 7.9 13.2a3.3 3.3 0 0 1-4.7-4.7l5.9-5.9a2.2 2.2 0 1 1 3.1 3.1L6.3 11.6a1.1 1.1 0 0 1-1.6-1.6l5.2-5.2"/>
+                    </svg>
+                    Выбрать файл для скрытия
+                  </button>
+                </div>
+                <div class="sample-row">
+                  <span class="sample-row__label">Демо-вложения:</span>
+                  <button type="button" class="sample-pill" data-sample-payload="pdf">contract_q4.pdf (340 КБ)</button>
+                  <button type="button" class="sample-pill" data-sample-payload="zip">ssh_backup.zip (128 КБ)</button>
+                  <button type="button" class="sample-pill" data-sample-payload="big">archive_4k.mov (4.2 МБ)</button>
+                </div>
+              </div>
+
+              <div id="payload-file-selected" class="selected-file__row hidden">
+                <div class="selected-file__info">
+                  <div class="file-tile file-tile--payload">
+                    <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+                      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                      <polyline points="14 2 14 8 20 8"/>
+                    </svg>
+                  </div>
+                  <div class="selected-file__text">
+                    <span class="selected-file__tag">Вложение для скрытия</span>
+                    <span class="selected-file__name" id="payload-name">—</span>
+                    <span class="selected-file__details" id="payload-details">—</span>
+                  </div>
+                </div>
+                <div class="selected-file__actions">
+                  <button type="button" id="btn-replace-payload" class="btn-quiet btn-quiet--sm">Выбрать другой…</button>
+                  <button type="button" id="btn-clear-payload" class="btn-link">Убрать</button>
+                </div>
+              </div>
+            </div>
+            <input id="input-payload" type="file" class="hidden" />
+          </div>
+        </section>
+
+        <!-- Шаг 3: Пароль (правило PHANTOM: минимум 12 символов) -->
+        <section id="step-3" class="step-block">
+          <div class="step-head">
+            <div class="step-title-wrap">
+              <span class="step-num" id="num-3">3</span>
+              <h2 class="step-title">Пароль</h2>
+            </div>
+            <span id="pw-strength-label" class="pw-strength-label">Не задан</span>
+          </div>
+
+          <div class="password-box">
+            <div class="password-row">
+              <input
+                id="password-input"
+                type="password"
+                class="password-input"
+                autocomplete="new-password"
+                placeholder="Минимум 12 символов…"
+              />
+              <button type="button" id="btn-gen-pw" class="btn-link">Сгенерировать (20 симв.)</button>
+              <button type="button" id="btn-toggle-pw" class="btn-link">Показать</button>
+            </div>
+            <div class="pw-meter"><div id="pw-meter-fill" class="pw-meter__fill"></div></div>
+          </div>
+          <div id="pw-policy-hint" class="pw-policy-hint">
+            <span id="pw-policy-text">Требование PHANTOM: минимум 12 символов · KDF: Argon2id</span>
+            <span id="pw-len-counter">0 / 12</span>
+          </div>
+        </section>
+
+        <!-- Шаг 4: Зашифровать и сохранить + Результат -->
+        <section id="step-4" class="step-block action-block">
+          <div class="action-row">
+            <div class="summary-col">
+              <div id="summary-chips" class="summary-pairs hidden"></div>
+              <div id="summary-hint" class="summary-hint">Выберите носитель, содержимое и пароль (≥ 12 символов)</div>
+            </div>
+
+            <button type="button" id="btn-encrypt" class="btn-primary" disabled>
+              <span class="step-num" style="background: rgba(255,255,255,0.2); color: #fff; width:20px; height:20px; font-size:11px;">4</span>
+              <span id="btn-encrypt-label">Зашифровать и сохранить</span>
+            </button>
+          </div>
+
+          <!-- Simulated progress -->
+          <div id="progress-row" class="progress-row hidden">
+            <div class="progress-row__top">
+              <span id="progress-stage">Демо-имитация: подготовка ключа Argon2id…</span>
+              <span id="progress-pct">0%</span>
+            </div>
+            <div class="progress-track"><div id="progress-fill" class="progress-fill"></div></div>
+          </div>
+
+          <!-- Saved result (explicitly marked as demo) -->
+          <div id="result-panel" class="result-panel hidden" role="status" aria-live="polite">
+            <div class="result-panel__top">
+              <div class="result-panel__status">
+                <span class="result-check">
+                  <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M3.2 8.4 6.5 11.7 12.8 4.8"/>
+                  </svg>
+                </span>
+                <div>
+                  <div class="result-panel__title">
+                    <span>Сохранение завершено</span>
+                    <span class="demo-tag">Демо-режим</span>
+                  </div>
+                  <div class="result-panel__sub" id="result-sub">—</div>
+                </div>
+              </div>
+              <button type="button" id="btn-reset-result" class="btn-link">Скрыть ещё</button>
+            </div>
+
+            <div class="result-path-row">
+              <code class="result-path" id="result-path">~/Desktop/sunset_raw_phantom.png</code>
+              <div class="result-actions">
+                <button type="button" id="btn-copy-path" class="btn-link">Скопировать путь</button>
+                <button type="button" id="btn-finder" class="btn-finder" title="Демонстрация вызова Finder в macOS">
+                  <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M1.8 4.4A1.4 1.4 0 0 1 3.2 3h3l1.4 1.6h5.2a1.4 1.4 0 0 1 1.4 1.4v5.6a1.4 1.4 0 0 1-1.4 1.4H3.2a1.4 1.4 0 0 1-1.4-1.4V4.4Z"/>
+                  </svg>
+                  Показать в Finder (демо)
+                </button>
+              </div>
+            </div>
+          </div>
+        </section>
+
+      </div>
+    </section>
+
+    <!-- ==================== TAB 2: ИЗВЛЕЧЬ ==================== -->
+    <section id="tab-extract" class="window-body hidden">
+      <div class="embed-stack">
+
+        <!-- Шаг 1: Контейнер PNG / WAV / FLAC -->
+        <section id="ex-step-1" class="step-block">
+          <div class="step-head">
+            <div class="step-title-wrap">
+              <span class="step-num">1</span>
+              <h2 class="step-title">Выберите контейнер со скрытыми данными</h2>
+            </div>
+            <span class="step-meta">PNG, WAV или FLAC</span>
+          </div>
+
+          <div id="ex-carrier-empty">
+            <div id="ex-carrier-drop" class="drop-area" role="button" tabindex="0" aria-label="Выбрать стего-контейнер PNG, WAV или FLAC">
+              <div class="drop-area__left">
+                <div class="file-tile">
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                    <polyline points="7 10 12 15 17 10"/>
+                    <line x1="12" y1="15" x2="12" y2="3"/>
+                  </svg>
+                </div>
+                <div class="drop-area__copy">
+                  <span class="drop-area__title">Перетащите стего-файл сюда или выберите на диске</span>
+                  <span class="drop-area__sub">PHANTOM автоматически определит, скрыт ли внутри текст или файл</span>
+                </div>
+              </div>
+              <button type="button" id="ex-btn-pick-carrier" class="btn-quiet">Выбрать контейнер…</button>
+            </div>
+            <div class="sample-row">
+              <span class="sample-row__label">Демо-контейнеры:</span>
+              <button type="button" class="sample-pill" data-sample-extract-carrier="text_png">secret_note_phantom.png (внутри текст)</button>
+              <button type="button" class="sample-pill" data-sample-extract-carrier="file_wav">vault_audio_phantom.wav (внутри файл)</button>
+              <button type="button" class="sample-pill sample-pill--reject" data-sample-extract-carrier="mp3">track_demo.mp3 (тест отказа)</button>
+            </div>
+          </div>
+
+          <div id="ex-carrier-selected" class="selected-file hidden">
+            <div class="selected-file__row">
+              <div class="selected-file__info">
+                <div class="file-tile file-tile--carrier" id="ex-carrier-icon"></div>
+                <div class="selected-file__text">
+                  <span class="selected-file__tag">Контейнер</span>
+                  <span class="selected-file__name" id="ex-carrier-name">—</span>
+                  <span class="selected-file__details" id="ex-carrier-details">—</span>
+                </div>
+              </div>
+              <div class="selected-file__actions">
+                <button type="button" id="ex-btn-replace-carrier" class="btn-quiet btn-quiet--sm">Заменить</button>
+                <button type="button" id="ex-btn-clear-carrier" class="btn-link">Убрать</button>
+              </div>
+            </div>
+          </div>
+
+          <div id="ex-carrier-error" class="inline-error hidden" role="alert">
+            <div class="inline-error__body">
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6">
+                <circle cx="8" cy="8" r="6.5"/>
+                <path d="M8 4.8v3.8M8 11.2h.01" stroke-linecap="round"/>
+              </svg>
+              <span id="ex-carrier-error-text"></span>
+            </div>
+            <button type="button" id="ex-btn-dismiss-error" class="btn-link">Скрыть</button>
+          </div>
+          <input id="ex-input-carrier" type="file" accept=".png,.wav,.wave,.flac,image/png,audio/wav,audio/flac" class="hidden" />
+        </section>
+
+        <!-- Шаг 2: Пароль расшифровки -->
+        <section id="ex-step-2" class="step-block">
+          <div class="step-head">
+            <div class="step-title-wrap">
+              <span class="step-num">2</span>
+              <h2 class="step-title">Пароль расшифровки</h2>
+            </div>
+            <span class="step-meta" id="ex-pw-meta">Любой пароль, заданный при скрытии</span>
+          </div>
+
+          <div id="ex-password-box" class="password-box">
+            <div class="password-row">
+              <input
+                id="ex-password-input"
+                type="password"
+                class="password-input"
+                autocomplete="current-password"
+                placeholder="Введите пароль…"
+              />
+              <button type="button" id="ex-btn-toggle-pw" class="btn-link">Показать</button>
+            </div>
+            <div class="pw-meter"><div class="pw-meter__fill" style="width:0%"></div></div>
+          </div>
+          <div class="pw-policy-hint">
+            <span id="ex-pw-demo-hint">Подсказка для демо: пароль <code style="font-family:var(--font-mono);color:var(--text-secondary)">wrong-password</code> воспроизводит ошибку расшифровки</span>
+          </div>
+        </section>
+
+        <!-- Шаг 3: Извлечь и расшифровать + ошибка извлечения -->
+        <section id="ex-step-3" class="step-block action-block">
+          <div class="action-row">
+            <div class="summary-col">
+              <div id="ex-summary-chips" class="summary-pairs hidden"></div>
+              <div id="ex-summary-hint" class="summary-hint">Выберите контейнер и введите пароль</div>
+            </div>
+
+            <button type="button" id="btn-extract" class="btn-primary" disabled>
+              <span class="step-num" style="background: rgba(255,255,255,0.2); color: #fff; width:20px; height:20px; font-size:11px;">3</span>
+              <span id="btn-extract-label">Извлечь и расшифровать</span>
+            </button>
+          </div>
+
+          <div id="ex-progress-row" class="progress-row hidden">
+            <div class="progress-row__top">
+              <span id="ex-progress-stage">Демо-имитация: поиск заголовка и расшифровка…</span>
+              <span id="ex-progress-pct">0%</span>
+            </div>
+            <div class="progress-track"><div id="ex-progress-fill" class="progress-fill"></div></div>
+          </div>
+
+          <!-- Ошибка извлечения (сохраняет контейнер и возвращает фокус в пароль) -->
+          <div id="ex-extract-error" class="inline-error hidden" role="alert">
+            <div class="inline-error__body">
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6">
+                <circle cx="8" cy="8" r="6.5"/>
+                <path d="M8 4.8v3.8M8 11.2h.01" stroke-linecap="round"/>
+              </svg>
+              <div>
+                <div class="inline-error__title">Не удалось извлечь данные <span class="demo-tag">Демо-сценарий</span></div>
+                <div id="ex-extract-error-text">Неверный пароль или выбранный контейнер не содержит скрытых данных PHANTOM. Контейнер сохранён — проверьте пароль и попробуйте снова.</div>
+              </div>
+            </div>
+            <button type="button" id="ex-btn-focus-pw" class="btn-link">К паролю</button>
+          </div>
+        </section>
+
+        <!-- Результат извлечения: 2 варианта (Текст ИЛИ Файл) -->
+        <section id="ex-result-text-card" class="extract-result-card hidden" role="status" aria-live="polite">
+          <div class="extract-result-head">
+            <div class="result-panel__status">
+              <span class="result-check">
+                <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M3.2 8.4 6.5 11.7 12.8 4.8"/>
+                </svg>
+              </span>
+              <div>
+                <div class="result-panel__title">
+                  <span>Результат: Текст</span>
+                  <span class="demo-tag">Демо-результат</span>
+                </div>
+                <div class="result-panel__sub" id="ex-text-meta">Извлечено 0 Б · Пример проверки: SHA-256 совпадает · UTF-8</div>
+              </div>
+            </div>
+            <button type="button" id="ex-btn-clear-text-res" class="btn-link">Очистить результат</button>
+          </div>
+
+          <div class="text-editor-wrap">
+            <textarea id="ex-result-textarea" class="text-editor" readonly></textarea>
+          </div>
+
+          <div class="extract-result-actions">
+            <button type="button" id="ex-btn-copy-text" class="btn-quiet">
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="5.5" y="5.5" width="8" height="8" rx="1.5"/>
+                <path d="M3.5 10.5H3A1.5 1.5 0 0 1 1.5 9V3A1.5 1.5 0 0 1 3 1.5h6A1.5 1.5 0 0 1 10.5 3v.5"/>
+              </svg>
+              Копировать текст
+            </button>
+            <button type="button" id="ex-btn-save-txt" class="btn-quiet">
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M8 2.5v7.5m0 0L5 7m3 3 3-3"/>
+                <path d="M2.5 11.5v1.3A1.2 1.2 0 0 0 3.7 14h8.6a1.2 1.2 0 0 0 1.2-1.2v-1.3"/>
+              </svg>
+              Сохранить TXT (UTF-8) · демо
+            </button>
+          </div>
+
+          <div id="ex-txt-saved-row" class="result-path-row hidden">
+            <code class="result-path" id="ex-txt-saved-path">~/Desktop/secret_note_extracted.txt</code>
+            <div class="result-actions">
+              <button type="button" id="ex-btn-txt-finder" class="btn-finder">Показать в Finder (демо)</button>
+            </div>
+          </div>
+        </section>
+
+        <section id="ex-result-file-card" class="extract-result-card hidden" role="status" aria-live="polite">
+          <div class="extract-result-head">
+            <div class="result-panel__status">
+              <span class="result-check">
+                <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M3.2 8.4 6.5 11.7 12.8 4.8"/>
+                </svg>
+              </span>
+              <div>
+                <div class="result-panel__title">
+                  <span>Результат: Файл</span>
+                  <span class="demo-tag">Демо-результат</span>
+                </div>
+                <div class="result-panel__sub" id="ex-file-meta">Пример проверки: SHA-256 совпадает · файл готов к сохранению</div>
+              </div>
+            </div>
+            <button type="button" id="ex-btn-clear-file-res" class="btn-link">Очистить результат</button>
+          </div>
+
+          <div class="selected-file">
+            <div class="selected-file__row">
+              <div class="selected-file__info">
+                <div class="file-tile file-tile--payload">
+                  <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                    <polyline points="14 2 14 8 20 8"/>
+                  </svg>
+                </div>
+                <div class="selected-file__text">
+                  <span class="selected-file__tag">Извлечённое вложение</span>
+                  <span class="selected-file__name" id="ex-out-filename">—</span>
+                  <span class="selected-file__details" id="ex-out-filedetails">—</span>
+                </div>
+              </div>
+              <div class="selected-file__actions">
+                <button type="button" id="ex-btn-save-as" class="btn-quiet">Сохранить как… (демо)</button>
+              </div>
+            </div>
+          </div>
+
+          <div id="ex-file-saved-row" class="result-path-row hidden">
+            <code class="result-path" id="ex-file-saved-path">~/Downloads/ssh_backup_keys.zip</code>
+            <div class="result-actions">
+              <button type="button" id="ex-btn-file-finder" class="btn-finder">Показать в Finder (демо)</button>
+            </div>
+          </div>
+        </section>
+
+      </div>
+    </section>
+
+    <!-- ==================== TAB 3: МЕТАДАННЫЕ ==================== -->
+    <section id="tab-metadata" class="window-body hidden">
+      <div class="embed-stack">
+
+        <!-- Блок 1: Выбор файла -->
+        <section id="meta-step-file" class="step-block">
+          <div class="step-head">
+            <div class="step-title-wrap">
+              <span class="step-num">1</span>
+              <h2 class="step-title">Проверка и очистка метаданных</h2>
+            </div>
+            <span class="step-meta">PNG, WAV или FLAC</span>
+          </div>
+
+          <div id="meta-file-empty">
+            <div id="meta-drop" class="drop-area" role="button" tabindex="0" aria-label="Выбрать файл PNG, WAV или FLAC для проверки метаданных">
+              <div class="drop-area__left">
+                <div class="file-tile">
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+                    <circle cx="11" cy="11" r="7"/>
+                    <path d="m20 20-3.5-3.5"/>
+                  </svg>
+                </div>
+                <div class="drop-area__copy">
+                  <span class="drop-area__title">Перетащите файл сюда или выберите на диске</span>
+                  <span class="drop-area__sub">PHANTOM покажет все найденные записи: что можно удалить, а что защищено политикой безопасности</span>
+                </div>
+              </div>
+              <button type="button" id="meta-btn-pick" class="btn-quiet">Выбрать файл…</button>
+            </div>
+            <div class="sample-row">
+              <span class="sample-row__label">Демо-файлы:</span>
+              <button type="button" class="sample-pill" data-sample-meta="found">vacation_gps.png (найдены поля)</button>
+              <button type="button" class="sample-pill" data-sample-meta="protected">archive_signed.png (удаляемых нет)</button>
+              <button type="button" class="sample-pill sample-pill--reject" data-sample-meta="mp3">track_demo.mp3 (тест отказа)</button>
+            </div>
+          </div>
+
+          <div id="meta-file-selected" class="selected-file hidden">
+            <div class="selected-file__row">
+              <div class="selected-file__info">
+                <div class="file-tile file-tile--carrier" id="meta-file-icon"></div>
+                <div class="selected-file__text">
+                  <span class="selected-file__tag">Проверяемый файл</span>
+                  <span class="selected-file__name" id="meta-file-name">—</span>
+                  <span class="selected-file__details" id="meta-file-details">—</span>
+                </div>
+              </div>
+              <div class="selected-file__actions">
+                <button type="button" id="meta-btn-replace" class="btn-quiet btn-quiet--sm">Заменить</button>
+                <button type="button" id="meta-btn-clear" class="btn-link">Сбросить</button>
+              </div>
+            </div>
+          </div>
+
+          <div id="meta-file-error" class="inline-error hidden" role="alert">
+            <div class="inline-error__body">
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6">
+                <circle cx="8" cy="8" r="6.5"/>
+                <path d="M8 4.8v3.8M8 11.2h.01" stroke-linecap="round"/>
+              </svg>
+              <span id="meta-file-error-text"></span>
+            </div>
+            <button type="button" id="meta-btn-dismiss-error" class="btn-link">Скрыть</button>
+          </div>
+          <input id="meta-input-file" type="file" accept=".png,.wav,.wave,.flac,image/png,audio/wav,audio/flac" class="hidden" />
+        </section>
+
+        <!-- Блок 2: Найденные метаданные -->
+        <section id="meta-step-fields" class="step-block hidden">
+          <div class="step-head">
+            <div class="step-title-wrap">
+              <span class="step-num">2</span>
+              <h2 class="step-title">Найденные метаданные и план очистки</h2>
+            </div>
+            <span class="demo-tag">Демо-анализ</span>
+          </div>
+
+          <div class="meta-overview">
+            <div class="meta-counters">
+              <span class="meta-stat-pill meta-stat-pill--selected" id="meta-pill-selected">Выбрано: 0</span>
+              <span class="meta-stat-pill meta-stat-pill--removable" id="meta-pill-removable">Можно удалить: 0</span>
+              <span class="meta-stat-pill meta-stat-pill--protected" id="meta-pill-protected">Защищено: 0</span>
+            </div>
+
+            <div id="meta-toolbar" class="meta-toolbar">
+              <button type="button" id="meta-btn-sel-personal" class="btn-link">Только личные</button>
+              <button type="button" id="meta-btn-sel-all" class="btn-link">Выбрать доступные</button>
+              <button type="button" id="meta-btn-sel-none" class="btn-link">Снять выбор</button>
+            </div>
+          </div>
+
+          <div id="meta-no-removable-banner" class="inline-notice hidden">
+            <svg width="17" height="17" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
+              <path d="M8 1.8 2.8 4v3.7c0 3.3 2.2 6 5.2 6.8 3-.8 5.2-3.5 5.2-6.8V4L8 1.8Z"/>
+              <path d="M6.2 8.2 7.5 9.5l2.6-2.8" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+            <div>
+              <strong style="color: var(--text); font-weight: 600;">Удаляемых полей нет.</strong>
+              Все найденные записи защищены политикой PHANTOM (цветовой профиль, права и подлинность, неизвестные блоки) и никогда не удаляются автоматически. Исходный файл остаётся без изменений.
+            </div>
+          </div>
+
+          <div id="meta-fields-list" class="meta-fields" style="margin-top: 10px;"></div>
+        </section>
+
+        <!-- Блок 3: Сохранение очищенной копии + Единый отчёт -->
+        <section id="meta-step-action" class="step-block action-block hidden">
+          <div class="action-row">
+            <div class="summary-col">
+              <div id="meta-plan-chips" class="summary-pairs"></div>
+              <div id="meta-plan-hint" class="summary-hint">—</div>
+            </div>
+
+            <button type="button" id="meta-btn-clean" class="btn-primary" disabled>
+              <span class="step-num" style="background: rgba(255,255,255,0.2); color: #fff; width:20px; height:20px; font-size:11px;">3</span>
+              <span id="meta-btn-clean-label">Сохранить очищенную копию</span>
+            </button>
+          </div>
+
+          <div id="meta-progress-row" class="progress-row hidden">
+            <div class="progress-row__top">
+              <span id="meta-progress-stage">Демо-имитация: удаление выбранных блоков…</span>
+              <span id="meta-progress-pct">0%</span>
+            </div>
+            <div class="progress-track"><div id="meta-progress-fill" class="progress-fill"></div></div>
+          </div>
+
+          <div id="meta-result-panel" class="result-panel hidden" role="status" aria-live="polite">
+            <div class="result-panel__top">
+              <div class="result-panel__status">
+                <span class="result-check">
+                  <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M3.2 8.4 6.5 11.7 12.8 4.8"/>
+                  </svg>
+                </span>
+                <div>
+                  <div class="result-panel__title">
+                    <span>Очищенная копия сохранена</span>
+                    <span class="demo-tag">Демо-режим</span>
+                  </div>
+                  <div class="result-panel__sub">Исходный файл не изменён · ниже сводка выполненной операции (на диск ничего не записывалось)</div>
+                </div>
+              </div>
+              <button type="button" id="meta-btn-reset-result" class="btn-link">Скрыть отчёт</button>
+            </div>
+
+            <div class="meta-report-grid">
+              <div class="meta-report-box">
+                <span class="meta-report-box__k" id="meta-res-removed-k">Удалено</span>
+                <span class="meta-report-box__v" id="meta-res-removed-v">—</span>
+              </div>
+              <div class="meta-report-box">
+                <span class="meta-report-box__k" id="meta-res-kept-k">Сохранено</span>
+                <span class="meta-report-box__v" id="meta-res-kept-v">—</span>
+              </div>
+              <div class="meta-report-box meta-report-box--full">
+                <span class="meta-report-box__k">Проверка целостности (пример)</span>
+                <span class="meta-report-box__v" id="meta-res-integrity-v">—</span>
+                <span class="meta-hash-line" id="meta-res-hashes">—</span>
+              </div>
+            </div>
+
+            <div class="result-path-row">
+              <code class="result-path" id="meta-res-path">~/Desktop/vacation_gps_clean.png</code>
+              <div class="result-actions">
+                <button type="button" id="meta-btn-copy-path" class="btn-link">Скопировать путь</button>
+                <button type="button" id="meta-btn-finder" class="btn-finder">
+                  <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M1.8 4.4A1.4 1.4 0 0 1 3.2 3h3l1.4 1.6h5.2a1.4 1.4 0 0 1 1.4 1.4v5.6a1.4 1.4 0 0 1-1.4 1.4H3.2a1.4 1.4 0 0 1-1.4-1.4V4.4Z"/>
+                  </svg>
+                  Показать в Finder (демо)
+                </button>
+              </div>
+            </div>
+          </div>
+        </section>
+
+      </div>
+    </section>
+
+    <!-- ==================== TAB 4: НАСТРОЙКИ ==================== -->
+    <section id="tab-settings" class="window-body hidden">
+      <div class="embed-stack">
+
+        <!-- Повседневные настройки (видны сразу) -->
+        <section class="step-block">
+          <h2 class="settings-group-title">Повседневные настройки</h2>
+          <div class="settings-list">
+
+            <!-- Язык -->
+            <div class="setting-row">
+              <div class="setting-row__copy">
+                <span class="setting-row__title">Язык интерфейса</span>
+                <span class="setting-row__sub" id="set-lang-sub">Применяется ко всем вкладкам и отчётам PHANTOM</span>
+              </div>
+              <div class="seg-control" role="radiogroup" aria-label="Язык интерфейса">
+                <button type="button" class="seg-control__btn" data-set-lang="ru">Русский</button>
+                <button type="button" class="seg-control__btn" data-set-lang="en">English</button>
+                <button type="button" class="seg-control__btn" data-set-lang="uk">Українська</button>
+              </div>
+            </div>
+
+            <!-- Тема -->
+            <div class="setting-row">
+              <div class="setting-row__copy">
+                <span class="setting-row__title">Тема оформления</span>
+                <span class="setting-row__sub" id="set-theme-sub">Системная тема следует за оформлением macOS</span>
+              </div>
+              <div class="seg-control" role="radiogroup" aria-label="Тема оформления">
+                <button type="button" class="seg-control__btn" data-set-theme="System">Системная</button>
+                <button type="button" class="seg-control__btn" data-set-theme="Dark">Тёмная</button>
+                <button type="button" class="seg-control__btn" data-set-theme="Light">Светлая</button>
+              </div>
+            </div>
+
+            <!-- Уменьшение анимаций -->
+            <div class="setting-row">
+              <div class="setting-row__copy">
+                <span class="setting-row__title">Уменьшить анимации</span>
+                <span class="setting-row__sub">Отключает плавные переходы и снижает визуальную нагрузку</span>
+              </div>
+              <label class="mac-switch" aria-label="Уменьшить анимации">
+                <input id="set-reduce-motion" type="checkbox" />
+                <span class="mac-switch__track"><span class="mac-switch__thumb"></span></span>
+              </label>
+            </div>
+
+            <!-- Проверка результата -->
+            <div class="setting-row">
+              <div class="setting-row__copy">
+                <span class="setting-row__title">Проверка результата после встраивания</span>
+                <span class="setting-row__sub">Проверяет выходной файл тест-извлечением перед тем, как показать успех</span>
+              </div>
+              <label class="mac-switch" aria-label="Проверка результата после встраивания">
+                <input id="set-verify-embed" type="checkbox" />
+                <span class="mac-switch__track"><span class="mac-switch__thumb"></span></span>
+              </label>
+            </div>
+
+          </div>
+        </section>
+
+        <!-- Сброс и сведения о программе -->
+        <section class="step-block">
+          <div class="about-grid">
+            <div class="about-head">
+              <div>
+                <h2 class="settings-group-title" style="margin-bottom: 4px;">Сведения о программе</h2>
+                <div class="about-version">PHANTOM 2.1.0 <span class="demo-tag">Демо-настройки</span></div>
+              </div>
+              <button type="button" id="set-btn-reset" class="btn-quiet btn-quiet--sm">Сбросить настройки</button>
+            </div>
+
+            <div class="about-stack">
+              AES-256-GCM · Argon2id (96 MiB, t=3, p=1) · zlib · SHA-256<br />
+              LSB Matching (±1) · Python · CustomTkinter · Pillow · cryptography
+            </div>
+
+            <div class="about-notes">
+              <div class="about-note-item">
+                <strong>Что защищает:</strong> содержимое скрытых данных (AES-256-GCM) и позиции битов в носителе, выводимые из пароля — без верного пароля контейнер неотличим от обычного файла.
+              </div>
+              <div class="about-note-item">
+                <strong>Ограничения:</strong> LSB-встраивание выявляется стеганализом; мессенджеры пережимают «фото», поэтому отправляйте файл <em>как документ</em>; 16-битные PNG и сжатый звук (MP3/AAC/OGG) не поддерживаются; затирание оригинала не гарантируется на SSD и APFS.
+              </div>
+            </div>
+          </div>
+        </section>
+
+      </div>
+    </section>
+  </main>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+  <script>
+    (function () {
+      const MIN_PASSWORD_LENGTH = 12;
+      const GENERATED_PASSWORD_LENGTH = 20;
+      const DEMO_WRONG_PASSWORD = "wrong-password";
+      const ALLOWED_CARRIER_EXTS = new Set(["png", "wav", "wave", "flac"]);
+      const LOSSY_AUDIO_EXTS = new Set(["mp3", "aac", "m4a", "ogg", "oga", "opus", "wma", "mp2"]);
+
+      const SAMPLE_CARRIERS = {
+        png:  { name: "sunset_raw.png",     ext: "PNG",  detail: "PNG · 3840 × 2160 · RGB",      capBytes: 3110400 },
+        wav:  { name: "podcast_master.wav", ext: "WAV",  detail: "WAV · 48 кГц · 16-бит стерео", capBytes: 552960 },
+        flac: { name: "ambient_loop.flac",  ext: "FLAC", detail: "FLAC · 44.1 кГц · 24-бит",     capBytes: 1248000 },
+      };
+
+      const SAMPLE_PAYLOADS = {
+        pdf: { name: "contract_q4.pdf",  bytes: 348160,  kind: "PDF-документ" },
+        zip: { name: "ssh_backup.zip",   bytes: 131072,  kind: "ZIP-архив" },
+        big: { name: "archive_4k.mov",   bytes: 4404019, kind: "Видеофайл" },
+      };
+
+      const SAMPLE_EXTRACT_CONTAINERS = {
+        text_png: {
+          name: "secret_note_phantom.png",
+          ext: "PNG",
+          detail: "PNG · 3840 × 2160 · RGB",
+          outcome: {
+            kind: "text",
+            text: "Ключ резервного хранилища: phm-94f2-88a1-c30e\nКод подтверждения: 482910\nПередано локально через PHANTOM.",
+          },
+        },
+        file_wav: {
+          name: "vault_audio_phantom.wav",
+          ext: "WAV",
+          detail: "WAV · 48 кГц · 16-бит стерео",
+          outcome: {
+            kind: "file",
+            filename: "ssh_backup_keys.zip",
+            fileKind: "ZIP-архив",
+            bytes: 131072,
+          },
+        },
+      };
+
+      const SAMPLE_META_FILES = {
+        found: {
+          name: "vacation_gps.png",
+          ext: "PNG",
+          detail: "PNG · 4032 × 3024 · RGB · 8.4 МБ на диске",
+          fields: [
+            { id: "gps", origin: "EXIF", name: "Координаты GPS", value: "50°27'01\"N, 30°31'24\"E", category: "personal", removable: true, defaultSelected: true, reason: "Личные данные о местоположении" },
+            { id: "model", origin: "EXIF", name: "Модель камеры", value: "Apple iPhone 15 Pro", category: "personal", removable: true, defaultSelected: true, reason: "Идентифицирует устройство съёмки" },
+            { id: "software", origin: "PNG tEXt", name: "Программа обработки", value: "Adobe Lightroom 7.4 (macOS)", category: "descriptive", removable: true, defaultSelected: true, reason: "Текстовый блок — удаляется целиком" },
+            { id: "author", origin: "PNG tEXt", name: "Автор", value: "A. Kovalenko", category: "personal", removable: true, defaultSelected: false, reason: "Поле авторства — предлагается без отметки по умолчанию" },
+            { id: "comment", origin: "PNG iTXt", name: "Комментарий", value: "Exported for client review", category: "descriptive", removable: true, defaultSelected: false, reason: "Описательный текстовый блок" },
+            { id: "icc", origin: "PNG iCCP", name: "Цветовой профиль ICC", value: "Display P3 (548 байт)", category: "technical", removable: false, defaultSelected: false, reason: "Цветовой профиль: удаление изменит отображение цветов" },
+            { id: "rights", origin: "XMP", name: "Права и лицензия", value: "All Rights Reserved (пакет XMP)", category: "rights", removable: false, defaultSelected: false, reason: "Содержит свойства прав — сохраняется по правилам PHANTOM" },
+          ],
+        },
+        protected: {
+          name: "archive_signed.png",
+          ext: "PNG",
+          detail: "PNG · 2560 × 1440 · RGB · 3.9 МБ на диске",
+          fields: [
+            { id: "icc2", origin: "PNG iCCP", name: "Цветовой профиль ICC", value: "sRGB IEC61966-2.1 (3144 байта)", category: "technical", removable: false, defaultSelected: false, reason: "Цветовой профиль: сохраняется для точной цветопередачи" },
+            { id: "c2pa", origin: "C2PA / JUMBF", name: "Манифест подлинности (Content Credentials)", value: "Манифест найден, подпись локально не проверена", category: "provenance", removable: false, defaultSelected: false, reason: "Происхождение и подписи никогда не удаляются и не перезаписываются" },
+            { id: "rights2", origin: "XMP", name: "Права и авторство", value: "© Studio Archive 2026", category: "rights", removable: false, defaultSelected: false, reason: "Сведения о правах защищены политикой" },
+            { id: "unk2", origin: "PNG caNV", name: "Неизвестный блок", value: "216 байт", category: "unknown", removable: false, defaultSelected: false, reason: "Неизвестные данные показываются, но не удаляются автоматически" },
+          ],
+        },
+      };
+
+      const state = {
+        activeTab: "embed",
+        // Embed state
+        carrier: null,
+        carrierError: "",
+        mode: "text",
+        text: "",
+        payloadFile: null,
+        password: "",
+        showPassword: false,
+        saving: false,
+        savedPath: null,
+        savedSummary: "",
+        // Extract state
+        exCarrier: null,
+        exCarrierError: "",
+        exPassword: "",
+        exShowPassword: false,
+        extracting: false,
+        exError: "",
+        exResult: null,
+        exSavedTxtPath: null,
+        exSavedFilePath: null,
+        // Metadata state
+        metaFile: null,
+        metaError: "",
+        metaSelected: new Set(),
+        metaCleaning: false,
+        metaOutcome: null,
+        // Settings state (matches AppSettings)
+        settings: {
+          language: "ru",
+          theme: "System",
+          reduceMotion: false,
+          verifyAfterEmbed: true,
+        },
+      };
+
+      const el = (id) => document.getElementById(id);
+
+      function formatBytes(bytes) {
+        if (!bytes) return "0 Б";
+        if (bytes < 1024) return `${bytes} Б`;
+        if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(bytes < 10240 ? 1 : 0)} КБ`;
+        return `${(bytes / (1024 * 1024)).toFixed(2)} МБ`;
+      }
+
+      function textUtf8Bytes(str) {
+        return new TextEncoder().encode(str).length;
+      }
+
+      function escapeHtml(s) {
+        return s.replace(/[&<>"']/g, (c) => ({
+          "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;",
+        }[c]));
+      }
+
+      function fileExt(filename) {
+        const idx = filename.lastIndexOf(".");
+        return idx === -1 ? "" : filename.slice(idx + 1).toLowerCase();
+      }
+
+      function validateCarrierFilename(filename, contextNoun) {
+        const ext = fileExt(filename);
+        if (ALLOWED_CARRIER_EXTS.has(ext)) {
+          return { ok: true, ext: ext.toUpperCase() };
+        }
+        if (LOSSY_AUDIO_EXTS.has(ext)) {
+          return {
+            ok: false,
+            error: `Файл «${filename}» (.${ext.toUpperCase()}) отклонён: звук со сжатием с потерями (MP3/AAC/OGG/Opus) не поддерживается. Выберите PNG, WAV или FLAC.`,
+          };
+        }
+        return {
+          ok: false,
+          error: `Файл «${filename}» не поддерживается как ${contextNoun}. Выберите PNG, WAV или FLAC.`,
+        };
+      }
+
+      function currentPayloadBytes() {
+        if (state.mode === "text") return textUtf8Bytes(state.text);
+        return state.payloadFile ? state.payloadFile.bytes : 0;
+      }
+
+      function hasPayload() {
+        return state.mode === "text" ? state.text.trim().length > 0 : Boolean(state.payloadFile);
+      }
+
+      function payloadFits() {
+        if (!state.carrier || !hasPayload()) return true;
+        return currentPayloadBytes() + 80 <= state.carrier.capBytes;
+      }
+
+      function passwordMeetsPolicy(pw) {
+        return pw.length >= MIN_PASSWORD_LENGTH;
+      }
+
+      function pwStrength(pw) {
+        if (!pw) return { label: "Не задан", cls: "", pct: 0, color: "transparent" };
+        if (pw.length < MIN_PASSWORD_LENGTH) {
+          const pct = Math.max(12, Math.round((pw.length / MIN_PASSWORD_LENGTH) * 38));
+          return { label: `Короткий (${pw.length}/${MIN_PASSWORD_LENGTH})`, cls: "is-weak", pct, color: "var(--red)" };
+        }
+        let classes = 0;
+        if (/[A-ZА-Я]/.test(pw)) classes++;
+        if (/[a-zа-я]/.test(pw)) classes++;
+        if (/[0-9]/.test(pw)) classes++;
+        if (/[^A-Za-zА-Яа-я0-9]/.test(pw)) classes++;
+        if (classes <= 1 && pw.length < 16) {
+          return { label: "Допустимый", cls: "is-mid", pct: 64, color: "var(--amber)" };
+        }
+        if (classes >= 3 || pw.length >= 16) {
+          return { label: "Надёжный", cls: "is-strong", pct: 100, color: "var(--green)" };
+        }
+        return { label: "Хороший", cls: "is-mid", pct: 78, color: "var(--amber)" };
+      }
+
+      function carrierIconSvg(ext) {
+        if (ext === "WAV" || ext === "WAVE" || ext === "FLAC") {
+          return `<svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 10v4M8 7v10M12 4v16M16 7v10M20 10v4"/></svg>`;
+        }
+        return `<svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="4"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg>`;
+      }
+
+      let toastTimer = null;
+      function showToast(msg) {
+        const t = el("toast");
+        t.textContent = msg;
+        t.classList.add("is-visible");
+        clearTimeout(toastTimer);
+        toastTimer = setTimeout(() => t.classList.remove("is-visible"), 3000);
+      }
+
+      function buildOutPath(carrier, suffix) {
+        const dot = carrier.name.lastIndexOf(".");
+        if (dot === -1) return `~/Desktop/${carrier.name}${suffix}`;
+        return `~/Desktop/${carrier.name.slice(0, dot)}${suffix}${carrier.name.slice(dot)}`;
+      }
+
+      function invalidateEmbedResult() {
+        state.savedPath = null;
+        state.savedSummary = "";
+      }
+
+      function invalidateExtractResult() {
+        state.exResult = null;
+        state.exError = "";
+        state.exSavedTxtPath = null;
+        state.exSavedFilePath = null;
+      }
+
+      function focusExtractPassword() {
+        const input = el("ex-password-input");
+        if (!input || input.disabled) return;
+        input.focus();
+        try { input.select(); } catch {}
+      }
+
+      function render() {
+        const busy = state.saving || state.extracting || state.metaCleaning;
+
+        const screenNames = {
+          embed: "Экран «Скрыть»",
+          extract: "Экран «Извлечь»",
+          metadata: "Экран «Метаданные»",
+          settings: "Экран «Настройки»",
+        };
+        el("proto-screen-label").textContent = `Демо-прототип macOS · ${screenNames[state.activeTab] || ""}`;
+        el("proto-presets-embed").classList.toggle("hidden", state.activeTab !== "embed");
+        el("proto-presets-extract").classList.toggle("hidden", state.activeTab !== "extract");
+        el("proto-presets-meta").classList.toggle("hidden", state.activeTab !== "metadata");
+        el("proto-presets-settings").classList.toggle("hidden", state.activeTab !== "settings");
+        document.querySelectorAll(".proto-chip").forEach((c) => { c.disabled = busy; });
+
+        document.querySelectorAll(".tab-btn").forEach((btn) => {
+          const active = btn.dataset.tab === state.activeTab;
+          btn.classList.toggle("is-active", active);
+          btn.setAttribute("aria-selected", active ? "true" : "false");
+          btn.disabled = busy && !active;
+        });
+
+        el("tab-embed").classList.toggle("hidden", state.activeTab !== "embed");
+        el("tab-extract").classList.toggle("hidden", state.activeTab !== "extract");
+        el("tab-metadata").classList.toggle("hidden", state.activeTab !== "metadata");
+        el("tab-settings").classList.toggle("hidden", state.activeTab !== "settings");
+
+        renderEmbed();
+        renderExtract();
+        renderMetadata();
+        renderSettings();
+      }
+
+      function renderEmbed() {
+        const locked = state.saving;
+        el("step-1").classList.toggle("is-locked", locked);
+        el("step-2").classList.toggle("is-locked", locked);
+        el("step-3").classList.toggle("is-locked", locked);
+        [
+          "btn-pick-carrier", "btn-replace-carrier", "btn-clear-carrier",
+          "mode-text", "mode-file", "btn-fill-sample-text", "btn-clear-text",
+          "btn-pick-payload", "btn-replace-payload", "btn-clear-payload",
+          "btn-gen-pw", "btn-toggle-pw",
+        ].forEach((id) => { el(id).disabled = locked; });
+        el("secret-text").disabled = locked;
+        el("password-input").disabled = locked;
+        document.querySelectorAll("[data-sample-carrier], [data-sample-payload]").forEach((b) => {
+          b.disabled = locked;
+        });
+
+        const hasCarrier = Boolean(state.carrier);
+        el("step-1").classList.toggle("is-done", hasCarrier);
+        el("carrier-empty").classList.toggle("hidden", hasCarrier);
+        el("carrier-selected").classList.toggle("hidden", !hasCarrier);
+
+        el("carrier-error").classList.toggle("hidden", !state.carrierError);
+        if (state.carrierError) el("carrier-error-text").textContent = state.carrierError;
+
+        const used = hasPayload() ? currentPayloadBytes() + 80 : 0;
+        const fits = payloadFits();
+
+        if (hasCarrier) {
+          el("carrier-icon").innerHTML = carrierIconSvg(state.carrier.ext);
+          el("carrier-name").textContent = state.carrier.name;
+          el("carrier-details").textContent = `${state.carrier.detail} · демо-ёмкость ${formatBytes(state.carrier.capBytes)}`;
+
+          const pct = Math.min(100, Math.round((used / state.carrier.capBytes) * 100));
+          const fill = el("cap-fill");
+          fill.style.width = hasPayload() ? `${Math.max(3, pct)}%` : "0%";
+          fill.classList.toggle("is-over", !fits);
+          fill.classList.toggle("is-warn", fits && pct >= 70);
+
+          el("cap-usage").textContent = hasPayload()
+            ? `Займёт ~${formatBytes(used)} из ${formatBytes(state.carrier.capBytes)} (${pct}%)`
+            : `Свободно ~${formatBytes(state.carrier.capBytes)}`;
+          const status = el("cap-status");
+          if (!hasPayload()) {
+            status.textContent = "Готов к записи";
+            status.className = "cap-meta__status";
+          } else if (fits) {
+            status.textContent = `Помещается · останется ~${formatBytes(state.carrier.capBytes - used)}`;
+            status.className = "cap-meta__status is-ok";
+          } else {
+            status.textContent = `Не помещается · лишних ~${formatBytes(used - state.carrier.capBytes)}`;
+            status.className = "cap-meta__status is-over";
+          }
+        }
+
+        el("step-2").classList.toggle("is-done", hasPayload() && fits);
+        el("mode-text").classList.toggle("is-active", state.mode === "text");
+        el("mode-text").setAttribute("aria-checked", state.mode === "text" ? "true" : "false");
+        el("mode-file").classList.toggle("is-active", state.mode === "file");
+        el("mode-file").setAttribute("aria-checked", state.mode === "file" ? "true" : "false");
+
+        el("payload-text-pane").classList.toggle("hidden", state.mode !== "text");
+        el("payload-file-pane").classList.toggle("hidden", state.mode !== "file");
+
+        if (el("secret-text").value !== state.text) el("secret-text").value = state.text;
+        const tBytes = textUtf8Bytes(state.text);
+        el("text-counter").textContent = `${state.text.length} символов · ${formatBytes(tBytes)} UTF-8`;
+        el("btn-clear-text").classList.toggle("hidden", state.text.length === 0);
+
+        const hasPFile = Boolean(state.payloadFile);
+        el("payload-file-empty").classList.toggle("hidden", hasPFile);
+        el("payload-file-selected").classList.toggle("hidden", !hasPFile);
+        if (hasPFile) {
+          el("payload-name").textContent = state.payloadFile.name;
+          el("payload-details").textContent = `${state.payloadFile.kind} · ${formatBytes(state.payloadFile.bytes)}`;
+        }
+
+        const pwValid = passwordMeetsPolicy(state.password);
+        el("step-3").classList.toggle("is-done", pwValid);
+        if (el("password-input").value !== state.password) el("password-input").value = state.password;
+        el("password-input").type = state.showPassword ? "text" : "password";
+        el("btn-toggle-pw").textContent = state.showPassword ? "Скрыть" : "Показать";
+
+        const st = pwStrength(state.password);
+        const sLabel = el("pw-strength-label");
+        sLabel.textContent = st.label;
+        sLabel.className = `pw-strength-label ${st.cls}`;
+        el("pw-meter-fill").style.width = `${st.pct}%`;
+        el("pw-meter-fill").style.background = st.color;
+
+        const pwHint = el("pw-policy-hint");
+        const shortNonEmpty = state.password.length > 0 && !pwValid;
+        pwHint.classList.toggle("is-short", shortNonEmpty);
+        el("pw-policy-text").textContent = shortNonEmpty
+          ? `Пароль слишком короткий: нужно ещё ${MIN_PASSWORD_LENGTH - state.password.length} симв.`
+          : "Требование PHANTOM: минимум 12 символов · KDF: Argon2id";
+        el("pw-len-counter").textContent = `${state.password.length} / ${MIN_PASSWORD_LENGTH}`;
+
+        const ready = hasCarrier && hasPayload() && fits && pwValid && !state.saving;
+        el("btn-encrypt").disabled = !ready;
+        el("step-4").classList.toggle("is-done", Boolean(state.savedPath));
+
+        const chips = [];
+        if (hasCarrier) {
+          chips.push(`<span class="summary-chip"><span class="summary-chip__k">Носитель:</span><span class="summary-chip__v">${escapeHtml(state.carrier.name)}</span></span>`);
+        }
+        if (state.mode === "text" && hasPayload()) {
+          chips.push(`<span class="summary-chip"><span class="summary-chip__k">Текст:</span><span class="summary-chip__v">${formatBytes(tBytes)}</span></span>`);
+        } else if (state.mode === "file" && hasPFile) {
+          chips.push(`<span class="summary-chip"><span class="summary-chip__k">Вложение:</span><span class="summary-chip__v">${escapeHtml(state.payloadFile.name)}</span></span>`);
+        }
+
+        const chipsEl = el("summary-chips");
+        chipsEl.innerHTML = chips.join("");
+        chipsEl.classList.toggle("hidden", chips.length === 0);
+
+        const hintEl = el("summary-hint");
+        if (!fits) {
+          hintEl.textContent = "Размер вложения превышает расчётную ёмкость выбранного носителя";
+          hintEl.className = "summary-hint is-error";
+        } else if (!hasCarrier) {
+          hintEl.textContent = "Шаг 1: выберите PNG, WAV или FLAC носитель";
+          hintEl.className = "summary-hint";
+        } else if (!hasPayload()) {
+          hintEl.textContent = state.mode === "text"
+            ? "Шаг 2: введите текст для скрытия"
+            : "Шаг 2: нажмите «Выбрать файл для скрытия»";
+          hintEl.className = "summary-hint";
+        } else if (!state.password) {
+          hintEl.textContent = "Шаг 3: введите пароль (минимум 12 символов)";
+          hintEl.className = "summary-hint";
+        } else if (!pwValid) {
+          hintEl.textContent = `Шаг 3: пароль должен быть не короче ${MIN_PASSWORD_LENGTH} символов`;
+          hintEl.className = "summary-hint is-error";
+        } else if (state.saving) {
+          hintEl.textContent = "Демо-имитация сохранения: носитель и вложение заблокированы…";
+          hintEl.className = "summary-hint";
+        } else {
+          hintEl.textContent = state.settings.verifyAfterEmbed
+            ? "Всё готово · демо-имитация Argon2id + AES-256-GCM + проверка"
+            : "Всё готово · демо-имитация Argon2id + AES-256-GCM (без тест-извлечения)";
+          hintEl.className = "summary-hint";
+        }
+
+        el("progress-row").classList.toggle("hidden", !state.saving);
+        el("result-panel").classList.toggle("hidden", !state.savedPath || state.saving);
+        if (state.savedPath) {
+          el("result-path").textContent = state.savedPath;
+          el("result-sub").textContent = state.savedSummary;
+        }
+      }
+
+      function renderExtract() {
+        const locked = state.extracting;
+        el("ex-step-1").classList.toggle("is-locked", locked);
+        el("ex-step-2").classList.toggle("is-locked", locked);
+        [
+          "ex-btn-pick-carrier", "ex-btn-replace-carrier", "ex-btn-clear-carrier", "ex-btn-toggle-pw",
+        ].forEach((id) => { el(id).disabled = locked; });
+        el("ex-password-input").disabled = locked;
+        document.querySelectorAll("[data-sample-extract-carrier]").forEach((b) => { b.disabled = locked; });
+
+        const hasExCarrier = Boolean(state.exCarrier);
+        el("ex-step-1").classList.toggle("is-done", hasExCarrier);
+        el("ex-carrier-empty").classList.toggle("hidden", hasExCarrier);
+        el("ex-carrier-selected").classList.toggle("hidden", !hasExCarrier);
+
+        el("ex-carrier-error").classList.toggle("hidden", !state.exCarrierError);
+        if (state.exCarrierError) el("ex-carrier-error-text").textContent = state.exCarrierError;
+
+        if (hasExCarrier) {
+          el("ex-carrier-icon").innerHTML = carrierIconSvg(state.exCarrier.ext);
+          el("ex-carrier-name").textContent = state.exCarrier.name;
+          el("ex-carrier-details").textContent = state.exCarrier.detail;
+        }
+
+        const hasExPw = state.exPassword.length > 0;
+        el("ex-step-2").classList.toggle("is-done", hasExPw && !state.exError);
+        if (el("ex-password-input").value !== state.exPassword) el("ex-password-input").value = state.exPassword;
+        el("ex-password-input").type = state.exShowPassword ? "text" : "password";
+        el("ex-btn-toggle-pw").textContent = state.exShowPassword ? "Скрыть" : "Показать";
+        el("ex-password-box").classList.toggle("has-error", Boolean(state.exError));
+
+        const exReady = hasExCarrier && hasExPw && !state.extracting;
+        el("btn-extract").disabled = !exReady;
+        el("ex-step-3").classList.toggle("is-done", Boolean(state.exResult));
+
+        const exChips = [];
+        if (hasExCarrier) {
+          exChips.push(`<span class="summary-chip"><span class="summary-chip__k">Контейнер:</span><span class="summary-chip__v">${escapeHtml(state.exCarrier.name)}</span></span>`);
+        }
+        const exChipsEl = el("ex-summary-chips");
+        exChipsEl.innerHTML = exChips.join("");
+        exChipsEl.classList.toggle("hidden", exChips.length === 0);
+
+        const exHint = el("ex-summary-hint");
+        if (!hasExCarrier) {
+          exHint.textContent = "Шаг 1: выберите стего-контейнер PNG, WAV или FLAC";
+          exHint.className = "summary-hint";
+        } else if (!hasExPw) {
+          exHint.textContent = "Шаг 2: введите пароль для расшифровки";
+          exHint.className = "summary-hint";
+        } else if (state.extracting) {
+          exHint.textContent = "Демо-имитация извлечения: контейнер и пароль заблокированы…";
+          exHint.className = "summary-hint";
+        } else if (state.exError) {
+          exHint.textContent = "Ошибка расшифровки — введите другой пароль и попробуйте снова";
+          exHint.className = "summary-hint is-error";
+        } else {
+          exHint.textContent = "Готово к расшифровке (в демо откроется содержимое контейнера)";
+          exHint.className = "summary-hint";
+        }
+
+        el("ex-progress-row").classList.toggle("hidden", !state.extracting);
+
+        const showExError = Boolean(state.exError) && !state.extracting;
+        el("ex-extract-error").classList.toggle("hidden", !showExError);
+        if (showExError) el("ex-extract-error-text").textContent = state.exError;
+
+        const isTextRes = state.exResult && state.exResult.kind === "text" && !state.extracting;
+        const isFileRes = state.exResult && state.exResult.kind === "file" && !state.extracting;
+
+        el("ex-result-text-card").classList.toggle("hidden", !isTextRes);
+        el("ex-result-file-card").classList.toggle("hidden", !isFileRes);
+
+        if (isTextRes) {
+          const bytes = textUtf8Bytes(state.exResult.text);
+          el("ex-text-meta").textContent = `Извлечено ${formatBytes(bytes)} (${state.exResult.text.length} симв.) · Пример проверки: SHA-256 совпадает · UTF-8`;
+          el("ex-result-textarea").value = state.exResult.text;
+          el("ex-txt-saved-row").classList.toggle("hidden", !state.exSavedTxtPath);
+          if (state.exSavedTxtPath) el("ex-txt-saved-path").textContent = state.exSavedTxtPath;
+        }
+
+        if (isFileRes) {
+          el("ex-out-filename").textContent = state.exResult.filename;
+          el("ex-out-filedetails").textContent = `${state.exResult.fileKind} · ${formatBytes(state.exResult.bytes)}`;
+          el("ex-file-meta").textContent = `Вложение извлечено из «${state.exCarrier ? state.exCarrier.name : "контейнера"}» · Пример проверки: SHA-256 совпадает`;
+          el("ex-file-saved-row").classList.toggle("hidden", !state.exSavedFilePath);
+          if (state.exSavedFilePath) el("ex-file-saved-path").textContent = state.exSavedFilePath;
+        }
+      }
+
+      function renderMetadata() {
+        const hasFile = Boolean(state.metaFile);
+        const locked = state.metaCleaning;
+
+        el("meta-step-file").classList.toggle("is-locked", locked);
+        el("meta-step-file").classList.toggle("is-done", hasFile);
+        el("meta-file-empty").classList.toggle("hidden", hasFile);
+        el("meta-file-selected").classList.toggle("hidden", !hasFile);
+
+        el("meta-file-error").classList.toggle("hidden", !state.metaError);
+        if (state.metaError) el("meta-file-error-text").textContent = state.metaError;
+
+        ["meta-btn-pick", "meta-btn-replace", "meta-btn-clear"].forEach((id) => {
+          el(id).disabled = locked;
+        });
+        document.querySelectorAll("[data-sample-meta]").forEach((b) => { b.disabled = locked; });
+
+        el("meta-step-fields").classList.toggle("hidden", !hasFile);
+        el("meta-step-action").classList.toggle("hidden", !hasFile);
+        if (!hasFile) return;
+
+        el("meta-file-icon").innerHTML = carrierIconSvg(state.metaFile.ext);
+        el("meta-file-name").textContent = state.metaFile.name;
+        el("meta-file-details").textContent = state.metaFile.detail;
+
+        const fields = state.metaFile.fields;
+        const removableFields = fields.filter((f) => f.removable);
+        const protectedFields = fields.filter((f) => !f.removable);
+        const selectedCount = removableFields.filter((f) => state.metaSelected.has(f.id)).length;
+        const hasRemovable = removableFields.length > 0;
+
+        el("meta-step-fields").classList.toggle("is-locked", locked);
+        el("meta-step-fields").classList.toggle("is-done", hasRemovable ? selectedCount > 0 : true);
+
+        el("meta-pill-selected").textContent = `Выбрано: ${selectedCount}`;
+        el("meta-pill-removable").textContent = `Можно удалить: ${removableFields.length}`;
+        el("meta-pill-protected").textContent = `Защищено: ${protectedFields.length}`;
+
+        el("meta-toolbar").classList.toggle("hidden", !hasRemovable);
+        ["meta-btn-sel-personal", "meta-btn-sel-all", "meta-btn-sel-none"].forEach((id) => {
+          el(id).disabled = locked;
+        });
+        el("meta-no-removable-banner").classList.toggle("hidden", hasRemovable);
+
+        const listEl = el("meta-fields-list");
+        listEl.innerHTML = fields.map((f) => {
+          const checked = f.removable && state.metaSelected.has(f.id);
+          const badge = !f.removable
+            ? `<span class="meta-badge meta-badge--protected">Защищено</span>`
+            : checked
+              ? `<span class="meta-badge meta-badge--remove">Будет удалено</span>`
+              : `<span class="meta-badge meta-badge--available">Можно удалить</span>`;
+
+          const leftControl = f.removable
+            ? `<input type="checkbox" class="meta-check" data-meta-id="${escapeHtml(f.id)}" ${checked ? "checked" : ""} ${locked ? "disabled" : ""} aria-label="Удалить ${escapeHtml(f.name)}" />`
+            : `<span class="meta-lock-icon" title="Защищено политикой PHANTOM"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3.5" y="7" width="9" height="6.2" rx="1.6"/><path d="M5.5 7V5a2.5 2.5 0 0 1 5 0v2"/></svg></span>`;
+
+          return `
+            <div class="meta-field-row ${f.removable ? "is-removable" : ""} ${checked ? "is-selected" : ""}" data-meta-row="${escapeHtml(f.id)}">
+              <div class="meta-field-left">
+                ${leftControl}
+                <div class="meta-field-body">
+                  <div class="meta-field-top">
+                    <span class="meta-field-name">${escapeHtml(f.name)}</span>
+                    <span class="meta-field-origin">${escapeHtml(f.origin)}</span>
+                  </div>
+                  <div class="meta-field-val">${escapeHtml(f.value)}</div>
+                  <div class="meta-field-reason">${escapeHtml(f.reason)}</div>
+                </div>
+              </div>
+              <div class="meta-badges">${badge}</div>
+            </div>
+          `;
+        }).join("");
+
+        listEl.querySelectorAll(".meta-check").forEach((cb) => {
+          cb.addEventListener("change", () => toggleMetaField(cb.dataset.metaId));
+        });
+        listEl.querySelectorAll(".meta-field-row.is-removable").forEach((row) => {
+          row.addEventListener("click", (e) => {
+            if (e.target.closest("input")) return;
+            toggleMetaField(row.dataset.metaRow);
+          });
+        });
+
+        const keptCount = fields.length - selectedCount;
+        el("meta-plan-chips").innerHTML = `
+          <span class="summary-chip"><span class="summary-chip__k">Будет удалено:</span><span class="summary-chip__v">${selectedCount}</span></span>
+          <span class="summary-chip"><span class="summary-chip__k">Останется (защищено + не выбрано):</span><span class="summary-chip__v">${keptCount}</span></span>
+        `;
+
+        const planHint = el("meta-plan-hint");
+        if (!hasRemovable) {
+          planHint.textContent = "Нет полей, доступных для удаления — файл защищён политикой очистки";
+        } else if (selectedCount === 0) {
+          planHint.textContent = "Выберите хотя бы одно доступное поле, чтобы сохранить очищенную копию";
+        } else if (state.metaCleaning) {
+          planHint.textContent = "Демо-имитация очистки и проверки декодированного содержимого…";
+        } else {
+          planHint.textContent = "Оригинал останется нетронутым — PHANTOM создаст новую очищенную копию (демо)";
+        }
+
+        el("meta-btn-clean").disabled = !hasRemovable || selectedCount === 0 || state.metaCleaning;
+        el("meta-step-action").classList.toggle("is-done", Boolean(state.metaOutcome));
+        el("meta-progress-row").classList.toggle("hidden", !state.metaCleaning);
+
+        const showResult = Boolean(state.metaOutcome) && !state.metaCleaning;
+        el("meta-result-panel").classList.toggle("hidden", !showResult);
+        if (showResult) {
+          const o = state.metaOutcome;
+          el("meta-res-removed-k").textContent = `Удалено (${o.removedNames.length})`;
+          el("meta-res-removed-v").textContent = o.removedNames.length ? o.removedNames.join(", ") : "0 полей";
+          el("meta-res-kept-k").textContent = `Сохранено (${o.keptNames.length})`;
+          el("meta-res-kept-v").textContent = o.keptNames.length ? o.keptNames.join(", ") : "—";
+          el("meta-res-integrity-v").textContent = "Пример: декодированное содержимое (пиксели / аудиосэмплы) совпадает, изменились только байты метаданных (демо).";
+          el("meta-res-hashes").textContent = `Пример SHA-256 содержимого до: ${o.srcSha} · после: ${o.outSha} (совпадает)`;
+          el("meta-res-path").textContent = o.path;
+        }
+      }
+
+      function renderSettings() {
+        const s = state.settings;
+        document.querySelectorAll("[data-set-lang]").forEach((btn) => {
+          btn.classList.toggle("is-active", btn.dataset.setLang === s.language);
+        });
+        document.querySelectorAll("[data-set-theme]").forEach((btn) => {
+          btn.classList.toggle("is-active", btn.dataset.setTheme === s.theme);
+        });
+        el("set-reduce-motion").checked = s.reduceMotion;
+        el("set-verify-embed").checked = s.verifyAfterEmbed;
+
+        const langLabels = { ru: "Русский", en: "English", uk: "Українська" };
+        el("set-lang-sub").textContent = `Выбран язык «${langLabels[s.language]}» (в демо интерфейс остаётся на русском)`;
+
+        const themeLabels = {
+          System: "Системная тема следует за оформлением macOS (в прототипе закреплена тёмная палитра)",
+          Dark: "Выбрана тёмная тема оформления",
+          Light: "Выбрана светлая тема (в прототипе показана тёмная палитра macOS)",
+        };
+        el("set-theme-sub").textContent = themeLabels[s.theme];
+      }
+
+      function toggleMetaField(id) {
+        if (state.metaCleaning || !state.metaFile) return;
+        const field = state.metaFile.fields.find((f) => f.id === id);
+        if (!field || !field.removable) return;
+        if (state.metaSelected.has(id)) state.metaSelected.delete(id);
+        else state.metaSelected.add(id);
+        state.metaOutcome = null;
+        render();
+      }
+
+      function loadMetaFile(fileObj) {
+        state.metaError = "";
+        state.metaFile = fileObj;
+        state.metaSelected = new Set(
+          fileObj.fields.filter((f) => f.removable && f.defaultSelected).map((f) => f.id)
+        );
+        state.metaOutcome = null;
+        render();
+      }
+
+      function applyMetadataCustomFile(name, sizeBytes) {
+        if (state.metaCleaning) return;
+        const check = validateCarrierFilename(name, "файл для анализа метаданных");
+        if (!check.ok) {
+          state.metaError = check.error;
+          render();
+          showToast("Неподдерживаемый формат файла");
+          return;
+        }
+        const baseFields = JSON.parse(JSON.stringify(SAMPLE_META_FILES.found.fields));
+        loadMetaFile({
+          name,
+          ext: check.ext,
+          detail: `${check.ext} · ${formatBytes(sizeBytes)} на диске (демо-набор полей)`,
+          fields: baseFields,
+        });
+      }
+
+      // ---- Embed handlers ----
+      function applyEmbedCarrierFile(name, sizeBytes, detailOverride) {
+        if (state.saving) return;
+        const check = validateCarrierFilename(name, "носитель");
+        if (!check.ok) {
+          state.carrierError = check.error;
+          render();
+          showToast("Неподдерживаемый формат носителя");
+          return;
+        }
+        state.carrierError = "";
+        state.carrier = {
+          name,
+          ext: check.ext,
+          detail: detailOverride || `${check.ext} · ${formatBytes(sizeBytes)} на диске`,
+          capBytes: Math.max(64 * 1024, Math.round(sizeBytes * 0.35)),
+        };
+        invalidateEmbedResult();
+        render();
+      }
+
+      document.querySelectorAll(".tab-btn").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          if (state.saving || state.extracting || state.metaCleaning) return;
+          state.activeTab = btn.dataset.tab;
+          render();
+        });
+      });
+
+      const openCarrierPicker = () => { if (!state.saving) el("input-carrier").click(); };
+      el("btn-pick-carrier").addEventListener("click", (e) => { e.stopPropagation(); openCarrierPicker(); });
+      el("btn-replace-carrier").addEventListener("click", openCarrierPicker);
+      el("carrier-drop").addEventListener("click", openCarrierPicker);
+      el("carrier-drop").addEventListener("keydown", (e) => {
+        if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openCarrierPicker(); }
+      });
+
+      el("input-carrier").addEventListener("change", (e) => {
+        const file = e.target.files && e.target.files[0];
+        if (!file) return;
+        applyEmbedCarrierFile(file.name, file.size || 256 * 1024);
+        e.target.value = "";
+      });
+
+      document.querySelectorAll("[data-sample-carrier]").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          if (state.saving) return;
+          const key = btn.dataset.sampleCarrier;
+          if (key === "mp3") {
+            applyEmbedCarrierFile("track_demo.mp3", 4 * 1024 * 1024);
+            return;
+          }
+          state.carrierError = "";
+          state.carrier = { ...SAMPLE_CARRIERS[key] };
+          invalidateEmbedResult();
+          render();
+        });
+      });
+
+      el("btn-clear-carrier").addEventListener("click", () => {
+        if (state.saving) return;
+        state.carrier = null;
+        state.carrierError = "";
+        invalidateEmbedResult();
+        render();
+      });
+
+      el("btn-dismiss-carrier-error").addEventListener("click", () => {
+        state.carrierError = "";
+        render();
+      });
+
+      const step1 = el("step-1");
+      step1.addEventListener("dragover", (e) => {
+        if (state.saving) return;
+        e.preventDefault();
+        step1.classList.add("is-dragover");
+      });
+      step1.addEventListener("dragleave", () => step1.classList.remove("is-dragover"));
+      step1.addEventListener("drop", (e) => {
+        e.preventDefault();
+        step1.classList.remove("is-dragover");
+        if (state.saving) return;
+        const file = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+        if (!file) return;
+        applyEmbedCarrierFile(file.name, file.size || 256 * 1024);
+      });
+
+      el("mode-text").addEventListener("click", () => {
+        if (state.saving) return;
+        state.mode = "text";
+        invalidateEmbedResult();
+        render();
+        el("secret-text").focus();
+      });
+      el("mode-file").addEventListener("click", () => {
+        if (state.saving) return;
+        state.mode = "file";
+        invalidateEmbedResult();
+        render();
+      });
+
+      el("secret-text").addEventListener("input", (e) => {
+        if (state.saving) return;
+        state.text = e.target.value;
+        invalidateEmbedResult();
+        render();
+      });
+      el("btn-fill-sample-text").addEventListener("click", () => {
+        if (state.saving) return;
+        state.text = "Ключ резервного хранилища: phm-94f2-88a1-c30e\nРезервная копия передана локально без загрузки в сеть.";
+        invalidateEmbedResult();
+        render();
+      });
+      el("btn-clear-text").addEventListener("click", () => {
+        if (state.saving) return;
+        state.text = "";
+        invalidateEmbedResult();
+        render();
+      });
+
+      const openPayloadPicker = () => { if (!state.saving) el("input-payload").click(); };
+      el("btn-pick-payload").addEventListener("click", openPayloadPicker);
+      el("btn-replace-payload").addEventListener("click", openPayloadPicker);
+      el("btn-clear-payload").addEventListener("click", () => {
+        if (state.saving) return;
+        state.payloadFile = null;
+        invalidateEmbedResult();
+        render();
+      });
+
+      el("input-payload").addEventListener("change", (e) => {
+        if (state.saving) return;
+        const file = e.target.files && e.target.files[0];
+        if (!file) return;
+        const ext = (file.name.split(".").pop() || "").toUpperCase();
+        state.payloadFile = {
+          name: file.name,
+          bytes: file.size || 1024,
+          kind: ext ? `Файл ${ext}` : "Файл",
+        };
+        invalidateEmbedResult();
+        render();
+        e.target.value = "";
+      });
+
+      document.querySelectorAll("[data-sample-payload]").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          if (state.saving) return;
+          state.payloadFile = { ...SAMPLE_PAYLOADS[btn.dataset.samplePayload] };
+          invalidateEmbedResult();
+          render();
+        });
+      });
+
+      el("password-input").addEventListener("input", (e) => {
+        if (state.saving) return;
+        state.password = e.target.value;
+        invalidateEmbedResult();
+        render();
+      });
+      el("btn-toggle-pw").addEventListener("click", () => {
+        if (state.saving) return;
+        state.showPassword = !state.showPassword;
+        render();
+      });
+      el("btn-gen-pw").addEventListener("click", () => {
+        if (state.saving) return;
+        const upper = "ABCDEFGHJKLMNPQRSTUVWXYZ";
+        const lower = "abcdefghijkmnpqrstuvwxyz";
+        const digits = "23456789";
+        const symbols = "!@#$%^&*-_=+";
+        const all = upper + lower + digits + symbols;
+        const buf = new Uint32Array(GENERATED_PASSWORD_LENGTH);
+        crypto.getRandomValues(buf);
+        const chars = [
+          upper[buf[0] % upper.length],
+          lower[buf[1] % lower.length],
+          digits[buf[2] % digits.length],
+          symbols[buf[3] % symbols.length],
+        ];
+        for (let i = 4; i < GENERATED_PASSWORD_LENGTH; i++) {
+          chars.push(all[buf[i] % all.length]);
+        }
+        crypto.getRandomValues(buf);
+        for (let i = chars.length - 1; i > 0; i--) {
+          const j = buf[i] % (i + 1);
+          [chars[i], chars[j]] = [chars[j], chars[i]];
+        }
+        state.password = chars.join("");
+        state.showPassword = true;
+        invalidateEmbedResult();
+        render();
+        showToast("Сгенерирован пароль длиной 20 символов");
+      });
+
+      el("btn-encrypt").addEventListener("click", () => {
+        if (state.saving || !state.carrier || !hasPayload() || !payloadFits() || !passwordMeetsPolicy(state.password)) return;
+        state.saving = true;
+        state.savedPath = null;
+        el("btn-encrypt-label").textContent = "Шифрование (демо)…";
+        render();
+
+        const steps = [
+          { pct: 24, text: "Демо-имитация: выработка ключа Argon2id…" },
+          { pct: 58, text: "Демо-имитация: шифрование AES-256-GCM…" },
+          { pct: 88, text: `Демо-имитация: встраивание в «${state.carrier.name}»…` },
+          { pct: 100, text: state.settings.verifyAfterEmbed ? "Демо-имитация: тест-извлечение результата…" : "Демо-имитация: завершение…" },
+        ];
+
+        const delay = state.settings.reduceMotion ? 110 : 240;
+        let idx = 0;
+        const tick = () => {
+          if (idx < steps.length) {
+            el("progress-stage").textContent = steps[idx].text;
+            el("progress-pct").textContent = `${steps[idx].pct}%`;
+            el("progress-fill").style.width = `${steps[idx].pct}%`;
+            idx++;
+            setTimeout(tick, delay);
+          } else {
+            state.saving = false;
+            el("btn-encrypt-label").textContent = "Зашифровать и сохранить";
+            state.savedPath = buildOutPath(state.carrier, "_phantom");
+            if (state.mode === "file" && state.payloadFile) {
+              state.savedSummary = `Демо-имитация (на диск не записывалось): вложение «${state.payloadFile.name}» скрыто в носителе «${state.carrier.name}»`;
+            } else {
+              state.savedSummary = `Демо-имитация (на диск не записывалось): текст (${formatBytes(textUtf8Bytes(state.text))}) скрыт в носителе «${state.carrier.name}»`;
+            }
+            render();
+            showToast("Демо-сохранение завершено (файл на диск не записывался)");
+          }
+        };
+        tick();
+      });
+
+      el("btn-finder").addEventListener("click", () => {
+        if (!state.savedPath) return;
+        showToast(`Демо: на macOS здесь откроется Finder и выделит «${state.savedPath.split("/").pop()}»`);
+      });
+
+      el("btn-copy-path").addEventListener("click", async () => {
+        if (!state.savedPath) return;
+        try {
+          await navigator.clipboard.writeText(state.savedPath);
+          showToast("Демо-путь скопирован в буфер обмена");
+        } catch {
+          showToast(`Путь: ${state.savedPath}`);
+        }
+      });
+
+      el("btn-reset-result").addEventListener("click", () => {
+        invalidateEmbedResult();
+        render();
+      });
+
+      // ---- Extract handlers ----
+      function applyExtractCarrierFile(name, sizeBytes, presetSample) {
+        if (state.extracting) return;
+        const check = validateCarrierFilename(name, "контейнер");
+        if (!check.ok) {
+          state.exCarrierError = check.error;
+          render();
+          showToast("Неподдерживаемый формат контейнера");
+          return;
+        }
+        state.exCarrierError = "";
+        if (presetSample) {
+          state.exCarrier = {
+            name: presetSample.name,
+            ext: presetSample.ext,
+            detail: presetSample.detail,
+            demoOutcome: presetSample.outcome,
+          };
+        } else {
+          state.exCarrier = {
+            name,
+            ext: check.ext,
+            detail: `${check.ext} · ${formatBytes(sizeBytes)} на диске`,
+            demoOutcome: {
+              kind: "text",
+              text: `Демо-содержимое, извлечённое из «${name}».\nВ реальном приложении PHANTOM расшифрует полезную нагрузку с проверкой SHA-256.`,
+            },
+          };
+        }
+        invalidateExtractResult();
+        render();
+      }
+
+      const openExCarrierPicker = () => { if (!state.extracting) el("ex-input-carrier").click(); };
+      el("ex-btn-pick-carrier").addEventListener("click", (e) => { e.stopPropagation(); openExCarrierPicker(); });
+      el("ex-btn-replace-carrier").addEventListener("click", openExCarrierPicker);
+      el("ex-carrier-drop").addEventListener("click", openExCarrierPicker);
+      el("ex-carrier-drop").addEventListener("keydown", (e) => {
+        if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openExCarrierPicker(); }
+      });
+
+      el("ex-input-carrier").addEventListener("change", (e) => {
+        const file = e.target.files && e.target.files[0];
+        if (!file) return;
+        applyExtractCarrierFile(file.name, file.size || 256 * 1024, null);
+        e.target.value = "";
+      });
+
+      document.querySelectorAll("[data-sample-extract-carrier]").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          if (state.extracting) return;
+          const key = btn.dataset.sampleExtractCarrier;
+          if (key === "mp3") {
+            applyExtractCarrierFile("track_demo.mp3", 4 * 1024 * 1024, null);
+            return;
+          }
+          const sample = SAMPLE_EXTRACT_CONTAINERS[key];
+          applyExtractCarrierFile(sample.name, 1024, sample);
+        });
+      });
+
+      el("ex-btn-clear-carrier").addEventListener("click", () => {
+        if (state.extracting) return;
+        state.exCarrier = null;
+        state.exCarrierError = "";
+        invalidateExtractResult();
+        render();
+      });
+
+      el("ex-btn-dismiss-error").addEventListener("click", () => {
+        state.exCarrierError = "";
+        render();
+      });
+
+      const exStep1 = el("ex-step-1");
+      exStep1.addEventListener("dragover", (e) => {
+        if (state.extracting) return;
+        e.preventDefault();
+        exStep1.classList.add("is-dragover");
+      });
+      exStep1.addEventListener("dragleave", () => exStep1.classList.remove("is-dragover"));
+      exStep1.addEventListener("drop", (e) => {
+        e.preventDefault();
+        exStep1.classList.remove("is-dragover");
+        if (state.extracting) return;
+        const file = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+        if (!file) return;
+        applyExtractCarrierFile(file.name, file.size || 256 * 1024, null);
+      });
+
+      el("ex-password-input").addEventListener("input", (e) => {
+        if (state.extracting) return;
+        state.exPassword = e.target.value;
+        invalidateExtractResult();
+        render();
+      });
+      el("ex-btn-toggle-pw").addEventListener("click", () => {
+        if (state.extracting) return;
+        state.exShowPassword = !state.exShowPassword;
+        render();
+      });
+      el("ex-btn-focus-pw").addEventListener("click", focusExtractPassword);
+
+      el("btn-extract").addEventListener("click", () => {
+        if (state.extracting || !state.exCarrier || !state.exPassword) return;
+        state.extracting = true;
+        invalidateExtractResult();
+        el("btn-extract-label").textContent = "Расшифровка (демо)…";
+        render();
+
+        const steps = [
+          { pct: 30, text: "Демо-имитация: поиск заголовка в контейнере…" },
+          { pct: 68, text: "Демо-имитация: выработка ключа и расшифровка…" },
+          { pct: 100, text: "Демо-имитация: проверка SHA-256…" },
+        ];
+
+        const shouldFail = state.exPassword.trim().toLowerCase() === DEMO_WRONG_PASSWORD;
+        const delay = state.settings.reduceMotion ? 100 : 220;
+        let idx = 0;
+        const tick = () => {
+          if (idx < steps.length) {
+            el("ex-progress-stage").textContent = steps[idx].text;
+            el("ex-progress-pct").textContent = `${steps[idx].pct}%`;
+            el("ex-progress-fill").style.width = `${steps[idx].pct}%`;
+            idx++;
+            setTimeout(tick, delay);
+          } else {
+            state.extracting = false;
+            el("btn-extract-label").textContent = "Извлечь и расшифровать";
+            if (shouldFail) {
+              state.exResult = null;
+              state.exError = `Неверный пароль или контейнер «${state.exCarrier.name}» не содержит скрытых данных PHANTOM. Контейнер сохранён — проверьте пароль и попробуйте снова.`;
+              render();
+              focusExtractPassword();
+              showToast("Не удалось извлечь — фокус возвращён в пароль");
+            } else {
+              state.exResult = { ...state.exCarrier.demoOutcome };
+              render();
+              showToast(state.exResult.kind === "text" ? "Демо-извлечение: получен текст" : "Демо-извлечение: получен файл");
+            }
+          }
+        };
+        tick();
+      });
+
+      el("ex-btn-copy-text").addEventListener("click", async () => {
+        if (!state.exResult || state.exResult.kind !== "text") return;
+        try {
+          await navigator.clipboard.writeText(state.exResult.text);
+          showToast("Текст скопирован в буфер обмена");
+        } catch {
+          showToast("Демо: текст скопирован в буфер обмена");
+        }
+      });
+
+      el("ex-btn-save-txt").addEventListener("click", () => {
+        if (!state.exCarrier) return;
+        const base = state.exCarrier.name.replace(/\.[^.]+$/, "");
+        state.exSavedTxtPath = `~/Desktop/${base}_extracted.txt`;
+        render();
+        showToast("Демо: путь сохранения TXT показан (на диск не записывалось)");
+      });
+
+      el("ex-btn-save-as").addEventListener("click", () => {
+        if (!state.exResult || state.exResult.kind !== "file") return;
+        state.exSavedFilePath = `~/Downloads/${state.exResult.filename}`;
+        render();
+        showToast(`Демо: «Сохранить как…» → ${state.exResult.filename} (на диск не записывалось)`);
+      });
+
+      el("ex-btn-txt-finder").addEventListener("click", () => {
+        if (!state.exSavedTxtPath) return;
+        showToast(`Демо: на macOS здесь откроется Finder и выделит «${state.exSavedTxtPath.split("/").pop()}»`);
+      });
+
+      el("ex-btn-file-finder").addEventListener("click", () => {
+        if (!state.exSavedFilePath) return;
+        showToast(`Демо: на macOS здесь откроется Finder и выделит «${state.exSavedFilePath.split("/").pop()}»`);
+      });
+
+      el("ex-btn-clear-text-res").addEventListener("click", () => { invalidateExtractResult(); render(); });
+      el("ex-btn-clear-file-res").addEventListener("click", () => { invalidateExtractResult(); render(); });
+
+      // ---- Metadata handlers ----
+      const openMetaPicker = () => { if (!state.metaCleaning) el("meta-input-file").click(); };
+      el("meta-btn-pick").addEventListener("click", (e) => { e.stopPropagation(); openMetaPicker(); });
+      el("meta-btn-replace").addEventListener("click", openMetaPicker);
+      el("meta-drop").addEventListener("click", openMetaPicker);
+      el("meta-drop").addEventListener("keydown", (e) => {
+        if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openMetaPicker(); }
+      });
+
+      el("meta-input-file").addEventListener("change", (e) => {
+        const file = e.target.files && e.target.files[0];
+        if (!file) return;
+        applyMetadataCustomFile(file.name, file.size || 512 * 1024);
+        e.target.value = "";
+      });
+
+      document.querySelectorAll("[data-sample-meta]").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          if (state.metaCleaning) return;
+          const key = btn.dataset.sampleMeta;
+          if (key === "mp3") {
+            applyMetadataCustomFile("track_demo.mp3", 4 * 1024 * 1024);
+            return;
+          }
+          loadMetaFile(JSON.parse(JSON.stringify(SAMPLE_META_FILES[key])));
+        });
+      });
+
+      el("meta-btn-clear").addEventListener("click", () => {
+        if (state.metaCleaning) return;
+        state.metaFile = null;
+        state.metaError = "";
+        state.metaSelected.clear();
+        state.metaOutcome = null;
+        render();
+      });
+
+      el("meta-btn-dismiss-error").addEventListener("click", () => {
+        state.metaError = "";
+        render();
+      });
+
+      const metaStepFile = el("meta-step-file");
+      metaStepFile.addEventListener("dragover", (e) => {
+        if (state.metaCleaning) return;
+        e.preventDefault();
+        metaStepFile.classList.add("is-dragover");
+      });
+      metaStepFile.addEventListener("dragleave", () => metaStepFile.classList.remove("is-dragover"));
+      metaStepFile.addEventListener("drop", (e) => {
+        e.preventDefault();
+        metaStepFile.classList.remove("is-dragover");
+        if (state.metaCleaning) return;
+        const file = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+        if (!file) return;
+        applyMetadataCustomFile(file.name, file.size || 512 * 1024);
+      });
+
+      el("meta-btn-sel-personal").addEventListener("click", () => {
+        if (state.metaCleaning || !state.metaFile) return;
+        state.metaSelected = new Set(
+          state.metaFile.fields.filter((f) => f.removable && f.category === "personal").map((f) => f.id)
+        );
+        state.metaOutcome = null;
+        render();
+      });
+
+      el("meta-btn-sel-all").addEventListener("click", () => {
+        if (state.metaCleaning || !state.metaFile) return;
+        state.metaSelected = new Set(
+          state.metaFile.fields.filter((f) => f.removable).map((f) => f.id)
+        );
+        state.metaOutcome = null;
+        render();
+      });
+
+      el("meta-btn-sel-none").addEventListener("click", () => {
+        if (state.metaCleaning || !state.metaFile) return;
+        state.metaSelected.clear();
+        state.metaOutcome = null;
+        render();
+      });
+
+      el("meta-btn-clean").addEventListener("click", () => {
+        if (state.metaCleaning || !state.metaFile || state.metaSelected.size === 0) return;
+        state.metaCleaning = true;
+        state.metaOutcome = null;
+        el("meta-btn-clean-label").textContent = "Очистка (демо)…";
+        render();
+
+        const steps = [
+          { pct: 32, text: "Демо-имитация: создание копии без выбранных метаданных…" },
+          { pct: 74, text: "Демо-имитация: декодирование пикселей и сверка SHA-256…" },
+          { pct: 100, text: "Демо-имитация: проверка защищённых блоков…" },
+        ];
+
+        const delay = state.settings.reduceMotion ? 100 : 220;
+        let idx = 0;
+        const tick = () => {
+          if (idx < steps.length) {
+            el("meta-progress-stage").textContent = steps[idx].text;
+            el("meta-progress-pct").textContent = `${steps[idx].pct}%`;
+            el("meta-progress-fill").style.width = `${steps[idx].pct}%`;
+            idx++;
+            setTimeout(tick, delay);
+          } else {
+            state.metaCleaning = false;
+            el("meta-btn-clean-label").textContent = "Сохранить очищенную копию";
+            const removedNames = state.metaFile.fields
+              .filter((f) => f.removable && state.metaSelected.has(f.id))
+              .map((f) => f.name);
+            const keptNames = state.metaFile.fields
+              .filter((f) => !f.removable || !state.metaSelected.has(f.id))
+              .map((f) => f.name);
+            state.metaOutcome = {
+              removedNames,
+              keptNames,
+              path: buildOutPath(state.metaFile, "_clean"),
+              srcSha: "4f9a…c18e",
+              outSha: "4f9a…c18e",
+            };
+            render();
+            showToast("Демо: очищенная копия сохранена (на диск не записывалось)");
+          }
+        };
+        tick();
+      });
+
+      el("meta-btn-copy-path").addEventListener("click", async () => {
+        if (!state.metaOutcome) return;
+        try {
+          await navigator.clipboard.writeText(state.metaOutcome.path);
+          showToast("Демо-путь скопирован в буфер обмена");
+        } catch {
+          showToast(`Путь: ${state.metaOutcome.path}`);
+        }
+      });
+
+      el("meta-btn-finder").addEventListener("click", () => {
+        if (!state.metaOutcome) return;
+        showToast(`Демо: на macOS здесь откроется Finder и выделит «${state.metaOutcome.path.split("/").pop()}»`);
+      });
+
+      el("meta-btn-reset-result").addEventListener("click", () => {
+        state.metaOutcome = null;
+        render();
+      });
+
+      // ---- Settings handlers ----
+      document.querySelectorAll("[data-set-lang]").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          state.settings.language = btn.dataset.setLang;
+          render();
+          showToast(`Демо: язык «${btn.textContent}» сохранён`);
+        });
+      });
+
+      document.querySelectorAll("[data-set-theme]").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          state.settings.theme = btn.dataset.setTheme;
+          render();
+          showToast(`Демо: тема «${btn.textContent}» сохранена`);
+        });
+      });
+
+      el("set-reduce-motion").addEventListener("change", (e) => {
+        state.settings.reduceMotion = e.target.checked;
+        render();
+        showToast(state.settings.reduceMotion ? "Уменьшение анимаций включено (демо)" : "Анимации включены (демо)");
+      });
+
+      el("set-verify-embed").addEventListener("change", (e) => {
+        state.settings.verifyAfterEmbed = e.target.checked;
+        render();
+        showToast(state.settings.verifyAfterEmbed ? "Проверка результата включена (демо)" : "Проверка результата отключена (демо)");
+      });
+
+      el("set-btn-reset").addEventListener("click", () => {
+        applySettingsPreset("default");
+        showToast("Настройки сброшены к значениям по умолчанию (демо)");
+      });
+
+      // ---- Top Bar Demo Presets ----
+      function applyEmbedPreset(name) {
+        if (state.saving || state.extracting || state.metaCleaning) return;
+        document.querySelectorAll("[data-preset-embed]").forEach((c) => {
+          c.classList.toggle("is-active", c.dataset.presetEmbed === name);
+        });
+        state.activeTab = "embed";
+        state.carrierError = "";
+        if (name === "empty") {
+          state.carrier = null;
+          state.mode = "text";
+          state.text = "";
+          state.payloadFile = null;
+          state.password = "";
+          state.showPassword = false;
+          invalidateEmbedResult();
+        } else if (name === "text-ready") {
+          state.carrier = { ...SAMPLE_CARRIERS.png };
+          state.mode = "text";
+          state.text = "Ключ резервного хранилища: phm-94f2-88a1-c30e\nПередать только лично.";
+          state.payloadFile = null;
+          state.password = "M1Pro-Sequoia!2026";
+          state.showPassword = false;
+          invalidateEmbedResult();
+        } else if (name === "file-ready") {
+          state.carrier = { ...SAMPLE_CARRIERS.wav };
+          state.mode = "file";
+          state.payloadFile = { ...SAMPLE_PAYLOADS.pdf };
+          state.password = "Wave-Vault#982";
+          state.showPassword = false;
+          invalidateEmbedResult();
+        } else if (name === "saved") {
+          state.carrier = { ...SAMPLE_CARRIERS.png };
+          state.mode = "file";
+          state.payloadFile = { ...SAMPLE_PAYLOADS.zip };
+          state.password = "M1Pro-Sequoia!2026";
+          state.showPassword = false;
+          state.savedPath = "~/Desktop/sunset_raw_phantom.png";
+          state.savedSummary = "Демо-имитация (на диск не записывалось): вложение «ssh_backup.zip» скрыто в носителе «sunset_raw.png»";
+        }
+        render();
+      }
+
+      function applyExtractPreset(name) {
+        if (state.saving || state.extracting || state.metaCleaning) return;
+        document.querySelectorAll("[data-preset-extract]").forEach((c) => {
+          c.classList.toggle("is-active", c.dataset.presetExtract === name);
+        });
+        state.activeTab = "extract";
+        state.exCarrierError = "";
+        if (name === "empty") {
+          state.exCarrier = null;
+          state.exPassword = "";
+          state.exShowPassword = false;
+          invalidateExtractResult();
+          render();
+        } else if (name === "text") {
+          const s = SAMPLE_EXTRACT_CONTAINERS.text_png;
+          state.exCarrier = { name: s.name, ext: s.ext, detail: s.detail, demoOutcome: s.outcome };
+          state.exPassword = "M1Pro-Sequoia!2026";
+          state.exShowPassword = false;
+          state.exError = "";
+          state.exResult = { ...s.outcome };
+          state.exSavedTxtPath = null;
+          state.exSavedFilePath = null;
+          render();
+        } else if (name === "file") {
+          const s = SAMPLE_EXTRACT_CONTAINERS.file_wav;
+          state.exCarrier = { name: s.name, ext: s.ext, detail: s.detail, demoOutcome: s.outcome };
+          state.exPassword = "Wave-Vault#982";
+          state.exShowPassword = false;
+          state.exError = "";
+          state.exResult = { ...s.outcome };
+          state.exSavedTxtPath = null;
+          state.exSavedFilePath = null;
+          render();
+        } else if (name === "failed") {
+          const s = SAMPLE_EXTRACT_CONTAINERS.text_png;
+          state.exCarrier = { name: s.name, ext: s.ext, detail: s.detail, demoOutcome: s.outcome };
+          state.exPassword = DEMO_WRONG_PASSWORD;
+          state.exShowPassword = false;
+          state.exResult = null;
+          state.exSavedTxtPath = null;
+          state.exSavedFilePath = null;
+          state.exError = `Неверный пароль или контейнер «${s.name}» не содержит скрытых данных PHANTOM. Контейнер остался выбранным — введите другой пароль и попробуйте снова.`;
+          render();
+          focusExtractPassword();
+        }
+      }
+
+      function applyMetaPreset(name) {
+        if (state.saving || state.extracting || state.metaCleaning) return;
+        document.querySelectorAll("[data-preset-meta]").forEach((c) => {
+          c.classList.toggle("is-active", c.dataset.presetMeta === name);
+        });
+        state.activeTab = "metadata";
+        state.metaError = "";
+        if (name === "empty") {
+          state.metaFile = null;
+          state.metaSelected.clear();
+          state.metaOutcome = null;
+        } else if (name === "found") {
+          loadMetaFile(JSON.parse(JSON.stringify(SAMPLE_META_FILES.found)));
+          return;
+        } else if (name === "protected") {
+          loadMetaFile(JSON.parse(JSON.stringify(SAMPLE_META_FILES.protected)));
+          return;
+        } else if (name === "cleaned") {
+          const f = JSON.parse(JSON.stringify(SAMPLE_META_FILES.found));
+          state.metaFile = f;
+          state.metaSelected = new Set(f.fields.filter((x) => x.removable && x.defaultSelected).map((x) => x.id));
+          state.metaOutcome = {
+            removedNames: f.fields.filter((x) => x.removable && state.metaSelected.has(x.id)).map((x) => x.name),
+            keptNames: f.fields.filter((x) => !x.removable || !state.metaSelected.has(x.id)).map((x) => x.name),
+            path: buildOutPath(f, "_clean"),
+            srcSha: "4f9a…c18e",
+            outSha: "4f9a…c18e",
+          };
+        }
+        render();
+      }
+
+      function applySettingsPreset(name) {
+        if (state.saving || state.extracting || state.metaCleaning) return;
+        document.querySelectorAll("[data-preset-settings]").forEach((c) => {
+          c.classList.toggle("is-active", c.dataset.presetSettings === name);
+        });
+        if (name === "default") {
+          state.settings = { language: "ru", theme: "System", reduceMotion: false, verifyAfterEmbed: true };
+        } else if (name === "custom") {
+          state.settings = { language: "en", theme: "Dark", reduceMotion: true, verifyAfterEmbed: false };
+        }
+        render();
+      }
+
+      document.querySelectorAll("[data-preset-embed]").forEach((btn) => {
+        btn.addEventListener("click", () => applyEmbedPreset(btn.dataset.presetEmbed));
+      });
+      document.querySelectorAll("[data-preset-extract]").forEach((btn) => {
+        btn.addEventListener("click", () => applyExtractPreset(btn.dataset.presetExtract));
+      });
+      document.querySelectorAll("[data-preset-meta]").forEach((btn) => {
+        btn.addEventListener("click", () => applyMetaPreset(btn.dataset.presetMeta));
+      });
+      document.querySelectorAll("[data-preset-settings]").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          state.activeTab = "settings";
+          applySettingsPreset(btn.dataset.presetSettings);
+        });
+      });
+
+      // Initialize on empty start screen
+      applyEmbedPreset("empty");
+      document.querySelector('[data-preset-extract="empty"]').classList.add("is-active");
+      document.querySelector('[data-preset-meta="empty"]').classList.add("is-active");
+      document.querySelector('[data-preset-settings="default"]').classList.add("is-active");
+    })();
+  </script>
+</body>
+</html>
