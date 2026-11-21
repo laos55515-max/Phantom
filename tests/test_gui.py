@@ -1197,6 +1197,8 @@ def test_a_touchpad_event_on_the_root_scrolls_the_tab_by_pixels(app) -> None:
     only place this runs for real is a Tk 9 runtime — CI with a Tk 9 build, or the
     owner's Mac.
     """
+    from phantom.ui.scroll import _content_height
+
     if not _has_touchpad_events(app.root):
         pytest.skip("Tk 8.6 has no <TouchpadScroll>")
     _reveal(app)
@@ -1205,11 +1207,21 @@ def test_a_touchpad_event_on_the_root_scrolls_the_tab_by_pixels(app) -> None:
     before = _make_scrollable(area.canvas, top=0.5)
     x, y = _point_over(app, area)
 
-    # Y delta in the low 16 bits, X in the high: 40 pixels towards the end.
+    # Y delta in the low 16 bits, X in the high: a 40-pixel gesture.  The sign is
+    # Tk's own: ``%D`` positive means the gesture goes *up the document*, which is
+    # why the router scrolls by ``-dy`` pixels, the same formula Tk's Text and
+    # Listbox use (``scroll.py`` says so, and
+    # ``test_scroll.test_the_touchpad_scrolls_by_pixels_and_follows_tks_sign`` pins
+    # it).  This test used to assert the opposite and had never run on Tk 9: with
+    # the whole suite in one process the run always crashed before test 46.
     _touchpad_on_root(app, raw=40, x=x, y=y)
 
     after = float(area.canvas.yview()[0])
-    assert after > before, f"40 px of downward gesture moved yview {before} → {after}"
+    assert after < before, f"a +40 px gesture moved yview {before} → {after}, not up"
+    moved_px = (before - after) * _content_height(area.canvas)
+    assert abs(moved_px - 40) <= 2, (
+        f"the gesture moved {moved_px:.0f} px, not the 40 Tk reported"
+    )
 
 
 def test_a_touchpad_event_is_not_read_as_a_wheel_notch(app) -> None:

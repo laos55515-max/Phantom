@@ -912,7 +912,29 @@ The Tk 9.1 job therefore runs the suite in **one process per test**:
 * `gui (macOS Aqua)` — Tk 8.6.16 — still runs the whole suite in **one** process, so
   cross-test interference remains covered on the build where it is safe.
 
-### 15.6 Supported platforms, stated plainly
+### 15.6 What per-test isolation exposed
+
+Once every test ran on its own, four of them failed — and none had ever run on
+Tk 9 before, because the run always crashed first (the touchpad test is number 46
+of 173). Three asserted Tk 8.6 behaviour as if it were universal, and the fourth
+asserted the opposite of what `scroll.py` documents:
+
+| test | what it asserted | what Tk 9.1 does |
+| --- | --- | --- |
+| theme tick | the flush attribute moved during the tick | the refusal is already installed process-wide, so the attribute never moves — the real flush is what must be unreachable |
+| second mapping | the build owed at least one display pass | no pass is attempted at all, by design (§9) |
+| leaves Tk as it found it | the canvas flush is the original again | the process-wide refusal stays installed; the original is kept in `widgets._CANVAS_FLUSH` untouched |
+| touchpad | a `%D` of +40 moves the view towards the end | the router scrolls by `-dy` pixels, Tk's own formula (`yview scroll -dy pixels`), so the view moves up |
+
+The three policy ones now branch on `DISPLAY_PASSES_UNSAFE` / `_passes_are_attempted()`
+and assert what holds in each world. The touchpad one was simply wrong and is now
+pinned in both directions: the view moves up, and by the 40 pixels Tk reported
+(measured with `PHANTOM_SCROLL_DEBUG=1`: `raw=%D=40 decoded=(0,40) yview=0.5027->0.4663`);
+`tests/test_scroll.py::test_the_touchpad_scrolls_by_pixels_and_follows_tks_sign`
+already said the same thing at the unit level, which is how the contradiction was
+settled without a trackpad.
+
+### 15.7 Supported platforms, stated plainly
 
 | platform | Tk | status |
 | --- | --- | --- |
