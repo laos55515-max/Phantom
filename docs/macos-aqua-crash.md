@@ -831,7 +831,24 @@ inside **Tk's own idle handler**. `showRootWindow` is Tk's Aqua menu-bar code; i
 armed as a Tcl *idle* callback and it points at the menu of the interpreter that armed
 it. `0x170` is a field of the object it dereferences — memory that is no longer there.
 
-### 15.2 Why the suite dies and one test does not
+### 15.2 The same fault, seen as a message to a freed object
+
+The next run produced a second report from the same idle handler, and this one says
+what the first one implies:
+
+```
+SIGTRAP / EXC_BREAKPOINT
+#0 libobjc.A.dylib   objc_opt_respondsToSelector
+#1 libtcl9tk9.1.dylib Tk_MacOSXGetTkWindow
+#2 libtcl9tk9.1.dylib showRootWindow
+#3 libtcl9.1.dylib    TclServiceIdle
+```
+
+`objc_opt_respondsToSelector` takes the `isa` pointer of its receiver: the trap means
+the Objective-C object Tk asked about **had already been deallocated**. Tk is holding
+a window that its interpreter no longer owns.
+
+### 15.3 Why the suite dies and one test does not
 
 Two measurements made in the Tk 9.1 job, in separate processes, on the same build:
 
@@ -854,19 +871,34 @@ interpreter per process), and `update()` versus `mainloop()` makes no difference
 both service Tcl idles. Driving the harness with `mainloop` was measured and did not
 fix it, so that change was reverted rather than kept as decoration.
 
-### 15.3 What the product does about it
+### 15.4 What the product does about it
 
 Nothing needs to change in PHANTOM: the application creates exactly one interpreter
 and never calls `Tk_DoOneEvent` from script level on Aqua/Tk 9 (`quiet_redraws`,
 §9). The defect is exposed by a **test process that builds and destroys dozens of
 windows**, which is not a thing the product does.
 
-### 15.4 What CI does about it
+### 15.5 What CI does about it
 
-The Tk 9.1 job runs the suite in **chunks of eight tests, one process per chunk**:
+Chunking by eight tests was tried first and was **not enough** — four of twenty-two
+chunks still died (`tests 97-104`, `113-120`, `161-168`, `169-173`), and the
+one-test-alone probe crashed once in three runs. That is what pointed at the probe
+root: `tests/test_gui.py` opened a `tkinter.Tk()` at import and **destroyed** it, so a
+process began with an already-freed interpreter and the first test's loop serviced its
+stale menu idle. Two changes followed, both measured by the table above:
+
+* the availability probe keeps its root **alive** for the process (`_PROBE_ROOT`); it
+  costs one hidden window and removes the first stale pointer;
+* the Tk 9.1 job runs **one test per process** (`PHANTOM_GUI_CHUNK=1`), so nothing
+  ever services an idle belonging to a destroyed interpreter: the last thing a chunk
+  process does is the destroy, and then it exits.
+
+The Tk 9.1 job therefore runs the suite in **one process per test**:
 
 * every test still runs — this is process isolation, not exclusion, and the chunk list
-  comes from `pytest --collect-only`, so a new test is picked up automatically;
+  comes from `pytest --collect-only`, so a new test is picked up automatically; the
+  chunk size is `PHANTOM_GUI_CHUNK` and a bigger chunk is a smaller cost with more
+  exposure, which is why the default here is one;
 * every chunk must pass, and the worst exit code is what the verdict sees, with a
   signal outranking a plain failure — a crash still turns the job red (it did, twice,
   while this was being measured);
@@ -876,7 +908,7 @@ The Tk 9.1 job runs the suite in **chunks of eight tests, one process per chunk*
 * `gui (macOS Aqua)` — Tk 8.6.16 — still runs the whole suite in **one** process, so
   cross-test interference remains covered on the build where it is safe.
 
-### 15.5 Supported platforms, stated plainly
+### 15.6 Supported platforms, stated plainly
 
 | platform | Tk | status |
 | --- | --- | --- |

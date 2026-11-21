@@ -19,16 +19,43 @@ from phantom.core import constants as C
 pytestmark = pytest.mark.gui
 
 
+#: The root the availability probe opened.  Kept alive on purpose — see below.
+_PROBE_ROOT: object | None = None
+
+
 def _tk_usable() -> tuple[bool, str]:
+    """Can this build open a display?  The probe root is **not** destroyed.
+
+    On Aqua under Tk 9 this matters, and it is measured rather than guessed.  The
+    ``.ips`` report of the ``exit 139`` names Tk's own idle handler:
+
+        Tk_MacOSXGetTkWindow ← showRootWindow ← TclServiceIdle ← Tcl_DoOneEvent
+        SIGTRAP inside objc_opt_respondsToSelector (a message to a freed object)
+
+    Tk's Aqua menu code arms an idle callback for the application menu bar that
+    points at the window of the interpreter which armed it.  Destroy that
+    interpreter — which is what ``root.destroy()`` here used to do, before a single
+    test had run — and the *next* interpreter to service idles runs the callback
+    against freed memory.  A process that only ever creates and destroys windows
+    therefore dies at a random point, which is exactly what CI showed: the same
+    suite crashed at the DnD test, then at the theme test, and a run of one test
+    alone crashed once and passed once.
+
+    Keeping the probe alive costs one hidden window per process and removes the
+    first stale pointer; ``PHANTOM_GUI_CHUNK=1`` in the Tk 9.1 job removes the
+    cross-test ones (docs/macos-aqua-crash.md §15).
+    """
+    global _PROBE_ROOT  # noqa: PLW0603 - one probe per process, by design
     try:
         import tkinter
     except ImportError as exc:
         return False, f"tkinter is not installed: {exc}"
     try:
-        root = tkinter.Tk()
+        _PROBE_ROOT = tkinter.Tk()
     except Exception as exc:  # noqa: BLE001 - no display, or Tk rejects the connection
         return False, f"Tk cannot open a display: {exc}"
-    root.destroy()
+    with suppress(Exception):
+        _PROBE_ROOT.withdraw()  # type: ignore[attr-defined]
     return True, ""
 
 

@@ -89,11 +89,16 @@ All notable changes to PHANTOM are recorded here. The format follows
   window destroys an interpreter, and the next event-loop service runs the callback
   against freed memory. Measured in two processes: the crashing test alone is green
   (1 passed, 172 deselected), the suite without it still dies with 139. The
-  application opens one interpreter per process and is not exposed; the Tk 9.1 CI job
-  now runs the suite in chunks of eight tests, one process each — every test still
-  runs, every chunk must pass, a crash still fails the job — while the Tk 8.6 job
-  keeps running the whole suite in one process. The crash report and the diagnosis
-  table are annotated on every run instead of only being written to a step log.
+  application opens one interpreter per process and is not exposed. Two guards, both
+  measured: the availability probe in `tests/test_gui.py` no longer destroys the
+  `tkinter.Tk()` it opens (a second report shows the same handler sending an
+  Objective-C message to a deallocated window: `objc_opt_respondsToSelector` ←
+  `Tk_MacOSXGetTkWindow` ← `showRootWindow` ← `TclServiceIdle`), and the Tk 9.1 job
+  runs the suite in one process per test — chunks of eight were tried first and four
+  of twenty-two still died. Every test still runs, every chunk must pass, a crash
+  still fails the job, and the Tk 8.6 job keeps the whole suite in one process. The
+  crash report and the diagnosis table are annotated on every run instead of only
+  being written to a step log.
 - **`PHANTOM_DND=0` turns drag-and-drop off before anything is imported.** The switch
   exists for a machine where the Tk build cannot survive the tkdnd library, and the
   crash diagnosis uses it to tell the window apart from the window plus tkdnd.

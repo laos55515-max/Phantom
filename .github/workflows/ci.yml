@@ -449,7 +449,7 @@ jobs:
         # failure when the worst code is chosen below).  Tk 8.6 on the other job runs
         # the whole suite in one process, so cross-test interference stays covered.
         continue-on-error: true
-        timeout-minutes: 25
+        timeout-minutes: 30
         run: |
           # GitHub's shell is ``bash -e -o pipefail``: without this, a
           # failing command ends the step before its exit code is recorded.
@@ -457,6 +457,10 @@ jobs:
           . .venv-tk9/bin/activate
           mkdir -p ci
           export PYTHONPATH=src
+          # One test per process: with the probe root kept alive (tests/test_gui.py)
+          # nothing services an idle of a destroyed interpreter, which is the fault.
+          PHANTOM_GUI_CHUNK=${PHANTOM_GUI_CHUNK:-1}
+          export PHANTOM_GUI_CHUNK
           python -m pytest tests/test_gui.py --collect-only -q 2>/dev/null \
             | grep -F '::' > gui-ids.txt
           python - <<'PY'
@@ -474,20 +478,43 @@ jobs:
               print("::error::gui suite: the collection produced no test ids")
               pathlib.Path("ci/worst.txt").write_text("3")
               raise SystemExit(0)
-          size = int(os.environ.get("PHANTOM_GUI_CHUNK", "8"))
+          size = int(os.environ.get("PHANTOM_GUI_CHUNK", "1"))
           print(f"::notice::gui suite: {len(ids)} tests, chunks of {size}")
+          aggregate = pathlib.Path("gui-tk9.log").open("w", encoding="utf-8")
           worst = 0
-          for start in range(0, len(ids), size):
+          for number, start in enumerate(range(0, len(ids), size)):
               part = ids[start : start + size]
               label = f"tests {start + 1}-{start + len(part)}"
-              code = subprocess.call([sys.executable, "-m", "pytest", "-q", *part])
+              print(f"--- chunk {number}: {label}")
+              done = subprocess.run(
+                  [
+                      sys.executable,
+                      "-m",
+                      "pytest",
+                      "-q",
+                      "-o",
+                      "faulthandler_timeout=120",
+                      "--timeout=120",
+                      "--timeout-method=thread",
+                      *part,
+                  ],
+                  capture_output=True,
+                  text=True,
+                  check=False,
+              )
+              code = done.returncode
+              aggregate.write(done.stdout + done.stderr)
+              aggregate.flush()
               if code == 0:
-                  print(f"::notice::gui chunk {label}: ok")
                   continue
+              tail = [line for line in done.stdout.splitlines() if line.strip()][-2:]
               print(f"::error::gui chunk {label}: exit {code} (first: {part[0]})")
+              print(f"::error::gui chunk {label} tail: {' ¦ '.join(tail)[:900]}")
               # A signal outranks a plain failure: the job must stay red for a crash.
               if code >= 128 or worst == 0:
                   worst = code
+          aggregate.close()
+          print(f"::notice::gui suite: {len(ids)} tests, worst exit {worst}")
           pathlib.Path("ci/worst.txt").write_text(str(worst))
           PY
           code=$(cat ci/worst.txt)
