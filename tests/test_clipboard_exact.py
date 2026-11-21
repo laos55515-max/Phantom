@@ -2,9 +2,11 @@
 
 Measured in CI on Aqua: Tk's own clipboard path re-encodes what it is given, and
 every emoji in a 37 800-character payload arrived in another application as four
-Latin-1 characters (``😀`` → ``ðŸ˜€``).  The TXT export was exact the whole time —
-these tests keep both halves true: the OS tool is fed UTF-8 bytes, the read-back
-decides what the footer claims, and the export stays byte for byte.
+Latin-1 characters (``😀`` → ``ðŸ˜€``), while 7 of 24 300 characters differed in a
+smaller one.  The TXT export was exact the whole time — these tests keep both
+halves true: the exact tool is byte-exact where it is used, the window keeps Tk as
+the clipboard owner (a native write costs Tk its claim), the read-back decides what
+the footer claims, and the export stays byte for byte.
 """
 
 from __future__ import annotations
@@ -219,26 +221,19 @@ def test_a_round_trip_through_the_tool_is_byte_exact() -> None:
 
 
 # -- what the window does with it --------------------------------------------
-def test_the_window_writes_through_the_tool_and_not_through_tk(monkeypatch) -> None:
-    """Tk would re-encode it: when the tool answered, Tk must not touch the board."""
-    written: dict[str, str] = {}
-
-    def exact(value: str, **_kwargs: object) -> bool:
-        written["value"] = value
-        return True
-
-    monkeypatch.setattr(clip, "write_clipboard_exact", exact)
-    monkeypatch.setattr(clip, "read_clipboard_exact", lambda **_k: written.get("value"))
+def test_the_window_keeps_tk_as_the_clipboard_owner(monkeypatch) -> None:
+    """A native write costs Tk its claim: measured, so the window does not do it."""
+    monkeypatch.setattr(clip, "read_clipboard_exact", lambda **_k: None)
     window = _window(clipboard="previous owner's text")
     window._copy_to_clipboard(EMOJI)
+    assert window.root.clipboard == EMOJI, "the write did not go through Tk"
     assert window._clipboard_value == EMOJI
     assert window._clipboard_exact is True
-    assert window.root.clipboard == "previous owner's text", "Tk also wrote to the board"
 
 
-def test_a_read_back_that_differs_is_reported_as_not_exact(monkeypatch) -> None:
-    monkeypatch.setattr(clip, "write_clipboard_exact", lambda *_a, **_k: True)
-    # The pasteboard hands back mojibake: exactly what the old Tk path produced.
+def test_a_pasteboard_that_holds_mojibake_is_not_called_exact(monkeypatch) -> None:
+    """Tk hands back the string; another application would paste something else."""
+    # Exactly what the Aqua path produced: every emoji became four Latin-1 chars.
     monkeypatch.setattr(clip, "read_clipboard_exact", lambda **_k: "ðŸ˜€")
     window = _window()
     window._copy_to_clipboard("😀")
@@ -248,42 +243,48 @@ def test_a_read_back_that_differs_is_reported_as_not_exact(monkeypatch) -> None:
     assert window.status == [("hint_clipboard_exact", "warn")]
 
 
-def test_without_the_tool_the_window_falls_back_to_tk_and_says_so(monkeypatch) -> None:
-    monkeypatch.setattr(clip, "write_clipboard_exact", lambda *_a, **_k: False)
-    monkeypatch.setattr(clip, "read_clipboard_exact", lambda **_k: None)
+def test_a_pasteboard_that_still_shows_the_previous_copy_is_not_evidence(monkeypatch) -> None:
+    """Not every mismatch is a lost character: the board may not be republished yet."""
+    monkeypatch.setattr(clip, "read_clipboard_exact", lambda **_k: "first copy")
     window = _window()
-    window._copy_to_clipboard("plain ascii")
-    assert window.root.clipboard == "plain ascii"
+    window._copy_to_clipboard("first copy")
     assert window._clipboard_exact is True
-    window._report_copied("plain ascii")
-    assert window.status == [("status_copied", "ok")]
+    # The system reader still answers with the old text while Tk hands back the new
+    # one: the pasteboard has not caught up, which is not a difference worth a warn.
+    window._copy_to_clipboard("second copy")
+    assert window._clipboard_exact is True
 
 
-def test_the_auto_clear_is_scheduled_for_an_exact_copy(monkeypatch) -> None:
-    monkeypatch.setattr(clip, "write_clipboard_exact", lambda *_a, **_k: True)
-    monkeypatch.setattr(clip, "read_clipboard_exact", lambda **_k: "short")
+def test_the_auto_clear_is_scheduled_for_every_copy(monkeypatch) -> None:
+    monkeypatch.setattr(clip, "read_clipboard_exact", lambda **_k: None)
     window = _window()
     window._copy_to_clipboard("short")
     assert window.root.after_calls == [int(C.CLIPBOARD_CLEAR_SECONDS * 1000)]
 
 
-def test_the_holds_check_uses_the_exact_reader(monkeypatch) -> None:
+def test_the_holds_check_asks_tk_first_and_the_pasteboard_second(monkeypatch) -> None:
     monkeypatch.setattr(clip, "read_clipboard_exact", lambda **_k: EMOJI)
-    monkeypatch.setattr(clip, "read_clipboard", lambda *_a, **_k: "mangled")
     window = _window()
+    window.root.clipboard = EMOJI
     assert window._clipboard_holds(EMOJI) is True
     assert window._clipboard_holds("something else") is False
+    # Tk stops answering the moment another application owns the clipboard; the
+    # system reader is then the only witness, and it is the exact one.
+    window.root.clipboard = ""
+    assert window._clipboard_holds(EMOJI) is True
+    monkeypatch.setattr(clip, "read_clipboard_exact", lambda **_k: "someone else")
+    assert window._clipboard_holds(EMOJI) is False
 
 
 def test_a_copy_too_large_to_read_back_is_not_verified(monkeypatch) -> None:
     """Reading 15 MiB back on the GUI thread is the cost the cap exists for."""
     calls: list[str] = []
-    monkeypatch.setattr(clip, "write_clipboard_exact", lambda *_a, **_k: True)
-    monkeypatch.setattr(
-        clip,
-        "read_clipboard_exact",
-        lambda **_k: calls.append("read") or "x",
-    )
+
+    def reader(**_kwargs: object) -> str:
+        calls.append("read")
+        return "x"
+
+    monkeypatch.setattr(clip, "read_clipboard_exact", reader)
     window = _window()
     window._copy_to_clipboard("x" * (C.CLIPBOARD_AUTO_CLEAR_MAX_CHARS + 1))
     assert calls == []

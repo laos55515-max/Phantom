@@ -2171,66 +2171,72 @@ class PhantomApp:
         )
 
     def _copy_to_clipboard(self, value: str) -> None:
-        """Put ``value`` on the clipboard, byte for byte when the system allows it.
+        """Put ``value`` on the clipboard with Tk, then *check* what the board holds.
 
-        Tk's clipboard on Aqua re-encodes what it is given: measured in CI, every
-        emoji in a 37 800-character payload came back as four Latin-1 characters
-        (``😀`` → ``ðŸ˜€``), which is the string another application would paste.
-        The system's own tool takes UTF-8 bytes on stdin and hands them to the
-        pasteboard untouched, so it is asked first and Tk is the fallback — and
-        either way the board is read back, so the footer can say whether the
-        transfer was exact instead of assuming it.
+        Tk owns the clipboard here on purpose.  A native write (``pbcopy``) is the
+        only byte-exact one on Aqua, but it costs Tk its claim: measured in CI, six
+        window tests then read a stale string or ``CLIPBOARD selection doesn't
+        exist``, because Tk answers ``clipboard get`` out of its own store.  Paste,
+        the 30-second auto-clear and "is this still ours" all rest on that claim, so
+        the write stays Tk's and the question "was the transfer exact" is answered by
+        reading the board back instead of assuming it.
         """
-        exact_write = clip.write_clipboard_exact(value)
-        if not exact_write:
-            try:
-                self.root.clipboard_clear()
-                self.root.clipboard_append(value)
-            except Exception as exc:  # noqa: BLE001 - Tk dependent, never fatal
-                LOGGER.warning("clipboard write failed: %s", exc)
-                self._clipboard_value = None
-                return
+        if not isinstance(value, str) or not value:
+            return
+        previous = self._clipboard_value
+        if not clip.write_clipboard(self.root, value):
+            self._clipboard_value = None
+            return
         self._clipboard_value = value
-        self._clipboard_exact = (
-            self._verify_clipboard(value)
-            if len(value) <= C.CLIPBOARD_AUTO_CLEAR_MAX_CHARS
-            else exact_write
-        )
         if len(value) > C.CLIPBOARD_AUTO_CLEAR_MAX_CHARS:
             # Deciding whether a 15 MiB clipboard is still ours means reading all of
             # it back on the GUI thread: a multi-megabyte copy stays on the board
             # and the footer says why exact transfer needs a file instead.
+            self._clipboard_exact = True
             return
+        self._clipboard_exact = self._verify_clipboard(value, previous)
         if self._clipboard_token is not None:
             self.root.after_cancel(self._clipboard_token)
         self._clipboard_token = self.root.after(
             int(C.CLIPBOARD_CLEAR_SECONDS * 1000), lambda: self._clear_clipboard_if(value)
         )
 
-    def _verify_clipboard(self, value: str) -> bool:
+    def _verify_clipboard(self, value: str, previous: str | None = None) -> bool:
         """Read back what was just written; compare it, do not assume it.
 
-        The system reader is byte-exact, so a mismatch there is a real one.  Tk adds
-        a trailing newline on some builds and converts on others, so on that path
-        the comparison is the one Tk can honour — and the footer says so.
+        Two readers, two questions.  Tk answers out of its own store, so a match
+        there means *the window* holds what it copied.  The system reader is the
+        view another application gets, and on Aqua it is not the same string: Tk
+        re-encodes on its way to ``NSPasteboard`` (measured: 7 of 24 300 characters
+        differed, every emoji among them).  A mismatch there is reported, not
+        smoothed over — except when the system still shows the *previous* copy,
+        which means the pasteboard had not been republished yet, not that the new
+        text is wrong.
         """
-        native = clip.read_clipboard_exact()
-        if native is not None:
-            return native == value
         current = clip.read_clipboard(self.root)
-        if current is None:
+        if current is None or current.rstrip("\n") != value.rstrip("\n"):
             return False
-        return current.rstrip("\n") == value.rstrip("\n")
+        native = clip.read_clipboard_exact()
+        if native is None or native == value:
+            return True
+        if previous is not None and native == previous:
+            return True
+        LOGGER.warning(
+            "the pasteboard holds a converted copy: %d of %d characters differ",
+            sum(1 for a, b in zip(value, native, strict=False) if a != b),
+            len(value),
+        )
+        return False
 
     def _clipboard_holds(self, value: str) -> bool:
-        """Is ``value`` still on the clipboard?  Tk only answers while it owns it."""
-        native = clip.read_clipboard_exact()
-        if native is not None:
-            return native == value
+        """Is ``value`` still on the clipboard?  Tk answers only while it owns it."""
         current = clip.read_clipboard(self.root)
-        if current is None:
+        if current is not None:
+            return current.rstrip("\n") == value.rstrip("\n")
+        native = clip.read_clipboard_exact()
+        if native is None:
             return False
-        return current.rstrip("\n") == value.rstrip("\n")
+        return native == value
 
     def _clear_clipboard_if(self, value: str) -> None:
         self._clipboard_token = None

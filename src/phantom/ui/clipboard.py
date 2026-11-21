@@ -126,8 +126,15 @@ def native_write_command(
     The tools here take the text as UTF-8 bytes on stdin and hand them to the
     pasteboard untouched.  Tk does not: measured in CI on Aqua, every emoji in a
     37 800-character payload came back as four Latin-1 characters, because Tk
-    re-encodes the string on its way to ``NSPasteboard``.  A copied payload has to
-    leave PHANTOM exactly as it was copied, so the OS tool is asked first.
+    re-encodes the string on its way to ``NSPasteboard``.
+
+    The window itself does *not* write through this any more.  A native write takes
+    the clipboard away from Tk, and Tk then answers ``clipboard get`` out of its own
+    store — measured in CI as six window tests reading a stale string, or
+    ``CLIPBOARD selection doesn't exist``, while paste and the 30-second auto-clear
+    depend on that claim.  So the window keeps Tk as the owner and *verifies* with
+    the exact reader; this writer stays for the tools and for the smoke test, which
+    needs to measure the pasteboard side of the same question.
     """
     system = sys.platform if platform is None else platform
     if system == "darwin":

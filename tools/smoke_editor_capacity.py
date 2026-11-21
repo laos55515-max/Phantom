@@ -139,20 +139,29 @@ def main(argv: list[str] | None = None) -> int:
             return ""
 
     def clip_put(text: str) -> None:
-        """Fill the pasteboard the way the application does: exact bytes first.
+        """Fill the pasteboard the way the application does: through Tk.
 
-        Tk's own Aqua path re-encodes what it is given (every emoji became four
-        Latin-1 characters in the 37 800-character payload), so the application
-        writes through the system tool.  This puts text there the same way, and the
-        checks below are then about the *reader*: what comes back has to be what
-        went in.
+        The window keeps Tk as the clipboard owner on purpose — a native write takes
+        the claim away and Tk then answers ``clipboard get`` out of its own store
+        (measured: six window tests, stale strings and ``CLIPBOARD selection doesn't
+        exist``).  So the *window* path is Tk's, and the system view is measured
+        separately where the question is what another application would paste.
         """
-        if clip.write_clipboard_exact(text):
-            state["clip_writer"] = "native"
-            return
         state["clip_writer"] = "tk"
         root.clipboard_clear()
         root.clipboard_append(text)
+
+    def system_view(payload: str) -> None:
+        """What another application would paste — reported, never assumed."""
+        native = clip.read_clipboard_exact()
+        if native is None:
+            say("     system view: unavailable (no clipboard tool on this system)")
+            return
+        same = native == payload
+        say(
+            f"     system view: {len(native)} chars, "
+            f"{'identical' if same else _clipboard_diff(payload, native)}"
+        )
 
     def key(sequence: str) -> None:
         inner.focus_force()
@@ -186,6 +195,7 @@ def main(argv: list[str] | None = None) -> int:
             f"{len(payload)} chars via the {state.get('clip_writer', '?')} writer, "
             f"{_clipboard_diff(payload, handed_back)}",
         )
+        system_view(payload)
         before = len(editor_text())
         started_at = time.monotonic()
         key(f"<{MOD}-v>")
@@ -536,6 +546,7 @@ def main(argv: list[str] | None = None) -> int:
             f"pasteboard {len(copied)} chars of {len(body)}, "
             f"{_clipboard_diff(body, copied)}",
         )
+        system_view(body)
         target = os.path.join(temporary, "result.txt")
         original_dialog = appmod.filedialog.asksaveasfilename
         appmod.filedialog.asksaveasfilename = lambda **_kwargs: target
