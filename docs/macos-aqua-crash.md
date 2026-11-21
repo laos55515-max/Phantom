@@ -531,3 +531,85 @@ failed event handler (logged only). Both now carry a reason, the cancellation is
 «ОТМЕНЕНО», and a failed handler names the step. `СИСТЕМА ГОТОВА` is replaced by
 «ПРЕВЫШЕНА ЁМКОСТЬ» whenever the panel says the payload does not fit, and a
 finished verdict is cleared as soon as the payload changes.
+
+## 13. The exit 139 that a green run was hiding (post-2.1.0 hardening)
+
+Three things were wrong at once, and two of them were in the reporting rather than
+in the window.
+
+**The run was green while a process inside it had been killed.** Run
+`44837469975` (the first run on `main` after PR #17 merged) reported seven
+successful jobs. Its `gui (macOS Aqua, Tk 9.1)` check carried these annotations:
+
+```
+[failure] gui-tk9.log (56 lines): File ".../pluggy/_caller.py", line 197 in __call__ ¦ ...
+[failure] Process completed with exit code 139
+[notice]  Python-2026-11-20-233350.ips: {"app_name":"Python", ...}
+[notice]  crash reports: 1
+```
+
+Every step in that job concluded `success`, because the three steps that can die —
+the pytest suite, the minimal reproduction, lldb — are `continue-on-error: true`,
+and GitHub's rule for that flag is "this step cannot fail the job". The annotation
+survived; the status did not. That is the whole reason the crash was never
+explained: no run ever *failed* because of it, so nobody had to look.
+
+**The evidence was in the report, and only the header was printed.** macOS writes
+a `.ips` with `exception`, `termination` and `threads[faultingThread].frames` —
+image, symbol and offset per frame. The step printed the first 2 000 characters of
+the file, which is the header: application name, version, bundle id. The stack was
+never shown. Two tools fix that:
+
+* `tools/parse_crash_report.py` reads both halves of the `.ips` (`--json` for a
+  machine-readable copy) and prints the faulting thread as
+  `#0 libtk9.1.dylib TkMacOSX… + 1234`;
+* `tools/diagnose_tk_crash.py` runs one candidate per **process**, so a SIGSEGV
+  costs that child and the table still prints. A child prints
+  `child: <name> done` as its last statement, which separates "died while working"
+  from "died while exiting" — the second is the signature the smoke tools showed
+  (they printed `main loop finished cleanly` and then the shell reported 139).
+
+The variants are: bare `tkinter.Tk()`; the same with `update()`; `customtkinter.CTk()`;
+a tab view with the canvas load of the real window; a root that has loaded tkdnd
+through `TkinterDnD._require`; the same plus a failed `drop_target_register`; the
+real window with drag-and-drop on; the real window with `PHANTOM_DND=0`; the real
+window on Tk's own loop closed by `_on_close`; and the pytest fixture's own pump.
+`--gate` fails the job only for the variants that are the application's own code —
+a crash in the harness pump is reported with its reason and is already documented
+in §9, and it is not a place to hide anything, because the product variants run the
+same widgets without that pump.
+
+The lldb step had its own defect and now sets
+`target.process.stop-on-exec false`. Without it lldb stops on the exec of the
+interpreter itself, which is why every backtrace this job ever produced read
+`thread #2, stop reason = exec ¦ frame #0: dyld`_dyld_start` — the inside of the
+dynamic loader, said three times, about nothing.
+
+**A crash is a status, not an annotation.** `tools/ci_verdict.py` reads a small
+TSV that every step appends to (`name`, exit code, kind) and decides:
+
+| kind | non-zero exit | signal (`128 + N`) | timeout (124) | 125/126/127 |
+| --- | --- | --- | --- | --- |
+| `gate` | fails the job | fails the job | fails the job | fails the job |
+| `diagnostic` | printed as a warning | **fails the job** | fails the job | fails the job |
+| `probe` | printed as a warning | **fails the job** | printed as a warning | fails the job |
+
+`probe` exists for one thing: the *older* tree in the layout profile is expected to
+spend minutes inside a resize, so its timeout is the measurement. This branch's
+profile is a `gate`: it used to hit the 150-second cap, write a log with no
+`SUMMARY` line, and leave a green job — `profile_resize.py` now returns 3 when its
+watchdog ended the run instead of 0, and CI fails when the summary is missing
+(exit 4). The rules have their own tests (`tests/test_ci_verdict.py`), including the
+139-in-a-diagnostic case that this run demonstrated.
+
+**The clipboard re-encoded what it was given.** The same run's editor smoke carried
+`note clipboard copy-all differs: first difference at 2347: payload '😀\n000087 строк'
+vs clipboard 'ðŸ˜€\n000087 ст'; 9 characters more`. Four UTF-8 bytes had become four
+Latin-1 characters: Tk converts the string on its way to `NSPasteboard`. The TXT
+export was byte-exact throughout (SHA-256 of the written file equal to the payload's),
+which is what made the difference visible — the bytes PHANTOM held were right, the
+bytes it *published* were not. `write_clipboard_exact` now feeds the system tool
+(`pbcopy` / `clip` / `wl-copy` / `xclip` / `xsel`) the UTF-8 bytes of the text and
+`read_clipboard_exact` reads them back; the footer's claim about exactness comes
+from that read-back, not from an assumption. Tk remains the fallback where no tool
+exists, and the smoke now asserts equality rather than printing a note.

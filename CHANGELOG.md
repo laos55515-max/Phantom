@@ -8,6 +8,34 @@ All notable changes to PHANTOM are recorded here. The format follows
 
 ### Fixed
 
+- **CI can no longer call a segmentation fault a success.** A step marked
+  `continue-on-error: true` reports success whatever happened inside it: the runner
+  still writes the annotation *Process completed with exit code 139*, and the run
+  was green. Every step now records its own exit code and one step decides
+  (`tools/ci_verdict.py`): a gate may not fail, a declared diagnostic may fail a
+  test but may not die, a probe of an older tree may time out. Signals (`128 + N`),
+  timeouts and "the command never started" fail the run; nothing is inferred from a
+  green step. The layout profile is now a gate for this tree — it used to swallow a
+  150-second timeout and a log without a `SUMMARY` line and stay green, and
+  `profile_resize.py` now exits 3 instead of 0 when its watchdog ended the run.
+- **A copy leaves PHANTOM as the bytes that were copied.** Tk's clipboard on Aqua
+  re-encodes what it is given: in CI every emoji in a 37 800-character payload
+  arrived in another application as four Latin-1 characters (`😀` → `ðŸ˜€`). The
+  window now writes through the system's own tool (`pbcopy`, `clip`, `wl-copy`,
+  `xclip`, `xsel`) with UTF-8 bytes on stdin, falls back to Tk when there is none,
+  and reads the board back to decide what the footer may claim. The TXT export
+  keeps using the payload bytes and is unchanged.
+- **The crash that leaves no traceback is readable now.** `tools/parse_crash_report.py`
+  prints the faulting thread of a macOS `.ips` report with symbols, and
+  `tools/diagnose_tk_crash.py` runs one candidate per process — bare Tk, CustomTkinter,
+  tkdnd loaded, the real window with and without drag-and-drop — so a SIGSEGV costs
+  one child and the table still prints. The lldb step now clears
+  `target.process.stop-on-exec`, which is why its backtrace was always the `dyld`
+  exec stop instead of the crash.
+- **`PHANTOM_DND=0` turns drag-and-drop off before anything is imported.** The switch
+  exists for a machine where the Tk build cannot survive the tkdnd library, and the
+  crash diagnosis uses it to tell the window apart from the window plus tkdnd.
+
 - **The red «ОШИБКА» now has a reason and a next step.** The footer used to print
   a bare `ОШИБКА` in two situations: a cancellation (`_show_error` returned before
   the dialogue), and a failed event handler, which only wrote a log line — so the
