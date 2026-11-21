@@ -524,18 +524,12 @@ jobs:
                       for line in lines
                       if not line.startswith(("FRAME: sample ", "FRAME: stall "))
                   ]
-                  if other:
-                      print(f"::notice::{name}: " + " | ".join(other)[:900])
                   payload = json.loads(path.read_text()) if path.exists() else {}
                   payload["exit"] = done.returncode
+                  payload["_other"] = other
+                  payload["_samples"] = samples
+                  payload["_stalls"] = stalls
                   results[label].append(payload)
-                  if number == 1 and samples:
-                      kept = samples[:4] + (samples[4::4] if len(samples) > 8 else samples[4:])
-                      if samples[-1] not in kept:
-                          kept.append(samples[-1])
-                      print(f"::notice::{name} samples: " + " ; ".join(kept)[:900])
-                  if number == 1 and stalls:
-                      print(f"::notice::{name} stalls: " + " || ".join(stalls[:3])[:900])
 
           def summarise(label: str) -> None:
               rows = results[label]
@@ -558,6 +552,21 @@ jobs:
 
           for label in results:
               summarise(label)
+          for label in results:
+              for index, row in enumerate(results[label], start=1):
+                  name = f"{label}-{index}"
+                  other = row.pop("_other", [])
+                  samples = row.pop("_samples", [])
+                  row_stalls = row.pop("_stalls", [])
+                  if label == "after" and (row.get("worst_gap_ms") or 0) > 1500 and row_stalls:
+                      print(f"::warning::{name} stalls: " + " || ".join(row_stalls[:3])[:900])
+                  if other:
+                      print(f"::notice::{name}: " + " | ".join(other)[:900])
+                  if index == 1 and samples:
+                      kept = samples[:4] + (samples[4::4] if len(samples) > 8 else samples[4:])
+                      if samples[-1] not in kept:
+                          kept.append(samples[-1])
+                      print(f"::notice::{name} samples: " + " ; ".join(kept)[:900])
 
           # The criterion, on this branch's runs only.
           problems: list[str] = []

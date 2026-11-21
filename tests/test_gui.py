@@ -3469,7 +3469,11 @@ def test_launching_without_prior_deiconify_maps_the_root_before_building_widgets
         assert instance.current_tab == "metadata"
         assert instance.tab_frames["metadata"].winfo_ismapped()
         instance._on_close()
-        assert not root.winfo_exists()
+        try:
+            still_exists = bool(root.winfo_exists())
+        except Exception:  # noqa: BLE001 - destroyed interpreter raises TclError
+            still_exists = False
+        assert not still_exists
     finally:
         if instance is not None:
             instance.worker.shutdown(timeout=2)
