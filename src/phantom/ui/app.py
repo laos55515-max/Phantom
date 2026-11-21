@@ -166,6 +166,8 @@ class PhantomApp:
         self._theme_token: str | None = None
         self._clipboard_token: str | None = None
         self._clipboard_value: str | None = None
+        #: Whether the last copy was verified byte for byte (read back, compared).
+        self._clipboard_exact: bool = False
         self._operation = ""
         self._status_key = "status_ready"
         self._status_params: dict[str, object] = {}
@@ -1540,8 +1542,14 @@ class PhantomApp:
         return True
 
     def _report_copied(self, value: str, *, key: str = "status_copied") -> None:
-        """Say what was copied — and say when the clipboard is not exact."""
-        if len(value) >= C.CLIPBOARD_EXACT_WARN_CHARS:
+        """Say what was copied — and say when the clipboard is not exact.
+
+        ``_clipboard_exact`` is the answer from the read-back, not a guess: when it
+        is false the text on the board is not the text that was copied, and the
+        footer names the file path instead of claiming a transfer that did not
+        happen.
+        """
+        if not self._clipboard_exact or len(value) >= C.CLIPBOARD_EXACT_WARN_CHARS:
             # Measured on Aqua: the pasteboard round-trip re-decodes a few bytes of
             # a very large string as Latin-1.  PHANTOM does not claim an exact
             # transfer it cannot verify, so it names the file path instead.
@@ -2163,9 +2171,31 @@ class PhantomApp:
         )
 
     def _copy_to_clipboard(self, value: str) -> None:
-        self.root.clipboard_clear()
-        self.root.clipboard_append(value)
+        """Put ``value`` on the clipboard, byte for byte when the system allows it.
+
+        Tk's clipboard on Aqua re-encodes what it is given: measured in CI, every
+        emoji in a 37 800-character payload came back as four Latin-1 characters
+        (``😀`` → ``ðŸ˜€``), which is the string another application would paste.
+        The system's own tool takes UTF-8 bytes on stdin and hands them to the
+        pasteboard untouched, so it is asked first and Tk is the fallback — and
+        either way the board is read back, so the footer can say whether the
+        transfer was exact instead of assuming it.
+        """
+        exact_write = clip.write_clipboard_exact(value)
+        if not exact_write:
+            try:
+                self.root.clipboard_clear()
+                self.root.clipboard_append(value)
+            except Exception as exc:  # noqa: BLE001 - Tk dependent, never fatal
+                LOGGER.warning("clipboard write failed: %s", exc)
+                self._clipboard_value = None
+                return
         self._clipboard_value = value
+        self._clipboard_exact = (
+            self._verify_clipboard(value)
+            if len(value) <= C.CLIPBOARD_AUTO_CLEAR_MAX_CHARS
+            else exact_write
+        )
         if len(value) > C.CLIPBOARD_AUTO_CLEAR_MAX_CHARS:
             # Deciding whether a 15 MiB clipboard is still ours means reading all of
             # it back on the GUI thread: a multi-megabyte copy stays on the board
@@ -2177,8 +2207,26 @@ class PhantomApp:
             int(C.CLIPBOARD_CLEAR_SECONDS * 1000), lambda: self._clear_clipboard_if(value)
         )
 
+    def _verify_clipboard(self, value: str) -> bool:
+        """Read back what was just written; compare it, do not assume it.
+
+        The system reader is byte-exact, so a mismatch there is a real one.  Tk adds
+        a trailing newline on some builds and converts on others, so on that path
+        the comparison is the one Tk can honour — and the footer says so.
+        """
+        native = clip.read_clipboard_exact()
+        if native is not None:
+            return native == value
+        current = clip.read_clipboard(self.root)
+        if current is None:
+            return False
+        return current.rstrip("\n") == value.rstrip("\n")
+
     def _clipboard_holds(self, value: str) -> bool:
         """Is ``value`` still on the clipboard?  Tk only answers while it owns it."""
+        native = clip.read_clipboard_exact()
+        if native is not None:
+            return native == value
         current = clip.read_clipboard(self.root)
         if current is None:
             return False

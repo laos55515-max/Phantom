@@ -100,6 +100,7 @@ def main(argv: list[str] | None = None) -> int:
     import customtkinter as ctk
 
     from phantom.core import constants as C
+    from phantom.ui import clipboard as clip
     from phantom.ui.app import PhantomApp
 
     started = time.monotonic()
@@ -138,6 +139,18 @@ def main(argv: list[str] | None = None) -> int:
             return ""
 
     def clip_put(text: str) -> None:
+        """Fill the pasteboard the way the application does: exact bytes first.
+
+        Tk's own Aqua path re-encodes what it is given (every emoji became four
+        Latin-1 characters in the 37 800-character payload), so the application
+        writes through the system tool.  This puts text there the same way, and the
+        checks below are then about the *reader*: what comes back has to be what
+        went in.
+        """
+        if clip.write_clipboard_exact(text):
+            state["clip_writer"] = "native"
+            return
+        state["clip_writer"] = "tk"
         root.clipboard_clear()
         root.clipboard_append(text)
 
@@ -165,16 +178,14 @@ def main(argv: list[str] | None = None) -> int:
         state["phase"] = f"paste {name}"
         clip_put(payload)
         handed_back = root.clipboard_get()
-        diff = _clipboard_diff(payload, handed_back)
-        if handed_back == payload:
-            check(f"clipboard round-trip {name}", True, f"{len(payload)} chars, identical")
-        else:
-            # Tk's Aqua clipboard re-decodes a few bytes of a very large string as
-            # Latin-1 (one character per ~10 000), so the pasteboard hands back a
-            # different string than it was given.  That is Tk's conversion, not this
-            # editor: reported here, and the paste below is measured against what the
-            # pasteboard actually returned.
-            say(f"note  clipboard round-trip {name} differs: {diff}")
+        # The regression this closes: a copy must come back byte for byte.  It did
+        # not, and the string other applications pasted was the difference.
+        check(
+            f"clipboard round-trip {name}",
+            handed_back == payload,
+            f"{len(payload)} chars via the {state.get('clip_writer', '?')} writer, "
+            f"{_clipboard_diff(payload, handed_back)}",
+        )
         before = len(editor_text())
         started_at = time.monotonic()
         key(f"<{MOD}-v>")
@@ -240,10 +251,12 @@ def main(argv: list[str] | None = None) -> int:
         for name, payload in samples:
             clip_put(payload)
             back = root.clipboard_get()
-            if back == payload:
-                check(f"clipboard keeps {name} text", True, f"{len(payload)} chars")
-            else:
-                say(f"note  clipboard keeps {name} text: {_clipboard_diff(payload, back)}")
+            check(
+                f"clipboard keeps {name} text",
+                back == payload,
+                f"{len(payload)} chars via the {state.get('clip_writer', '?')} writer, "
+                f"{_clipboard_diff(payload, back)}",
+            )
         next_phase()
 
     def phase_paste_over_selection() -> None:
@@ -501,16 +514,11 @@ def main(argv: list[str] | None = None) -> int:
         app.copy_selection_button.invoke()
         copied_selection = root.clipboard_get()
         check(
-            "result: copy the selection",
-            len(copied_selection) >= len(selected),
-            f"clipboard {len(copied_selection)} chars, selection {len(selected)}",
+            "result: copy the selection is byte-exact",
+            copied_selection == selected,
+            f"clipboard {len(copied_selection)} chars, selection {len(selected)}, "
+            f"{_clipboard_diff(selected, copied_selection)}",
         )
-        if copied_selection != selected:
-            # Tk's pasteboard conversion, measured and reported — not the editor's.
-            say(
-                "note  clipboard copy-selection differs: "
-                f"{_clipboard_diff(selected, copied_selection)}"
-            )
         app.copy_button.invoke()
         # What the application handed to Tk is exact and is the defect's subject:
         # reading the pane copied 200 000 of 260 000 characters.
@@ -520,15 +528,14 @@ def main(argv: list[str] | None = None) -> int:
             f"app clipboard {len(app._clipboard_value or '')} chars of {len(body)}",
         )
         copied = root.clipboard_get()
+        # Neither truncated nor re-encoded: the emoji in this payload are what made
+        # the old path differ, and this check is the regression that keeps it fixed.
         check(
-            "result: the pasteboard did not truncate it",
-            len(copied) >= len(body),
-            f"pasteboard {len(copied)} chars of {len(body)}",
+            "result: the pasteboard holds copy-all byte for byte",
+            copied == body,
+            f"pasteboard {len(copied)} chars of {len(body)}, "
+            f"{_clipboard_diff(body, copied)}",
         )
-        if copied != body:
-            # Tk's own pasteboard conversion: a character at its chunk boundaries for
-            # a long UTF-8 string.  Reported, never folded into a green check.
-            say(f"note  clipboard copy-all differs: {_clipboard_diff(body, copied)}")
         target = os.path.join(temporary, "result.txt")
         original_dialog = appmod.filedialog.asksaveasfilename
         appmod.filedialog.asksaveasfilename = lambda **_kwargs: target

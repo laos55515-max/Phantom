@@ -119,6 +119,14 @@ class DndProvider:
         #: said: ``tkinterdnd2`` imports fine on Tcl/Tk 9 and its Tcl side does not
         #: load, so every ``drop_target_register`` raises "invalid command name".
         self._registration_failed = False
+        #: ``PHANTOM_DND=0`` turns drag-and-drop off before anything is imported.
+        #: It is the switch for a machine where the Tk build cannot survive the
+        #: tkdnd library, and what the crash diagnosis uses to tell "the window"
+        #: apart from "the window plus tkdnd" (tools/diagnose_tk_crash.py).
+        if os.environ.get("PHANTOM_DND", "").strip().lower() in {"0", "off", "no", "false"}:
+            self.reason = "drag-and-drop disabled by PHANTOM_DND"
+            LOGGER.info("drag-and-drop disabled by PHANTOM_DND")
+            return
         try:
             from tkinterdnd2 import DND_FILES, TkinterDnD  # noqa: PLC0415
 
