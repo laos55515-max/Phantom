@@ -18,6 +18,20 @@ All notable changes to PHANTOM are recorded here. The format follows
 
 ### Fixed
 
+- **Empty PHANTOM frame and 3–5 s startup freeze on macOS Tk 9.1 Aqua.** On repeated
+  launches from Terminal, `PhantomApp` constructed ~300 widgets inside a `CTk()` root
+  that had never been `deiconify()`-ed; realizing all unmapped subviews at once on
+  first event-loop entry (or on a post-build `deiconify()`) stalled Tk's event loop
+  for 13.6–14.4 s on the macOS Tk 9.1 CI runner (3–5 s spinning wait cursor on M1
+  Pro, with an empty frame until focus switched). `PhantomApp._configure_root()` now
+  deiconifies a normal (non-withdrawn/non-iconified) root *before* building child
+  widgets, and `refresh_window()` raises and focuses a normal window on macOS while
+  preserving the active input focus and keeping `update_idletasks` permanently refused
+  on Tk 9.1 (`DISPLAY_PASSES_UNSAFE`). Measured across 3 launches each on `gui-tk9`
+  (run `44921032666`): `after(0)` entry dropped from 14.2–14.9 s to 0.52–1.06 s,
+  worst loop gap dropped from 13.6–14.4 s to 0.44–0.63 s, `screencapture` first
+  content appeared at 0.47–0.94 s without any focus push, «Метаданные» clicked in
+  0.0–0.2 ms, and every window closed cleanly (`still_open=False`).
 - **CI can no longer call a segmentation fault a success.** A step marked
   `continue-on-error: true` reports success whatever happened inside it: the runner
   still writes the annotation *Process completed with exit code 139*, and the run

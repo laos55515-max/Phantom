@@ -965,3 +965,75 @@ does, and that is an upstream Tk 9.1 defect (idle menu handler, freed interprete
 The two ways to make Tk 9.1 survive an unbounded number of interpreters would be a
 one-interpreter test fixture (a redesign of every GUI fixture, untestable from this
 sandbox) or a fix in Tk itself. Neither is claimed here.
+
+## 16. Empty frame and 3–5 s startup freeze on macOS Tk 9.1 Aqua (2.1.0)
+
+**Symptom.** On a MacBook Pro M1 Pro (macOS, Tcl/Tk 9.1.0 Aqua), repeated launches
+from Terminal opened an empty PHANTOM window frame with a spinning wait cursor for
+3–5 seconds; the interface only appeared after switching focus to PHANTOM. Internal
+`StartupTrace` reported `ready` in 0.48–0.56 s because `main()` stopped at the first
+child `<Map>` event, which measures neither real drawing nor event-loop responsiveness.
+
+### Where the delay came from
+
+Measured on `gui (macOS Aqua, Tk 9.1)` with `tools/measure_startup_frame.py` (which
+samples real window pixels via `screencapture`, measures `after(0)` / `after_idle` /
+`<Expose>` / `<FocusIn>` / `<Activate>`, and runs a 10 ms heartbeat):
+
+1. `PhantomApp.__init__` builds ~300 child widgets across four tabs on a fresh
+   `ctk.CTk()` root while `update_idletasks` is permanently refused
+   (`DISPLAY_PASSES_UNSAFE` / `install_quiet_display()`).
+2. `CTk.mainloop()` only calls `deiconify()` on Windows, and neither `build_root()` nor
+   `PhantomApp` called `root.deiconify()` before constructing the widget tree.
+   (`tests/test_gui.py` already called `root.deiconify()` before `PhantomApp(root)` in
+   its fixture, which is why every GUI test completed in ~2.4 s while real launches
+   stalled.)
+3. Probing the four startup orders on Tk 9.1 Aqua (run `44916446350`) isolated the
+   exact mechanism:
+   - `baseline` (no `deiconify()` before build): `build_ms=1171.1`, **`loop_ms=15204.5`**,
+     `worst_gap_ms=14033.3`, `<Activate>`/`<FocusIn>` blocked until 15.2 s;
+   - `deiconify_after` (`deiconify()` after building): `build_ms=12141.0` (11.3 s blocked
+     synchronously inside `deiconify()`), `expose_any_ms=17201.5`;
+   - `withdraw_after` (`withdraw()` → build → `deiconify()`): `build_ms=10587.5`,
+     `expose_any_ms=15627.6`;
+   - `deiconify_before` (`deiconify()` before building): `build_ms=779.6`,
+     **`loop_ms=833.3`**, `activate_ms=832.1`, `focus_in_ms=832.6`, `expose_any_ms=837.4`.
+
+Realizing ~300 unmapped subviews all at once when the root window is first mapped under
+Tk 9.1 Aqua stalls the event loop for 13.6–14.4 s on the CI runner (3–5 s on M1 Pro)
+until `<Activate>` / `<FocusIn>` fires.
+
+### Fix and preservation of Tk 9.1 protection
+
+- `PhantomApp._configure_root()` now calls `_ensure_root_mapped_for_build()` at the
+  end of root configuration — after geometry and background colour are set, and
+  **before** `_build()` constructs any child widget. It calls `self.root.deiconify()`
+  only when `root.state() == "normal"` and neither `withdraw()` nor `iconify()` was
+  called before construction, so hidden/withdrawn windows stay untouched.
+- `PhantomApp.refresh_window()` on macOS lifts and activates a non-withdrawn window
+  (`lift()` + `focus_force()`, restoring any previously focused child widget) so a
+  Terminal launch brings PHANTOM forward without waiting for a manual focus switch.
+- `DISPLAY_PASSES_UNSAFE` and `install_quiet_display()` are completely untouched:
+  `update_idletasks` remains permanently refused on Tk 9.1 (`_display_passes == 0`,
+  `refused_flushes == 79`).
+
+### Measured before and after on macOS Aqua (Tk 9.1.0, run `44921032666`)
+
+Three separate child processes per tree (`origin/main` `f177cb6` vs `534759c`):
+
+| Metric (3 runs each) | Before (`f177cb6`) | After (`534759c`) |
+| --- | --- | --- |
+| `build_ms` | 588.9 / 664.4 / 446.4 ms | 936.2 / 851.5 / 467.8 ms |
+| `loop_ms` (`after(0)`) | **14,214.8 / 14,365.0 / 14,850.3 ms** | **1,060.0 / 921.0 / 518.7 ms** |
+| `worst_gap_ms` (10 ms heartbeat) | **13,625.8 / 13,700.5 / 14,404.0 ms** | **633.5 / 437.3 / 597.4 ms** |
+| `first_paint_ms` (`screencapture`) | 1,157.4 / 1,092.9 / 813.4 ms | **942.0 / 854.5 / 471.1 ms** |
+| Focus push needed | None (`loop` stalled 14 s) | **None** |
+| «Метаданные» tab click / visible | 1.2 / 0.0 / 0.0 ms, True (at 14.2–14.9 s) | **0.1 / 0.2 / 0.0 ms, True (at 3.8–4.3 s)** |
+| Close (`still_open`) | 84.7 / 94.7 / 322.4 ms (`False`) | **140.3 / 97.1 / 109.3 ms (`False`)** |
+
+In the same run, `tools/diagnose_tk_crash.py` dropped from 16.12 s → 2.93 s
+(`app_smoke`), 17.79 s → 3.75 s (`app_dnd`), and 13.13 s → 4.12 s (`app_plain`);
+`tools/smoke_tk91_theme.py` dropped from 21.73 s → 8.16 s; all 6 CI jobs (`lint and
+types`, `tests 3.11`, `tests 3.12`, `gui (macOS Aqua)` Tk 8.6.16, `gui (macOS Aqua,
+Tk 9.1)`, `layout profile (macOS Aqua)`) passed with 0 crash reports.
+

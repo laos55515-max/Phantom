@@ -387,6 +387,10 @@ jobs:
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
+        with:
+          # The "before" measurement is a ``git archive`` of ``origin/main``, so this
+          # job needs the history the other jobs do not.
+          fetch-depth: 0
       - name: Homebrew Tcl/Tk 9
         run: |
           brew install python@3.12 python-tk@3.12 libsndfile || brew upgrade python-tk@3.12
@@ -431,6 +435,201 @@ jobs:
             --annotate --json diag-tk9.json --gate
           code=$?
           printf 'crash diagnosis\t%s\tgate\n' "$code" >> ci/status.tsv
+          exit "$code"
+
+      - name: The first frame, base against this branch (startup frame)
+        # The owner's report: on a MacBook Pro M1 Pro under Tk 9.1 Aqua, repeated
+        # launches from Terminal show a PHANTOM frame with nothing in it, the wait
+        # cursor runs for three to five seconds, and the interface appears only when
+        # the window is clicked.  The internal "ready" mark is 0.48-0.56 s because it
+        # stops at <Map> — a mapped window is not a painted one, and nothing in the
+        # project measured pixels until now.
+        #
+        # So this step takes screenshots of the window's own rectangle while it comes
+        # up (three launches per tree, one process each, because that is what "repeated
+        # launches" means and because this platform crashes in processes that build and
+        # destroy several windows), and reports: build, loop, first <Map>, first idle
+        # callback, the first capture that is not a uniform colour, when the window was
+        # pushed forward, the first click on "Метаданные", and the close.
+        #
+        # The gate is the owner's criterion: the content appears without a focus
+        # change, the metadata tab answers the first click, the window closes.  When
+        # the runner refuses screen recording, the pixel question is printed as a
+        # warning and the rest still decides — a measurement that cannot be taken is
+        # never reported as one that passed.
+        run: |
+          # GitHub's shell is ``bash -e -o pipefail``: without this, a
+          # failing command ends the step before its exit code is recorded.
+          set +e
+          . .venv-tk9/bin/activate
+          mkdir -p ci
+          base=$(git rev-parse origin/main)
+          echo "::notice::startup frame: base is $base, this branch is $(git rev-parse HEAD)"
+          rm -rf /tmp/frame-base && mkdir -p /tmp/frame-base
+          git archive "$base" | tar -x -C /tmp/frame-base
+          python - <<'PY'
+          import json
+          import pathlib
+          import subprocess
+          import sys
+
+          runs = (
+              ("before", "/tmp/frame-base/src", 3),
+              ("after", "src", 3),
+          )
+          results: dict[str, list[dict]] = {}
+          for label, tree, count in runs:
+              results[label] = []
+              for number in range(1, count + 1):
+                  name = f"{label}-{number}"
+                  path = pathlib.Path(f"frame-{name}.json")
+                  log = pathlib.Path(f"frame-{name}.log")
+                  command = [
+                      sys.executable,
+                      "-u",
+                      "tools/measure_startup_frame.py",
+                      "--label",
+                      name,
+                      "--watch",
+                      "8.0",
+                      "--json",
+                      str(path),
+                  ]
+                  with log.open("w", encoding="utf-8") as handle:
+                      done = subprocess.run(
+                          command,
+                          check=False,
+                          stdout=handle,
+                          stderr=subprocess.STDOUT,
+                          env={**__import__("os").environ, "PYTHONPATH": tree},
+                          timeout=180,
+                      )
+                  lines = [
+                      line.strip()
+                      for line in log.read_text(encoding="utf-8", errors="replace").splitlines()
+                      if line.startswith("FRAME:")
+                  ]
+                  samples = [
+                      line[len("FRAME: sample "):]
+                      for line in lines
+                      if line.startswith("FRAME: sample ")
+                  ]
+                  stalls = [
+                      line[len("FRAME: "):]
+                      for line in lines
+                      if line.startswith("FRAME: stall ")
+                  ]
+                  other = [
+                      line[len("FRAME: "):]
+                      for line in lines
+                      if not line.startswith(("FRAME: sample ", "FRAME: stall "))
+                  ]
+                  payload = json.loads(path.read_text()) if path.exists() else {}
+                  payload["exit"] = done.returncode
+                  payload["_other"] = other
+                  payload["_samples"] = samples
+                  payload["_stalls"] = stalls
+                  results[label].append(payload)
+
+          def summarise(label: str) -> None:
+              rows = results[label]
+              capture = sum(1 for row in rows if row.get("capture") == "yes")
+              visible = [row.get("first_paint_ms") for row in rows]
+              print(
+                  f"::notice::{label}: runs={len(rows)} capture_ok={capture} "
+                  f"build_ms={[row.get('build_ms') for row in rows]} "
+                  f"loop_ms={[row.get('loop_ms') for row in rows]} "
+                  f"expose_ms={[row.get('expose_any_ms') for row in rows]} "
+                  f"idle_ms={[row.get('idle_ms') for row in rows]} "
+                  f"worst_gap_ms={[row.get('worst_gap_ms') for row in rows]} "
+                  f"first_paint_ms={visible} "
+                  f"pushed_at_ms={[row.get('push_ms') for row in rows]} "
+                  f"tab_click_ms={[row.get('tab_click_ms') for row in rows]} "
+                  f"tab_visible={[row.get('tab_visible') for row in rows]} "
+                  f"close_ms={[row.get('close_ms') for row in rows]} "
+                  f"still_open={[row.get('close_exists') for row in rows]}"
+              )
+
+          for label in results:
+              summarise(label)
+          for label in results:
+              for index, row in enumerate(results[label], start=1):
+                  name = f"{label}-{index}"
+                  other = row.pop("_other", [])
+                  samples = row.pop("_samples", [])
+                  row_stalls = row.pop("_stalls", [])
+                  if label == "after" and (row.get("worst_gap_ms") or 0) > 1500 and row_stalls:
+                      print(f"::warning::{name} stalls: " + " || ".join(row_stalls[:3])[:900])
+                  if other:
+                      print(f"::notice::{name}: " + " | ".join(other)[:900])
+                  if index == 1 and samples:
+                      kept = samples[:4] + (samples[4::4] if len(samples) > 8 else samples[4:])
+                      if samples[-1] not in kept:
+                          kept.append(samples[-1])
+                      print(f"::notice::{name} samples: " + " ; ".join(kept)[:900])
+
+          # The criterion, on this branch's runs only.
+          problems: list[str] = []
+          measured = 0
+          for row in results["after"]:
+              name = row.get("label", "?")
+              if row.get("exit") != 0:
+                  problems.append(f"{name}: the run itself failed (exit {row.get('exit')})")
+                  continue
+              build_ms = float(row.get("build_ms") or 0.0)
+              loop_ms = row.get("loop_ms")
+              if loop_ms is None or loop_ms < 0:
+                  problems.append(f"{name}: event loop never answered after(0)")
+              elif loop_ms - build_ms > 1500:
+                  problems.append(
+                      f"{name}: event loop stalled {loop_ms - build_ms:.1f} ms after build"
+                  )
+              worst_gap = float(row.get("worst_gap_ms") or 0.0)
+              if worst_gap > 2000:
+                  problems.append(f"{name}: heartbeat blocked for {worst_gap:.1f} ms")
+              if row.get("capture") == "yes":
+                  measured += 1
+                  if row.get("first_paint_ms") is None:
+                      problems.append(f"{name}: the window never showed content (captures)")
+                  elif row.get("push_ms") is not None:
+                      problems.append(
+                          f"{name}: the content appeared only after the window was pushed "
+                          f"forward at {row['push_ms'] / 1000.0:.2f}s"
+                      )
+              elif row.get("capture_reason"):
+                  print(f"::warning::{name}: pixels not measured ({row['capture_reason']})")
+              click = row.get("tab_click_ms")
+              tab_mapped = row.get("tab_mapped_ms")
+              if click is None or row.get("tab_error"):
+                  problems.append(f"{name}: the metadata tab click raised {row.get('tab_error')!r}")
+              elif click > 500:
+                  problems.append(f"{name}: the metadata tab click took {click} ms")
+              elif not row.get("tab_visible") or row.get("tab_current") != "metadata":
+                  problems.append(f"{name}: the metadata tab never became visible")
+              elif tab_mapped is None or tab_mapped > 6000:
+                  problems.append(f"{name}: the metadata tab mapped too late ({tab_mapped} ms)")
+              if row.get("close_error"):
+                  problems.append(f"{name}: closing raised {row.get('close_error')}")
+              elif row.get("close_ms") is None:
+                  problems.append(f"{name}: the window never closed")
+              elif row.get("close_exists"):
+                  problems.append(f"{name}: the window is still there after close")
+          if measured == 0:
+              print(
+                  "::warning::startup frame: no capture could be taken on this runner, so "
+                  "'the content is on screen' is NOT verified here — the other criteria are"
+              )
+          for problem in problems:
+              print(f"::error::startup frame: {problem}")
+          print(
+              f"::notice::startup frame: {len(results['after'])} runs, {measured} with pixels, "
+              f"{len(problems)} problems"
+          )
+          pathlib.Path("startup-frame.json").write_text(json.dumps(results, indent=1), encoding="utf-8")
+          raise SystemExit(1 if problems else 0)
+          PY
+          code=$?
+          printf 'startup frame\t%s\tgate\n' "$code" >> ci/status.tsv
           exit "$code"
 
       - name: The pytest suite, one interpreter per chunk (Tk 9.1 dies otherwise)
@@ -721,6 +920,7 @@ jobs:
           set +e
           python tools/ci_verdict.py ci/status.tsv --annotate \
             --require 'theme smoke' \
+            --require 'startup frame' \
             --require 'crash diagnosis' \
             --require 'gui suite (tk9)' \
             --require 'editor smoke' \

@@ -3416,6 +3416,107 @@ def test_the_window_leaves_tk_exactly_as_it_found_it(app) -> None:
     assert tk.Canvas.update_idletasks is W._CANVAS_FLUSH
 
 
+def test_launching_without_prior_deiconify_maps_the_root_before_building_widgets(
+    tmp_path: Path,
+) -> None:
+    """Real launches construct ``PhantomApp(ctk.CTk())`` without pre-deiconifying.
+
+    On macOS Aqua under Tk 9.1, leaving the root un-deiconified until after ~300
+    widgets exist stalls the event loop for seconds and leaves an empty frame.
+    ``PhantomApp._configure_root`` must deiconify a non-withdrawn root before
+    any child widget is created, then ``refresh_window()``, switching to the
+    Metadata tab, and closing must all work cleanly.
+    """
+    import customtkinter as ctk
+
+    from phantom.ui.app import DISPLAY_PASSES_UNSAFE, PhantomApp
+    from phantom.ui.dnd import DndProvider
+    from phantom.ui.settings import SettingsStore
+
+    ctk.set_default_color_theme("blue")
+    root = ctk.CTk()
+    baseline = len(root.winfo_children())
+    deiconified: list[int] = []
+    real_deiconify = root.deiconify
+
+    def spy_deiconify() -> None:
+        deiconified.append(len(root.winfo_children()))
+        real_deiconify()
+
+    root.deiconify = spy_deiconify  # type: ignore[method-assign]
+    instance = None
+    try:
+        instance = PhantomApp(
+            root,
+            settings_store=SettingsStore(path=tmp_path / "launch" / "settings.json"),
+            dnd=DndProvider(),
+        )
+        assert deiconified, "PhantomApp never deiconified a normal root before building"
+        assert deiconified[0] == baseline, (
+            f"root.deiconify() ran after {deiconified[0] - baseline} child widgets existed"
+        )
+        instance.refresh_window()
+        if DISPLAY_PASSES_UNSAFE:
+            assert instance._display_passes == 0
+        root.update()
+        label = instance.i18n.t("tab_metadata")
+        buttons = getattr(instance.tab_bar, "_buttons_dict", None)
+        if isinstance(buttons, dict) and label in buttons:
+            buttons[label].invoke()
+        else:
+            instance._on_tab_click(label)
+        root.update()
+        assert instance.current_tab == "metadata"
+        assert instance.tab_frames["metadata"].winfo_ismapped()
+        instance._on_close()
+        try:
+            still_exists = bool(root.winfo_exists())
+        except Exception:  # noqa: BLE001 - destroyed interpreter raises TclError
+            still_exists = False
+        assert not still_exists
+    finally:
+        if instance is not None:
+            instance.worker.shutdown(timeout=2)
+        with suppress(Exception):
+            root.destroy()
+
+
+def test_withdrawn_root_stays_hidden_across_init_and_refresh(tmp_path: Path) -> None:
+    """Explicitly withdrawn roots must not be mapped by startup or ``refresh_window``."""
+    import customtkinter as ctk
+
+    from phantom.ui.app import PhantomApp
+    from phantom.ui.dnd import DndProvider
+    from phantom.ui.settings import SettingsStore
+
+    ctk.set_default_color_theme("blue")
+    root = ctk.CTk()
+    root.withdraw()
+    deiconified: list[bool] = []
+    real_deiconify = root.deiconify
+
+    def spy_deiconify() -> None:
+        deiconified.append(True)
+        real_deiconify()
+
+    root.deiconify = spy_deiconify  # type: ignore[method-assign]
+    instance = None
+    try:
+        instance = PhantomApp(
+            root,
+            settings_store=SettingsStore(path=tmp_path / "hidden" / "settings.json"),
+            dnd=DndProvider(),
+        )
+        instance.refresh_window()
+        assert deiconified == [], "a withdrawn root was mapped anyway"
+        assert str(root.state()) == "withdrawn"
+    finally:
+        if instance is not None:
+            instance.worker.shutdown(timeout=2)
+        with suppress(Exception):
+            root.destroy()
+
+
 # ---------------------------------------------------------------------------
 # cancelled or busy: the window has to come back
 # ---------------------------------------------------------------------------
