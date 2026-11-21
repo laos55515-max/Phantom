@@ -601,44 +601,40 @@ class PhantomApp:
 
         # Step 1: carrier card (PNG / WAV / FLAC) ---------------------------
         carrier_card = card(scroll)
-        carrier_card.grid(row=row, column=0, sticky="ew", pady=(0, 12))
+        carrier_card.grid(row=row, column=0, sticky="ew", pady=(0, 10))
         row += 1
         head1, self._embed_num_1, self.carrier_card_title, carrier_meta = step_header(
             carrier_card, self.root, "1"
         )
-        head1.pack(fill="x", padx=18, pady=(14, 10))
+        head1.pack(fill="x", padx=18, pady=(12, 6))
         self.binder.bind(self.carrier_card_title, "step_embed_carrier")
         self.binder.bind(carrier_meta, "step_embed_carrier_meta")
 
         self.carrier_drop = inset_panel(carrier_card, border_width=1)
-        self.carrier_drop.pack(fill="x", padx=18, pady=(0, 8))
+        self.carrier_drop.pack(fill="x", padx=18, pady=(0, 6))
         self.carrier_drop.grid_columnconfigure(0, weight=1)
 
         drop_copy = ctk.CTkFrame(self.carrier_drop, fg_color="transparent")
-        drop_copy.grid(row=0, column=0, sticky="ew", padx=(14, 10), pady=12)
+        drop_copy.grid(row=0, column=0, sticky="ew", padx=(14, 10), pady=8)
         self.drop_carrier_title = ctk.CTkLabel(
             drop_copy,
             text="",
             font=sans_font(self.root, T.FONT_SIZE_BODY, weight="bold"),
             text_color=T.CLR_TEXT,
             anchor="w",
-            justify="left",
-            wraplength=520,
         )
-        self.drop_carrier_title._phantom_autowrap = 520
         self.drop_carrier_title.pack(fill="x")
         self.binder.bind(self.drop_carrier_title, "drop_carrier_title")
         self.drop_carrier_sub = hint_label(drop_copy, self.root, "", wrap=520)
-        self.drop_carrier_sub.pack(fill="x", pady=(2, 0))
+        self.drop_carrier_sub.pack(fill="x", pady=(1, 0))
         self.binder.bind(self.drop_carrier_sub, "drop_carrier_sub")
         self.dnd_carrier_hint = hint_label(drop_copy, self.root, "", wrap=520)
-        self.dnd_carrier_hint.pack(fill="x", pady=(2, 0))
+        self.dnd_carrier_hint.pack(fill="x", pady=(1, 0))
 
-        carrier_btn_row = FlowRow(self.carrier_drop)
-        carrier_btn_row.grid(row=0, column=1, sticky="e", padx=(0, 14), pady=12)
-        self.carrier_button = carrier_btn_row.add(
-            quiet_button(carrier_btn_row, self.root, "", self._choose_carrier)
+        self.carrier_button = quiet_button(
+            self.carrier_drop, self.root, "", self._choose_carrier
         )
+        self.carrier_button.grid(row=0, column=1, sticky="e", padx=(0, 14), pady=8)
         self._seat_drop_zone("carrier", self.carrier_drop)
 
         self.embed_carrier_error = ctk.CTkFrame(
@@ -666,34 +662,43 @@ class PhantomApp:
         self.binder.bind(self.embed_carrier_error_dismiss, "btn_dismiss")
 
         carrier_info = inset_panel(carrier_card)
-        carrier_info.pack(fill="x", padx=18, pady=(0, 8))
+        carrier_info.pack(fill="x", padx=18, pady=(0, 6))
         self.carrier_label = value_label(carrier_info, self.root, "")
-        self.carrier_label.pack(fill="x", padx=12, pady=(10, 2))
-        self.capacity_label = value_label(carrier_info, self.root, "", mono=True)
-        self.capacity_label.pack(fill="x", padx=12, pady=(2, 4))
+        self.carrier_label.pack(fill="x", padx=12, pady=(6, 1))
+        cap_strip = ctk.CTkFrame(carrier_info, fg_color="transparent")
+        cap_strip.pack(fill="x", padx=12, pady=(1, 2))
+        cap_strip.grid_columnconfigure(0, weight=1)
+        self.usage_label = ctk.CTkLabel(
+            cap_strip,
+            text="",
+            font=sans_font(self.root, T.FONT_SIZE_LABEL),
+            text_color=T.CLR_MUTED,
+            anchor="w",
+        )
+        self.usage_label.grid(row=0, column=0, sticky="w")
+        self.capacity_label = value_label(cap_strip, self.root, "", mono=True)
+        self.capacity_label.grid(row=0, column=1, padx=(10, 0), sticky="e")
         self.fill_bar = ctk.CTkProgressBar(
             carrier_info,
-            height=6,
+            height=5,
             corner_radius=3,
             progress_color=T.CLR_ACCENT,
             fg_color=T.CLR_PROGRESS_TROUGH,
         )
         self.fill_bar.set(0)
-        self.fill_bar.pack(fill="x", padx=12, pady=(2, 4))
-        self.usage_label = hint_label(carrier_info, self.root, "", wrap=620)
-        self.usage_label.pack(fill="x", padx=12, pady=(0, 4))
+        self.fill_bar.pack(fill="x", padx=12, pady=(2, 3))
         self.capacity_panel = value_label(carrier_info, self.root, "", mono=True)
-        self.capacity_panel.pack(fill="x", padx=12, pady=(0, 2))
+        self.capacity_panel.pack(fill="x", padx=12, pady=(0, 1))
         self.capacity_note = hint_label(carrier_info, self.root, "", wrap=620)
-        self.capacity_note.pack(fill="x", padx=12, pady=(0, 4))
+        self.capacity_note.pack(fill="x", padx=12, pady=(0, 2))
         self.binder.bind(self.capacity_note, "cap_note")
         self.notice_label = hint_label(carrier_info, self.root, "", wrap=620)
-        self.notice_label.pack(fill="x", padx=12, pady=(0, 2))
+        self.notice_label.pack(fill="x", padx=12, pady=(0, 1))
         self.format_label = hint_label(carrier_info, self.root, "", wrap=620)
-        self.format_label.pack(fill="x", padx=12, pady=(0, 10))
+        self.format_label.pack(fill="x", padx=12, pady=(0, 6))
 
         output_row = ctk.CTkFrame(carrier_card, fg_color="transparent")
-        output_row.pack(fill="x", padx=18, pady=(2, 14))
+        output_row.pack(fill="x", padx=18, pady=(0, 10))
         self.output_title = ctk.CTkLabel(
             output_row,
             text="",
@@ -721,12 +726,12 @@ class PhantomApp:
 
         # Step 2: payload card (Text / File) --------------------------------
         payload_card = card(scroll)
-        payload_card.grid(row=row, column=0, sticky="ew", pady=(0, 12))
+        payload_card.grid(row=row, column=0, sticky="ew", pady=(0, 10))
         row += 1
         head2, self._embed_num_2, self.payload_card_title, _meta2 = step_header(
             payload_card, self.root, "2"
         )
-        head2.pack(fill="x", padx=18, pady=(14, 10))
+        head2.pack(fill="x", padx=18, pady=(12, 6))
         self.binder.bind(self.payload_card_title, "step_embed_payload")
 
         self.mode_bar = ctk.CTkSegmentedButton(
@@ -748,7 +753,7 @@ class PhantomApp:
         self.text_frame.pack(fill="both", expand=True, padx=18, pady=(0, 4))
         self.embed_text = ctk.CTkTextbox(
             self.text_frame,
-            height=156,
+            height=136,
             font=sans_font(self.root, T.FONT_SIZE_BODY),
             wrap="word",
             fg_color=T.CLR_FIELD,
@@ -836,10 +841,7 @@ class PhantomApp:
             font=sans_font(self.root, T.FONT_SIZE_BODY, weight="bold"),
             text_color=T.CLR_TEXT,
             anchor="w",
-            justify="left",
-            wraplength=480,
         )
-        self.drop_secret_title._phantom_autowrap = 480
         self.drop_secret_title.pack(fill="x")
         self.binder.bind(self.drop_secret_title, "drop_secret_title")
         self.drop_secret_sub = hint_label(secret_copy, self.root, "", wrap=480)
@@ -1011,14 +1013,16 @@ class PhantomApp:
         res_path_box.grid_columnconfigure(0, weight=1)
         self.embed_result_path_label = value_label(res_path_box, self.root, "", mono=True)
         self.embed_result_path_label.grid(row=0, column=0, sticky="ew", padx=(12, 8), pady=8)
-        res_actions = FlowRow(res_path_box)
+        res_actions = ctk.CTkFrame(res_path_box, fg_color="transparent")
         res_actions.grid(row=0, column=1, sticky="e", padx=(0, 10), pady=6)
-        self.embed_copy_path_button = res_actions.add(
-            link_button(res_actions, self.root, "", self._copy_embed_result_path)
+        self.embed_copy_path_button = link_button(
+            res_actions, self.root, "", self._copy_embed_result_path
         )
-        self.embed_reveal_button = res_actions.add(
-            quiet_button(res_actions, self.root, "", self._reveal_embed_result)
+        self.embed_copy_path_button.pack(side="left", padx=(0, 6))
+        self.embed_reveal_button = quiet_button(
+            res_actions, self.root, "", self._reveal_embed_result
         )
+        self.embed_reveal_button.pack(side="left")
         self.binder.bind(self.embed_copy_path_button, "btn_copy_path")
         self.binder.bind_dynamic(
             self.embed_reveal_button,
@@ -1059,10 +1063,7 @@ class PhantomApp:
             font=sans_font(self.root, T.FONT_SIZE_BODY, weight="bold"),
             text_color=T.CLR_TEXT,
             anchor="w",
-            justify="left",
-            wraplength=520,
         )
-        self.drop_stego_title._phantom_autowrap = 520
         self.drop_stego_title.pack(fill="x")
         self.binder.bind(self.drop_stego_title, "drop_stego_title")
         self.drop_stego_sub = hint_label(stego_copy, self.root, "", wrap=520)
