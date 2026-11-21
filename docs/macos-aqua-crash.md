@@ -702,60 +702,52 @@ two pieces it needs — and it is not attempted here, because every window test 
 touches the clipboard would have to move to it at once, and this branch cannot run
 those tests on the machine it is written on.
 
-### 14.3 The layout profile never finished — and that was the green
+### 14.3 The layout profile never finished — and the tool itself was the reason
 
 `layout profile (macOS Aqua)` had been green with the numbers printed. It should not
-have been: both runs ended at the 150-second cap. The step caught the timeout,
-printed it, and the job stayed green; the `The numbers` step then found no `SUMMARY`
-line and only printed the `phase …` lines that had already been written, so a run
-that profiled *part* of the series looked like a run that profiled it.
+have been: the runs ended at the cap, the step caught the timeout and printed it, and
+the job stayed green; the `The numbers` step then found no `SUMMARY` line and printed
+only the `phase …` lines that had already been written, so a run that measured part of
+the series looked like a run that measured it.
 
-The reason the run ends at the cap is now measured rather than guessed: the last
-line the tool prints before it stops answering is `fullscreen applied`. On this
-runner `root.attributes("-fullscreen", True)` does not come back — the `after`
-callbacks queued behind it never run, and the tool's own watchdog cannot fire either,
-because a watchdog needs the event loop that is stuck. Nothing after that phase is
-ever reached, so there is no `SUMMARY`.
+Getting to the cause took four runs, and each run removed one wrong answer:
 
-`tools/profile_resize.py` grew `--skip-fullscreen`. The gate run measures the resize
-series and the burst and must finish; the fullscreen phase is a `probe` of its own,
-with a 120-second cap, where a stall is the finding.
+1. **The fullscreen phase.** The last line before the run stopped answering was
+   `fullscreen applied`: `root.attributes("-fullscreen", True)` does not come back on
+   this runner, the `after` callbacks queued behind it never run, and the tool's own
+   watchdog cannot fire either, because a watchdog needs the loop that is stuck. So
+   `--skip-fullscreen` exists, the gate run leaves the phase out, and the phase is a
+   `probe` of its own where a stall is the finding.
+2. **The read, not the run.** With the phase left out, the step still reported a
+   timeout, and `subprocess.run(..., capture_output=True)` returns only the output it
+   managed to read when the timeout fires — so a run that had printed everything could
+   be filed as a run that printed nothing. The step now streams each child's output
+   straight into `profile-<label>.log`.
+3. **The exit path.** The logs then ended at `phase final`, the last mark taken inside
+   `finish()`, microseconds before `SUMMARY`. `finish()` now prints the
+   machine-readable line first and leaves with `os._exit` the moment the numbers are
+   on the wire, because the Tcl teardown behind it can hang for longer than any cap
+   and a hang *after* a measurement must not turn it into a timeout.
+4. **The actual bug, and it was ours.** The summary call passed `flush=True` to
+   `say`, which was `lambda what: print(what, flush=True)` — one positional argument.
+   Every run raised `TypeError: <lambda>() got an unexpected keyword argument
+   'flush'` *inside a Tk callback*. Tk prints a callback exception and carries on, so
+   the loop kept turning with nothing left to do, `SUMMARY` was never written, and the
+   job reported a timeout with no measurement. `say` takes the keyword now — and
+   `root.report_callback_exception` is wired to print the traceback and exit non-zero,
+   so the next swallowed callback failure fails the run instead of hanging it.
 
-A third run still reported `after TIMED OUT`, with the log ending at the
-`fullscreen skipped` line — one line before `SUMMARY`. `finish()` now prints the
-machine-readable line **first** and the human-readable summary after it, the records a
-hang can no longer take the measurement with it, and the step annotates each run's
-exit code, elapsed time and last line so the next run says which of the two it was.
-The paragraph below is the earlier diagnosis, kept because it is the other half of the
-same defect.
-
-The run after that measured everything twice and still reported a timeout, and the
-answer is in how the step read it: `subprocess.run(..., capture_output=True)` returns
-only the output it managed to read when the timeout fires, so a run that printed its
-whole summary could be filed as a run that printed nothing. The step now streams each
-child's output straight into `profile-<label>.log` and decides on the `SUMMARY` line —
-the measurement — while a run that had to be killed *after* the numbers gets its own
-`probe` row (`<label> exits cleanly`). Nothing is swallowed: the hang and the numbers
-are separate rows.
-
-The run before that showed the phase was not the only place the tool stops: with the
-fullscreen round left out, both runs still ended at the cap, and their logs ended at
-`phase final` — the last mark `finish()` takes, printed a few microseconds before the
-`SUMMARY` line that the numbers step looks for. So the numbers *were* measured and
-the process never came back: the exit path (`quit`, `destroy`, the Tcl teardown) is
-the next thing that hangs on this runner. `finish()` now flushes stdout and calls
-`os._exit(0)` the moment the numbers are on the wire, and the numbers are complete:
+The numbers are complete, from one run with `--steps 4` on both trees:
 
 | run | handlers | time in handlers | time in refit passes |
 | --- | --- | --- | --- |
-| `445a5cb` (the tree the owner tested) | 13 002 | 42.3 ms | 36.1 ms |
-| this branch | 17 010 | 5.6 ms | 0.2 ms |
+| `445a5cb` (the tree the owner tested) | 15 440 | 31.4 ms | 26.6 ms |
+| this branch | 14 402 | 5.2 ms | 0.3 ms |
 
-Per handler that is 3.3 ms down to 0.33 ms — the earlier "8× cheaper" claim was in
-the right neighbourhood but was quoted from a run that never finished; these two are
-from one run with the same `--steps 4`, and the refit passes are 180× cheaper. The
-old tree still ends at its cap, which is now the recorded finding (`probe`), not a
-green square.
+Per handler that is 2.0 ms against 0.36 ms, and the refit passes are ~90× cheaper.
+The earlier "8× cheaper" claim came from a run that never finished; this one is
+measured, the old tree still ends at its cap (`probe`: the finding), and this branch's
+run must print a `SUMMARY` or the job is red.
 
 ### 14.4 lldb was pointed at a program that does not crash
 

@@ -52,11 +52,15 @@ All notable changes to PHANTOM are recorded here. The format follows
   own watchdog cannot fire, so the run ended at the 150-second cap with no `SUMMARY`
   line — and the job was green because that timeout was swallowed. `profile_resize.py`
   grew `--skip-fullscreen` for the gate run, and the phase is probed on its own where
-  a stall is the finding. The next run showed the tool then stops on its *exit* path
-  as well, after the numbers are printed and before the process returns: `finish()`
-  now flushes and exits with the measurement, and the step streams each child's
-  output into its log instead of capturing it (a capture returns only what it read
-  when the timeout fires), gates on the `SUMMARY` line and gives a run that had to be
+  a stall is the finding. The runs after that kept timing out, and the reason was in
+  the tool: the summary call passed `flush=True` to a one-argument `say`, so every run
+  raised `TypeError` *inside a Tk callback*, which Tk prints and ignores — the loop
+  kept turning, `SUMMARY` was never written and the job reported a timeout with no
+  measurement. `say` takes the keyword now, `root.report_callback_exception` prints
+  the traceback and exits non-zero so the next swallowed callback fails loudly,
+  `finish()` prints the machine-readable line first and leaves with `os._exit`, and
+  the step streams each child's output into its log (a capture returns only what it
+  read when the timeout fires), gates on `SUMMARY` and gives a run that had to be
   killed after the numbers a `probe` row of its own.
 - **The crash that leaves no traceback is readable now.** `tools/parse_crash_report.py`
   prints the faulting thread of a macOS `.ips` report with symbols, and

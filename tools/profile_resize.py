@@ -151,7 +151,27 @@ def run(
     root = ctk.CTk()
     app = PhantomApp(root)
     rows = len(app.responsive.flows())
-    say = lambda what: print(what, flush=True)  # noqa: E731
+
+    def on_callback_error(kind: type[BaseException], value: BaseException, tb: Any) -> None:
+        """Tk swallows a callback exception: the loop keeps running and the run hangs.
+
+        Measured: a ``TypeError`` in the summary callback was printed by Tk, the
+        event loop carried on with nothing left to do, and the job reported a timeout
+        with no measurement.  A broken tool has to say so and leave.
+        """
+        traceback.print_exception(kind, value, tb)
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os._exit(1)
+
+    root.report_callback_exception = on_callback_error
+    def say(what: str, **kwargs: object) -> None:
+        # ``flush`` was passed to a one-argument lambda and every call that did it
+        # raised inside a Tk callback: Tk printed the TypeError and carried on, the
+        # SUMMARY line was never written, and the run ended at the cap "without a
+        # measurement".  A helper that cannot take the keyword its callers use is not
+        # a helper; the error handler below is what makes the next one loud.
+        print(what, flush=True, **kwargs)  # type: ignore[arg-type]
 
     say(f"built: tk {tk.TkVersion}, tcl {tk.TclVersion}, flow rows {rows}")
     # The product's minimum is 980x720 and this display is barely larger, so a series
