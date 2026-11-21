@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import os
 import sys
 import time
 import tkinter as tk
@@ -131,7 +132,14 @@ def instrument(numbers: Numbers) -> None:
     tk.Grid.grid_forget = grid_forget  # type: ignore[method-assign]
 
 
-def run(label: str, steps: int, gap: int, watchdog: float = 45.0) -> int:
+def run(
+    label: str,
+    steps: int,
+    gap: int,
+    watchdog: float = 45.0,
+    *,
+    fullscreen_wanted: bool = True,
+) -> int:
     import customtkinter as ctk
 
     from phantom.ui.app import PhantomApp
@@ -143,7 +151,31 @@ def run(label: str, steps: int, gap: int, watchdog: float = 45.0) -> int:
     root = ctk.CTk()
     app = PhantomApp(root)
     rows = len(app.responsive.flows())
-    say = lambda what: print(what, flush=True)  # noqa: E731
+
+    def on_callback_error(kind: type[BaseException], value: BaseException, tb: Any) -> None:
+        """Tk swallows a callback exception: the loop keeps running and the run hangs.
+
+        Measured: a ``TypeError`` in the summary callback was printed by Tk, the
+        event loop carried on with nothing left to do, and the job reported a timeout
+        with no measurement.  A broken tool has to say so and leave.
+        """
+        traceback.print_exception(kind, value, tb)
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os._exit(1)
+
+    root.report_callback_exception = on_callback_error
+    def say(what: str, **kwargs: object) -> None:
+        # ``flush`` was passed to a one-argument lambda and every call that did it
+        # raised inside a Tk callback: Tk printed the TypeError and carried on, the
+        # SUMMARY line was never written, and the run ended at the cap "without a
+        # measurement".  A helper that cannot take the keyword its callers use is not
+        # a helper; the error handler below is what makes the next one loud.
+        # ``flush`` is accepted and dropped: callers pass it, ``print`` is already
+        # told to flush, and passing it twice raised "got multiple values for keyword
+        # argument 'flush'" inside the same Tk callback this comment is about.
+        kwargs.pop("flush", None)
+        print(what, flush=True, **kwargs)  # type: ignore[arg-type]
 
     say(f"built: tk {tk.TkVersion}, tcl {tk.TclVersion}, flow rows {rows}")
     # The product's minimum is 980x720 and this display is barely larger, so a series
@@ -223,7 +255,10 @@ def run(label: str, steps: int, gap: int, watchdog: float = 45.0) -> int:
             except tk.TclError as exc:  # pragma: no cover - platform dependent
                 say(f"event_generate failed: {exc}")
                 break
-        root.after(gap, lambda: (net_snapshot("burst"), fullscreen()))
+        if fullscreen_wanted:
+            root.after(gap, lambda: (net_snapshot("burst"), fullscreen()))
+        else:
+            root.after(gap, lambda: (net_snapshot("burst"), finish()))
 
     def net_snapshot(name: str) -> None:
         snapshot(name)
@@ -237,7 +272,16 @@ def run(label: str, steps: int, gap: int, watchdog: float = 45.0) -> int:
         )
 
     def fullscreen() -> None:
-        """The transition the owner feels most: in and out of the native mode."""
+        """The transition the owner feels most: in and out of the native mode.
+
+        Measured on the macOS runner: this call does not come back.  ``after``
+        callbacks queued behind it never run, the tool's own watchdog cannot fire
+        (it needs the loop), and the run ends at the outer cap with no SUMMARY —
+        the profile job was green for months because that timeout was swallowed.
+        ``--skip-fullscreen`` leaves the phase out so the resize numbers can be
+        measured and gated on their own; the phase gets its own step, with a cap and
+        the stall reported instead of hidden.
+        """
         try:
             root.attributes("-fullscreen", True)
         except tk.TclError as exc:
@@ -257,7 +301,21 @@ def run(label: str, steps: int, gap: int, watchdog: float = 45.0) -> int:
 
     def finish() -> None:
         finished[0] = True
-        net_snapshot("fullscreen")
+        net_snapshot("final")
+        # The machine-readable line first: everything below it is for people, and a
+        # runner that hangs mid-summary must not be able to hide a finished
+        # measurement (this happened twice — see docs/macos-aqua-crash.md §14.3).
+        say(
+            f"SUMMARY label={label} steps={steps} rows={rows} "
+            f"walks={numbers.flows_walks} reflow={numbers.reflow} "
+            f"changes={numbers.layout_changes} grid={numbers.grid} "
+            f"forget={numbers.grid_forget} wrap={numbers.apply} "
+            f"handlers={numbers.resize} handler_ms={numbers.seconds_resize * 1000:.1f} "
+            f"pass_ms={numbers.seconds_pass * 1000:.1f} "
+            f"worst_gap_ms={worst[0] * 1000:.1f} "
+            f"fullscreen={numbers.fullscreen}",
+            flush=True,
+        )
         say("")
         say(f"--- {label}")
         say(f"flow rows                {rows}")
@@ -272,17 +330,6 @@ def run(label: str, steps: int, gap: int, watchdog: float = 45.0) -> int:
         say(f"time in refit passes     {numbers.seconds_pass * 1000:.1f} ms")
         say(f"worst event-loop gap     {worst[0] * 1000:.1f} ms")
         say(f"fullscreen               {numbers.fullscreen}")
-        say(
-            f"SUMMARY label={label} steps={steps} rows={rows} "
-            f"walks={numbers.flows_walks} reflow={numbers.reflow} "
-            f"changes={numbers.layout_changes} grid={numbers.grid} "
-            f"forget={numbers.grid_forget} wrap={numbers.apply} "
-            f"handlers={numbers.resize} handler_ms={numbers.seconds_resize * 1000:.1f} "
-            f"pass_ms={numbers.seconds_pass * 1000:.1f} "
-            f"worst_gap_ms={worst[0] * 1000:.1f} "
-            f"fullscreen={numbers.fullscreen}",
-            flush=True,
-        )
         for name, values in marks:
             say(
                 f"PHASE label={label} phase={name} walks={values['walks']:.0f} "
@@ -292,18 +339,19 @@ def run(label: str, steps: int, gap: int, watchdog: float = 45.0) -> int:
                 f"handler_ms={values['handler_ms']:.1f} pass_ms={values['pass_ms']:.1f}",
                 flush=True,
             )
-        # Not ``_on_close``: it asks a modal question when a job is running, and a
-        # modal dialog in CI waits for a click nobody makes.
-        for token_name in ("_refit_token", "_layout_token", "_poll_token", "_theme_token"):
-            token = getattr(app, token_name, None)
-            if token is not None:
-                with contextlib.suppress(tk.TclError):
-                    root.after_cancel(token)
-                setattr(app, token_name, None)
-        # ``quit`` and not ``after(120, destroy)``: a window whose reflow feeds its own
-        # ``<Configure>`` handler never lets the queue empty, and a timer scheduled
-        # behind that stream is not something to rely on.
-        root.quit()
+        # The measurement is on stdout and flushed: leave now.  Measured on the macOS
+        # runner, the exit path past this point (``quit``, ``destroy``, the Tcl
+        # teardown) can hang for longer than any cap, and a hang *after* the numbers
+        # must not turn a finished measurement into a timeout — that is the shape
+        # this job had for months without anyone seeing it.
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os._exit(0)
+
+        # Everything below this point — cancelling the app's timers, ``quit``,
+        # ``destroy``, the Tcl teardown — used to run here.  Measured on the macOS
+        # runner, the exit path past the numbers can hang for longer than any cap,
+        # and a hang *after* the measurement must not turn it into a timeout.
 
     # The build is not the subject: start counting once the window has settled.
     def begin() -> None:
@@ -321,12 +369,22 @@ def run(label: str, steps: int, gap: int, watchdog: float = 45.0) -> int:
     with contextlib.suppress(tk.TclError):
         root.destroy()
     say("main loop finished cleanly")
+    if not finished[0]:
+        # The window was destroyed by the watchdog, so no series and no SUMMARY:
+        # a shell that reads only the exit code must not read this as a measurement.
+        say(f"INCOMPLETE: the resize series never finished (watchdog {watchdog:.0f}s)")
+        return 3
     return 0
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--label", default="run", help="name for this run in the summary")
+    parser.add_argument(
+        "--skip-fullscreen",
+        action="store_true",
+        help="leave out the native fullscreen round (it does not return on a runner)",
+    )
     parser.add_argument("--steps", type=int, default=len(WIDTHS), help="resize steps")
     parser.add_argument("--gap", type=int, default=90, help="milliseconds between steps")
     parser.add_argument(
@@ -336,7 +394,13 @@ def main(argv: list[str] | None = None) -> int:
         help="seconds after which the window is destroyed and the run gives up",
     )
     args = parser.parse_args(argv)
-    return run(args.label, args.steps, args.gap, args.watchdog)
+    return run(
+        args.label,
+        args.steps,
+        args.gap,
+        args.watchdog,
+        fullscreen_wanted=not args.skip_fullscreen,
+    )
 
 
 if __name__ == "__main__":

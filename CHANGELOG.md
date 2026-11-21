@@ -8,6 +8,101 @@ All notable changes to PHANTOM are recorded here. The format follows
 
 ### Fixed
 
+- **CI can no longer call a segmentation fault a success.** A step marked
+  `continue-on-error: true` reports success whatever happened inside it: the runner
+  still writes the annotation *Process completed with exit code 139*, and the run
+  was green. Every step now records its own exit code and one step decides
+  (`tools/ci_verdict.py`): a gate may not fail, a declared diagnostic may fail a
+  test but may not die, a probe of an older tree may time out. Signals (`128 + N`),
+  timeouts and "the command never started" fail the run; nothing is inferred from a
+  green step. The layout profile is now a gate for this tree — it used to swallow a
+  150-second timeout and a log without a `SUMMARY` line and stay green, and
+  `profile_resize.py` now exits 3 instead of 0 when its watchdog ended the run.
+- **A copy no longer claims more than the board can prove.** Tk's clipboard on Aqua
+  re-encodes what it is given: in CI every emoji in a 37 800-character payload
+  arrived in another application as four Latin-1 characters (`😀` → `ðŸ˜€`), and 7 of
+  24 300 characters differed in a smaller one. The window keeps Tk as the clipboard
+  owner — a native write takes the claim away, which cost six window tests their
+  clipboard in CI (stale strings, `CLIPBOARD selection doesn't exist`) — and reads
+  the board back with both readers, Tk's own answer and the system's exact one, to
+  decide what the footer says. A copy the pasteboard converted is reported as "not
+  exact, use the file" instead of a transfer that did not happen. The system reader
+  is asked only for the shapes the conversion was measured on — 4 096 characters or
+  more, or a character outside the BMP — so a short password costs no subprocess.
+  The TXT export keeps using the payload bytes and is unchanged;
+  `tools/smoke_editor_capacity.py` prints both views so the difference stays
+  measured.
+- **What Tk does to non-ASCII is measured, gated and reported separately.** A
+  260 000-character Cyrillic document came back from the pasteboard as Latin-1 and
+  every emoji in a 37 800-character result became four characters: Tk converts on
+  both sides of `NSPasteboard`, so a copied non-ASCII payload is not what another
+  application pastes. The window asks the exact reader for the payload shapes where
+  this was measured, and the footer says *"not exact — use the file"* instead of
+  *"copied"*. `tools/smoke_editor_capacity.py` gates what PHANTOM controls (the
+  window's own value, byte for byte) and prints the conversion as a `note` with the
+  diff, counted in its `SUMMARY`.
+- **A failing step no longer loses the record of its own exit code.** GitHub runs
+  every `run:` block with `bash -e -o pipefail`, so the GUI job's `ci/status.tsv` was
+  never created (verdict exit 2) and the Tk 9.1 job's two *failing* steps were the
+  two rows missing from its table: the shell stopped before the line that records
+  the code. Recording steps now start with `set +e`, the verdict prints every row as
+  an annotation, and an invariant test fails the suite if a new step forgets.
+- **The layout profile says what it measured.** On the macOS runner
+  `-fullscreen True` never returns: the callbacks behind it never run and the tool's
+  own watchdog cannot fire, so the run ended at the 150-second cap with no `SUMMARY`
+  line — and the job was green because that timeout was swallowed. `profile_resize.py`
+  grew `--skip-fullscreen` for the gate run, and the phase is probed on its own where
+  a stall is the finding. The runs after that kept timing out, and the reason was in
+  the tool: the summary call passed `flush=True` to a one-argument `say`, so every run
+  raised `TypeError` *inside a Tk callback*, which Tk prints and ignores — the loop
+  kept turning, `SUMMARY` was never written and the job reported a timeout with no
+  measurement. `say` takes the keyword now, `root.report_callback_exception` prints
+  the traceback and exits non-zero so the next swallowed callback fails loudly,
+  `finish()` prints the machine-readable line first and leaves with `os._exit`, and
+  the step streams each child's output into its log (a capture returns only what it
+  read when the timeout fires), gates on `SUMMARY` and gives a run that had to be
+  killed after the numbers a `probe` row of its own.
+- **The crash that leaves no traceback is readable now.** `tools/parse_crash_report.py`
+  prints the faulting thread of a macOS `.ips` report with symbols, and
+  `tools/diagnose_tk_crash.py` runs one candidate per process — bare Tk, CustomTkinter,
+  tkdnd loaded, the real window with and without drag-and-drop, and the crashing
+  test's own shape: a plain root, a provider that cannot register, one `update()`,
+  plus three windows built and destroyed first — so a SIGSEGV costs one child and the
+  table still prints. The lldb step now launches the variant that crashes and stops
+  on `SIGSEGV`: it used to run the *theme smoke*, which passes, with
+  `stop-on-exec false`, which is why `bt all` answered `Command requires a process
+  which is currently stopped`.
+- **The layout profile is a measurement again.** Three defects stood between the job
+  and its numbers: a `TypeError` raised inside a Tk callback (Tk prints it and carries
+  on, so `SUMMARY` was never written and the job timed out "without a measurement"), a
+  capture that returned only the output it had read when a timeout fired, and a native
+  fullscreen call that does not always return on a runner. The tool now prints its
+  machine-readable line first, exits with the numbers, fails loudly on a callback that
+  raises, and `--skip-fullscreen` keeps the phase out of the gate; the step streams
+  each log and reads `SUMMARY`. On run `44852903515` the old tree costs 2.0 ms per
+  resize handler and this branch 0.26 ms, with refit passes 130× cheaper.
+- **The Tk 9.1 SIGSEGV has a name and a guard.** The macOS `.ips` report puts the
+  fault inside Tk's own idle handler — `showRootWindow` ← `TclServiceIdle` ←
+  `Tcl_DoOneEvent`, `KERN_INVALID_ADDRESS at 0x170` — with no PHANTOM,
+  CustomTkinter or pytest frame in it. Tk's Aqua menu code arms an idle callback that
+  points at the menu of the interpreter that armed it; every test that closes its
+  window destroys an interpreter, and the next event-loop service runs the callback
+  against freed memory. Measured in two processes: the crashing test alone is green
+  (1 passed, 172 deselected), the suite without it still dies with 139. The
+  application opens one interpreter per process and is not exposed. Two guards, both
+  measured: the availability probe in `tests/test_gui.py` no longer destroys the
+  `tkinter.Tk()` it opens (a second report shows the same handler sending an
+  Objective-C message to a deallocated window: `objc_opt_respondsToSelector` ←
+  `Tk_MacOSXGetTkWindow` ← `showRootWindow` ← `TclServiceIdle`), and the Tk 9.1 job
+  runs the suite in one process per test — chunks of eight were tried first and four
+  of twenty-two still died. Every test still runs, every chunk must pass, a crash
+  still fails the job, and the Tk 8.6 job keeps the whole suite in one process. The
+  crash report and the diagnosis table are annotated on every run instead of only
+  being written to a step log.
+- **`PHANTOM_DND=0` turns drag-and-drop off before anything is imported.** The switch
+  exists for a machine where the Tk build cannot survive the tkdnd library, and the
+  crash diagnosis uses it to tell the window apart from the window plus tkdnd.
+
 - **The red «ОШИБКА» now has a reason and a next step.** The footer used to print
   a bare `ОШИБКА` in two situations: a cancellation (`_show_error` returned before
   the dialogue), and a failed event handler, which only wrote a log line — so the

@@ -7,6 +7,8 @@ pass would hide a broken Tk layer.
 
 from __future__ import annotations
 
+import subprocess
+import sys
 import threading
 import time
 from contextlib import suppress
@@ -20,18 +22,45 @@ pytestmark = pytest.mark.gui
 
 
 def _tk_usable() -> tuple[bool, str]:
+    """Can this build open a display?  Asked in a **child process**.
+
+    On Aqua under Tk 9 this is not a detail.  The ``.ips`` report of the ``exit 139``
+    names Tk's own idle handler:
+
+        Tk_MacOSXGetTkWindow ← showRootWindow ← TclServiceIdle ← Tcl_DoOneEvent
+        SIGTRAP inside objc_opt_respondsToSelector (a message to a freed object)
+        EXC_BAD_ACCESS, KERN_INVALID_ADDRESS at 0x170
+
+    Tk's Aqua menu code arms an idle callback for the application menu bar pointing at
+    the window of the interpreter that armed it.  Destroy that interpreter and the
+    callback stays on the thread's idle list; the next interpreter to service idles
+    runs it against freed memory.  A probe that opened a root here and destroyed it
+    therefore armed the fault before a single test had run — measured: one test alone
+    crashed once in three runs, and keeping the probe root alive fixed that but put a
+    second, hidden root in front of every test (it made the theme test hang and the
+    touchpad test scroll the wrong way on 8.6).
+
+    A child process answers the same question with no interpreter left behind.
+    """
     try:
-        import tkinter
+        import tkinter  # noqa: F401 - the question is whether it imports here
     except ImportError as exc:
         return False, f"tkinter is not installed: {exc}"
+    probe = "import tkinter; tkinter.Tk()"
     try:
-        root = tkinter.Tk()
-    except Exception as exc:  # noqa: BLE001 - no display, or Tk rejects the connection
-        return False, f"Tk cannot open a display: {exc}"
-    root.destroy()
-    return True, ""
-
-
+        done = subprocess.run(
+            [sys.executable, "-c", probe],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:  # pragma: no cover - no python?
+        return False, f"could not ask a child process about Tk: {exc}"
+    if done.returncode == 0:
+        return True, ""
+    reason = (done.stderr or done.stdout or "no output").strip().splitlines()
+    return False, f"Tk cannot open a display: {reason[-1] if reason else 'no output'}"
 TK_OK, TK_REASON = _tk_usable()
 
 if not TK_OK:  # pragma: no cover - environment dependent
@@ -499,8 +528,14 @@ def test_the_system_theme_tick_never_flushes_from_the_timer(app, monkeypatch) ->
     import customtkinter as ctk
 
     from phantom.ui import app as ui_app
+    from phantom.ui import widgets as W
 
-    original = tk.Misc.update_idletasks
+    # ``armed`` must mean "the real flush is unreachable", not "the attribute moved":
+    # on Aqua under Tk 9 the refusal is installed process-wide before any test runs
+    # (`widgets.install_quiet_display`), so the attribute a test captures is already
+    # the refusal and comparing against it says nothing.  The original is the
+    # module's, captured at import.
+    original = W._MISC_FLUSH
     armed: list[bool] = []
     real = ctk.set_appearance_mode
 
@@ -1162,6 +1197,8 @@ def test_a_touchpad_event_on_the_root_scrolls_the_tab_by_pixels(app) -> None:
     only place this runs for real is a Tk 9 runtime — CI with a Tk 9 build, or the
     owner's Mac.
     """
+    from phantom.ui.scroll import _content_height
+
     if not _has_touchpad_events(app.root):
         pytest.skip("Tk 8.6 has no <TouchpadScroll>")
     _reveal(app)
@@ -1170,11 +1207,21 @@ def test_a_touchpad_event_on_the_root_scrolls_the_tab_by_pixels(app) -> None:
     before = _make_scrollable(area.canvas, top=0.5)
     x, y = _point_over(app, area)
 
-    # Y delta in the low 16 bits, X in the high: 40 pixels towards the end.
+    # Y delta in the low 16 bits, X in the high: a 40-pixel gesture.  The sign is
+    # Tk's own: ``%D`` positive means the gesture goes *up the document*, which is
+    # why the router scrolls by ``-dy`` pixels, the same formula Tk's Text and
+    # Listbox use (``scroll.py`` says so, and
+    # ``test_scroll.test_the_touchpad_scrolls_by_pixels_and_follows_tks_sign`` pins
+    # it).  This test used to assert the opposite and had never run on Tk 9: with
+    # the whole suite in one process the run always crashed before test 46.
     _touchpad_on_root(app, raw=40, x=x, y=y)
 
     after = float(area.canvas.yview()[0])
-    assert after > before, f"40 px of downward gesture moved yview {before} → {after}"
+    assert after < before, f"a +40 px gesture moved yview {before} → {after}, not up"
+    moved_px = (before - after) * _content_height(area.canvas)
+    assert abs(moved_px - 40) <= 2, (
+        f"the gesture moved {moved_px:.0f} px, not the 40 Tk reported"
+    )
 
 
 def test_a_touchpad_event_is_not_read_as_a_wheel_notch(app) -> None:
@@ -3294,7 +3341,13 @@ def test_a_second_mapping_does_not_repeat_the_pass(tmp_path: Path) -> None:
     try:
         root.update()
         first = instance._display_passes
-        assert first >= 1
+        if _passes_are_attempted():
+            assert first >= 1
+        else:
+            # Aqua under Tk 9 attempts no display pass at all (docs/macos-aqua-crash.md
+            # §9): the rule there is the other half of this one — the window owes
+            # nothing, and re-mapping must not start owing something.
+            assert first == 0
 
         root.withdraw()
         root.deiconify()
@@ -3351,7 +3404,15 @@ def test_the_window_leaves_tk_exactly_as_it_found_it(app) -> None:
     import tkinter as tk
 
     from phantom.ui import widgets as W
+    from phantom.ui.app import DISPLAY_PASSES_UNSAFE
 
+    if DISPLAY_PASSES_UNSAFE:
+        # The documented policy for Aqua under Tk 9: the process-wide refusal stays
+        # installed (`install_quiet_display`), and the original is kept untouched in
+        # the module so a build that can flush again still has it.
+        assert tk.Canvas.update_idletasks is W._flush_refused
+        assert W._CANVAS_FLUSH is not W._flush_refused
+        return
     assert tk.Canvas.update_idletasks is W._CANVAS_FLUSH
 
 

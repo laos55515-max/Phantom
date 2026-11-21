@@ -70,7 +70,19 @@ jobs:
         env:
           PYTHONPATH: src
       - name: Tests (headless, without a display)
-        run: python -m pytest -ra -m "not gui"
+        # The log is echoed as annotations: Actions log downloads are not always
+        # reachable, and "Process completed with exit code 1" names no test.
+        run: |
+          set +e
+          set -o pipefail
+          python -m pytest -ra -m "not gui" 2>&1 | tee pytest.log
+          code=${PIPESTATUS[0]}
+          awk '/^(FAILED|ERROR) / { print "::error::test: " $0 }' pytest.log | head -25
+          if [ "$code" -ne 0 ]; then
+            awk '/^=+ .*(short test summary|FAILURES|ERRORS)/ { print "::warning::summary: " $0 }' \
+              pytest.log | head -5
+          fi
+          exit "$code"
         env:
           MPLBACKEND: Agg
       - name: GUI smoke tests (Xvfb)
@@ -86,7 +98,11 @@ jobs:
         timeout-minutes: 15
         continue-on-error: true
         run: |
+          # GitHub's shell is ``bash -e -o pipefail``: without this, a
+          # failing command ends the step before its exit code is recorded.
+          set +e
           set -o pipefail
+          mkdir -p ci
           # A wedged job leaves a non-daemon thread behind and the interpreter
           # waits for it for ever, so a hard wall-clock cap ends the step instead
           # of the job burning its own limit.  conftest.py prints the stacks of
@@ -95,6 +111,9 @@ jobs:
             xvfb-run -a -s "-screen 0 1280x1024x24" python -m pytest -ra -m gui -v \
               --durations=20 --timeout=120 --timeout-method=thread \
               -o faulthandler_timeout=120 2>&1 | tee gui.log
+          code=${PIPESTATUS[0]}
+          printf 'gui smoke (xvfb)\t%s\tgate\n' "$code" >> ci/status.tsv
+          exit "$code"
       - name: GUI log
         if: always()
         run: |
@@ -147,10 +166,12 @@ jobs:
         # The window's own budget, measured the same way before and after this
         # branch: three full builds, median reported, plus a profile of one build.
         # Annotations, because Actions log downloads are not always reachable.
+        # A measurement may fail; it may not die — the verdict step tells them apart.
         if: matrix.python-version == '3.11'
         continue-on-error: true
         run: |
           set +e
+          mkdir -p ci
           : > /tmp/startup.txt
           echo "=== this branch" | tee -a /tmp/startup.txt
           xvfb-run -a -s "-screen 0 1280x1024x24" python tools/bench_startup.py --profile --stages >>/tmp/startup.txt 2>&1
@@ -176,6 +197,9 @@ jobs:
           echo "::notice::profile: $(grep -E '^PROFILE:' /tmp/startup.txt | head -8 | tr '\n' '|')"
           if ! grep -q "^STARTUP: median" /tmp/startup.txt; then
             echo "::warning::bench: $(tail -4 /tmp/startup.txt | tr '\n' '|')"
+            printf 'startup bench\t4\tdiagnostic\n' >> ci/status.tsv
+          else
+            printf 'startup bench\t0\tdiagnostic\n' >> ci/status.tsv
           fi
 
       - name: Keep the GUI log
@@ -186,6 +210,14 @@ jobs:
           path: gui.log
           if-no-files-found: ignore
           retention-days: 7
+
+      - name: "Verdict: a crash is never a pass"
+        if: always()
+        run: |
+          # GitHub's shell is ``bash -e -o pipefail``: without this, a
+          # failing command ends the step before its exit code is recorded.
+          set +e
+          python tools/ci_verdict.py ci/status.tsv --annotate
 
   gui-macos:
     # The GUI suite on real Aqua.  Xvfb proves the Tk *widget* logic, not the
@@ -230,22 +262,36 @@ jobs:
         id: gui
         timeout-minutes: 20
         run: |
+          # GitHub's shell is ``bash -e -o pipefail``: without this, a
+          # failing command ends the step before its exit code is recorded.
+          set +e
           set -o pipefail
+          mkdir -p ci
           # No xvfb-run: Aqua needs the session, not a virtual display.  No
           # ``timeout`` either — macOS ships none (the Linux job's shell has it);
           # pytest-timeout kills a wedged test and the step cap covers the rest.
           python -m pytest -ra -m gui -v --durations=20 \
             --timeout=120 --timeout-method=thread \
             -o faulthandler_timeout=120 2>&1 | tee gui-macos.log
+          code=${PIPESTATUS[0]}
+          printf 'gui suite\t%s\tgate\n' "$code" >> ci/status.tsv
+          exit "$code"
       - name: The editor and the capacity panel, on Tk's own loop
         # `always()`: the suite above is one piece of evidence, this is another, and a
         # suite failure must not hide whether the editor itself works on this Tk.
         if: always()
         run: |
+          # GitHub's shell is ``bash -e -o pipefail``: without this, a
+          # failing command ends the step before its exit code is recorded.
+          set +e
           set -o pipefail
+          mkdir -p ci
           export PYTHONPATH=src
           python -X faulthandler -u tools/smoke_editor_capacity.py --trace 2>&1 \
             | tee -a gui-macos.log
+          code=${PIPESTATUS[0]}
+          printf 'editor smoke\t%s\tgate\n' "$code" >> ci/status.tsv
+          exit "$code"
 
       - name: GUI log
         if: always()
@@ -290,7 +336,12 @@ jobs:
               print(f"::warning::callback: {line.strip()[:900]}")
           if noise:
               print(f"::notice::callback-noise: {len(noise)} lines")
-          for line in lines[-3:]:
+          # A pytest-timeout kill leaves no `FAILED` line: without this the step just
+          # said "exit code 1" and named nothing (measured on run 44857802606).
+          stalls = [line for line in lines if "Timeout" in line or "+++ " in line]
+          if stalls:
+              print(f"::error::stalls: {' ¦ '.join(stalls)[:2000]}")
+          for line in lines[-6:]:
               print(f"::notice::tail: {line[:900]}")
           print(f"::notice::gui-macos.log: {len(lines)} lines, {len(failures)} failing tests")
           # The editor matrix: every ok/FAIL line the diagnostic printed, in full.
@@ -304,10 +355,19 @@ jobs:
           ]
           print(f"::warning::editor matrix ({len(matrix)} lines): {' ¦ '.join(matrix)[:12000]}")
           PY
-          if [ "${{ steps.gui.outcome }}" != "success" ]; then
-            echo "macOS GUI smoke tests failed, timed out or crashed"
-            exit 1
-          fi
+
+      - name: "Verdict: a crash is never a pass"
+        # The one place that decides.  ``continue-on-error`` hides a signal death from
+        # the job status (the runner still annotates "Process completed with exit code
+        # 139"), so every step records its own exit code and this step reads them: a
+        # gate may not fail, a measurement may fail but may not die, a probe may time
+        # out.  See tools/ci_verdict.py for the rules and their tests.
+        if: always()
+        run: |
+          # GitHub's shell is ``bash -e -o pipefail``: without this, a
+          # failing command ends the step before its exit code is recorded.
+          set +e
+          python tools/ci_verdict.py ci/status.tsv --annotate
 
   gui-tk9:
     # Tcl/Tk 9.1 on macOS, next to the 8.6 job: the build the theme switch segfaulted
@@ -339,32 +399,193 @@ jobs:
 
       - name: The window survives a theme switch on Tk's own loop
         run: |
+          # GitHub's shell is ``bash -e -o pipefail``: without this, a
+          # failing command ends the step before its exit code is recorded.
+          set +e
           . .venv-tk9/bin/activate
           set -o pipefail
+          mkdir -p ci
           # The other Aqua job gets `phantom` on the path the same way: PYTHONPATH=src,
           # so the smoke run and the suite import exactly the checked-out tree.
           export PYTHONPATH=src
           python -X faulthandler -u tools/smoke_tk91_theme.py --trace 2>&1 | tee tk9-smoke.log
+          code=${PIPESTATUS[0]}
+          printf 'theme smoke\t%s\tgate\n' "$code" >> ci/status.tsv
+          exit "$code"
 
-      - name: The pytest suite, for the record
+      - name: Where the exit 139 comes from, one candidate per process
+        # The measured question: which of these dies on this Tk build?  Every variant
+        # runs in its own process, so a SIGSEGV costs that child and the table still
+        # prints; a crash in the application's own code fails the job, a crash in the
+        # harness pump is printed with its reason (docs/macos-aqua-crash.md §13).
         continue-on-error: true
         run: |
+          # GitHub's shell is ``bash -e -o pipefail``: without this, a
+          # failing command ends the step before its exit code is recorded.
+          set +e
           . .venv-tk9/bin/activate
-          set -o pipefail
           export PYTHONPATH=src
-          python -X faulthandler -u -m pytest -m gui -v --durations=20 \
-            --timeout=120 --timeout-method=thread -o faulthandler_timeout=120 2>&1 \
-            | tee gui-tk9.log
+          python -X faulthandler -u tools/diagnose_tk_crash.py \
+            --annotate --json diag-tk9.json --gate
+          code=$?
+          printf 'crash diagnosis\t%s\tgate\n' "$code" >> ci/status.tsv
+          exit "$code"
+
+      - name: The pytest suite, one interpreter per chunk (Tk 9.1 dies otherwise)
+        # Root cause, from the ``.ips`` report this job now annotates:
+        #
+        #   EXC_BAD_ACCESS (KERN_INVALID_ADDRESS at 0x170)
+        #   #5 libtcl9tk9.1.dylib  showRootWindow
+        #   #6 libtcl9.1.dylib     TclServiceIdle
+        #   #7 libtcl9.1.dylib     Tcl_DoOneEvent
+        #   #8 _tkinter            _tkinter_tkapp_mainloop
+        #
+        # Tk's Aqua menu code arms an *idle* handler for the application menu bar, and
+        # that handler points at a menu owned by the interpreter that armed it.  Each
+        # test closes its window, which destroys its interpreter; the next event-loop
+        # service then runs the handler against freed memory (the ``0x170`` is a field
+        # of the freed object).  That is why the crash lands in whichever test happens
+        # to be pumping — it moved from the DnD test to the theme test between runs —
+        # and why one test on its own never crashes.  Nothing in PHANTOM or
+        # CustomTkinter appears in the faulting stack: the fault is inside Tk 9.1.
+        #
+        # So the suite runs in chunks, one process each: every test still runs and
+        # every chunk must pass, and a crash still fails the job (a signal outranks a
+        # failure when the worst code is chosen below).  Tk 8.6 on the other job runs
+        # the whole suite in one process, so cross-test interference stays covered.
+        continue-on-error: true
+        timeout-minutes: 30
+        run: |
+          # GitHub's shell is ``bash -e -o pipefail``: without this, a
+          # failing command ends the step before its exit code is recorded.
+          set +e
+          . .venv-tk9/bin/activate
+          mkdir -p ci
+          export PYTHONPATH=src
+          # One test per process: nothing then services an idle belonging to a
+          # destroyed interpreter, which is the fault (docs/macos-aqua-crash.md §15).
+          PHANTOM_GUI_CHUNK=${PHANTOM_GUI_CHUNK:-1}
+          export PHANTOM_GUI_CHUNK
+          python -m pytest tests/test_gui.py --collect-only -q 2>/dev/null \
+            | grep -F '::' > gui-ids.txt
+          python - <<'PY'
+          import os
+          import pathlib
+          import subprocess
+          import sys
+
+          ids = [
+              line.strip()
+              for line in pathlib.Path("gui-ids.txt").read_text().splitlines()
+              if "::" in line
+          ]
+          if not ids:
+              print("::error::gui suite: the collection produced no test ids")
+              pathlib.Path("ci/worst.txt").write_text("3")
+              raise SystemExit(0)
+          size = int(os.environ.get("PHANTOM_GUI_CHUNK", "1"))
+          print(f"::notice::gui suite: {len(ids)} tests, chunks of {size}")
+          aggregate = pathlib.Path("gui-tk9.log").open("w", encoding="utf-8")
+          worst = 0
+          for number, start in enumerate(range(0, len(ids), size)):
+              part = ids[start : start + size]
+              label = f"tests {start + 1}-{start + len(part)}"
+              print(f"--- chunk {number}: {label}")
+              # A scroll test that fails on this build needs the decode trace to say
+              # whether the gesture or the router is wrong; nothing else turns it on.
+              env = dict(os.environ)
+              if any("touchpad" in one for one in part):
+                  env["PHANTOM_SCROLL_DEBUG"] = "1"
+              done = subprocess.run(
+                  [
+                      sys.executable,
+                      "-m",
+                      "pytest",
+                      "-q",
+                      "-o",
+                      "faulthandler_timeout=120",
+                      "--timeout=120",
+                      "--timeout-method=thread",
+                      *part,
+                  ],
+                  capture_output=True,
+                  text=True,
+                  check=False,
+                  env=env,
+              )
+              code = done.returncode
+              aggregate.write(done.stdout + done.stderr)
+              aggregate.flush()
+              if code == 0:
+                  continue
+              tail = [line for line in done.stdout.splitlines() if line.strip()][-6:]
+              print(f"::error::gui chunk {label}: exit {code} (first: {part[0]})")
+              print(f"::error::gui chunk {label} tail: {' ¦ '.join(tail)[:900]}")
+              # A signal outranks a plain failure: the job must stay red for a crash.
+              if code >= 128 or worst == 0:
+                  worst = code
+          aggregate.close()
+          print(f"::notice::gui suite: {len(ids)} tests, worst exit {worst}")
+          pathlib.Path("ci/worst.txt").write_text(str(worst))
+          PY
+          code=$(cat ci/worst.txt)
+          printf 'gui suite (tk9)\t%s\tgate\n' "$code" >> ci/status.tsv
+          exit "$code"
+
+      - name: One interpreter on its own is healthy (the isolation claim, measured)
+        # If this ever crashes, the chunking above is hiding something and the claim
+        # in docs/macos-aqua-crash.md §15 is wrong: one window, one process, Tk's own
+        # loop.  A probe: a failure is data, a crash is still a crash.
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 10
+        run: |
+          set +e
+          . .venv-tk9/bin/activate
+          mkdir -p ci
+          export PYTHONPATH=src
+          python -X faulthandler -u -m pytest tests/test_gui.py -q -x \
+            -k dnd_that_cannot_register > case-alone.log 2>&1
+          code=$?
+          tail -5 case-alone.log
+          python - "$code" <<'PY'
+          import pathlib
+          import sys
+
+          code = int(sys.argv[1])
+          lines = [
+              line.rstrip()
+              for line in pathlib.Path("case-alone.log").read_text(errors="replace").splitlines()
+          ]
+          tail = [line for line in lines if line.strip()][-2:]
+          level = "error" if code >= 128 else "notice"
+          print(f"::{level}::one interpreter (exit {code}): {' ¦ '.join(tail)[:900]}")
+          PY
+          printf 'one window alone\t%s\tprobe\n' "$code" >> ci/status.tsv
+          exit 0
 
       - name: The minimal reproduction, default and with the refusal
         continue-on-error: true
         run: |
+          # GitHub's shell is ``bash -e -o pipefail``: without this, a
+          # failing command ends the step before its exit code is recorded.
+          set +e
           . .venv-tk9/bin/activate
+          mkdir -p ci
+          export PYTHONPATH=src
+          worst=0
           for mode in --update-between --quiet; do
             echo "--- repro $mode"
-            python -X faulthandler -u tools/repro_tk91_theme_crash.py $mode \
-              || echo "::warning::repro $mode exited $?"
+            python -X faulthandler -u tools/repro_tk91_theme_crash.py $mode
+            code=$?
+            echo "repro $mode exited $code"
+            # The worst of the two is what the verdict sees: a crash in either mode
+            # is a crash.
+            if [ "$code" -ge 128 ] || [ "$code" -lt 0 ]; then worst=$code;
+            elif [ "$code" -ne 0 ] && [ "$worst" -eq 0 ]; then worst=$code; fi
           done
+          printf 'theme repro\t%s\tdiagnostic\n' "$worst" >> ci/status.tsv
+          exit 0
 
       - name: The editor and the capacity panel, on Tk's own loop
         # A gate, on 9.1 as well: real keystrokes, the real clipboard, a real PNG
@@ -372,67 +593,131 @@ jobs:
         # theme smoke gives.  The assertion run is what decides; on failure the
         # diagnostic run repeats every step and prints what it saw.
         run: |
+          # GitHub's shell is ``bash -e -o pipefail``: without this, a
+          # failing command ends the step before its exit code is recorded.
+          set +e
           . .venv-tk9/bin/activate
           set -o pipefail
+          mkdir -p ci
           export PYTHONPATH=src
           python -X faulthandler -u tools/smoke_editor_capacity.py --trace 2>&1 \
-            | tee editor-smoke.log \
-            || { echo "::error::the editor smoke failed on Tk 9.1"; \
-                 python -X faulthandler -u tools/smoke_editor_capacity.py --diagnose 2>&1 \
-                   | tee -a editor-smoke.log; exit 1; }
+            | tee editor-smoke.log
+          code=${PIPESTATUS[0]}
+          if [ "$code" -ne 0 ]; then
+            echo "::error::the editor smoke failed on Tk 9.1 (exit $code)"
+            python -X faulthandler -u tools/smoke_editor_capacity.py --diagnose 2>&1 \
+              | tee -a editor-smoke.log
+          fi
+          printf 'editor smoke\t%s\tgate\n' "$code" >> ci/status.tsv
+          exit "$code"
 
       - name: Native backtrace of the crash (lldb)
+        # Diagnostic, and it only says something if it is pointed at a program that
+        # actually dies.  Two corrections from the last run: the target was the theme
+        # smoke, which passes (so there was no crash to unwind), and
+        # ``stop-on-exec false`` ran the child to completion, which is exactly why
+        # ``bt all`` answered "Command requires a process which is currently
+        # stopped".  Now: stop on the SIGSEGV, launch the variant the CI report names,
+        # and read the frames.
         if: always()
         continue-on-error: true
         run: |
+          # GitHub's shell is ``bash -e -o pipefail``: without this, a
+          # failing command ends the step before its exit code is recorded.
+          set +e
           . .venv-tk9/bin/activate
-          lldb --batch -o "run" -o "bt all" -o "quit" -- \
-            python -X faulthandler -u tools/smoke_tk91_theme.py > lldb.log 2>&1 || true
+          mkdir -p ci
+          lldb --batch \
+            -o "process handle SIGSEGV --stop true --pass true --notify true" \
+            -o "run" -o "continue" -o "bt all" -o "quit" -- \
+            python -X faulthandler -u tools/diagnose_tk_crash.py \
+              --child harness_churn > lldb.log 2>&1 || true
           python - <<'PY'
           import pathlib
 
-          text = [
-              line.strip()
-              for line in pathlib.Path("lldb.log").read_text(errors="replace").splitlines()
-              if line.strip()
-          ]
-          interesting = [
+          lines = [line.rstrip() for line in pathlib.Path("lldb.log").read_text(errors="replace").splitlines()]
+          frames = [
               line
-              for line in text
-              if "stop reason" in line
-              or line.startswith("frame #")
-              or "Fatal" in line
-              or "error:" in line
+              for line in lines
+              if line.strip().startswith(("frame #", "* thread")) or "stop reason" in line
           ]
-          blob = " ¦ ".join(interesting[:80]) if interesting else " ¦ ".join(text[-40:])
-          print(f"::error::lldb ({len(text)} lines, {len(interesting)} interesting): {blob[:6000]}")
+          if frames:
+              print(f"::warning::lldb ({len(lines)} lines): {' ¦ '.join(frames[:20])[:4000]}")
+          else:
+              print(f"::notice::lldb: no frame was recorded ({len(lines)} lines)")
           PY
+          printf 'lldb bt\t0\tdiagnostic\n' >> ci/status.tsv
 
       - name: macOS crash report and logs
+        # The stack of a crash that leaves no traceback lives only in the report
+        # macOS writes; ``tools/parse_crash_report.py`` reads it and names the
+        # faulting thread.  A report that exists means a process died in this job,
+        # so this step records a gate: the verdict cannot be green with one there.
         if: always()
         continue-on-error: true
         run: |
+          # GitHub's shell is ``bash -e -o pipefail``: without this, a
+          # failing command ends the step before its exit code is recorded.
+          set +e
+          . .venv-tk9/bin/activate
+          mkdir -p ci
+          export PYTHONPATH=src
+          # ``--annotate``: the stack is the evidence, and step logs are not always
+          # reachable — this is the only copy of the faulting frames that survives.
+          python tools/parse_crash_report.py --limit 3 --annotate --json crash-tk9.json
+          code=$?
+          if [ "$code" -eq 0 ]; then
+            echo "::error::a process died in this job — the CRASH line above names the frame"
+            reports=1
+          elif [ "$code" -eq 2 ]; then
+            echo "::notice::no crash report was written by this job"
+            reports=0
+          else
+            echo "::error::a crash report exists but could not be read"
+            reports=1
+          fi
+          printf 'crash reports\t%s\tgate\n' "$reports" >> ci/status.tsv
           python - <<'PY'
           import pathlib
 
-          reports = sorted(pathlib.Path.home().glob("Library/Logs/DiagnosticReports/Python*"))
-          print(f"::notice::crash reports: {len(reports)}")
-          for report in reports[-2:]:
-              print(f"::notice::{report.name}: {report.read_text(errors='replace')[:2000]}")
-
-          for name in ("tk9-smoke.log", "gui-tk9.log", "editor-smoke.log"):
+          # A workflow command's message ends at the first newline: join, never split.
+          for name in ("tk9-smoke.log", "gui-tk9.log", "editor-smoke.log", "lldb.log"):
               path = pathlib.Path(name)
               if not path.exists():
                   print(f"::notice::{name}: missing")
                   continue
-              lines = [
-                  line.strip()
-                  for line in path.read_text(errors="replace").splitlines()
-                  if line.strip()
+              lines = [line.rstrip() for line in path.read_text(errors="replace").splitlines()]
+              fatal = [index for index, line in enumerate(lines) if "Fatal Python error" in line]
+              if fatal:
+                  # The header of a faulthandler dump is the top of the stack: the
+                  # part that says *where* it died.  The tail only says which pytest
+                  # frame drove it.
+                  head = lines[fatal[0] : fatal[0] + 14]
+                  print(f"::error::{name} fatal: {' ¦ '.join(head)[:5000]}")
+              problems = [
+                  line
+                  for line in lines
+                  if " FAIL " in line or line.startswith(("FAILED ", "ERROR ")) or "PROBLEM" in line
               ]
-              # A workflow command's message ends at the first newline: join, never split.
-              print(f"::error::{name} ({len(lines)} lines): {' ¦ '.join(lines[-30:])[:6000]}")
+              if problems:
+                  print(f"::error::{name} problems: {' ¦ '.join(problems)[:4000]}")
+              frames = [
+                  line
+                  for line in lines
+                  if line.lstrip().startswith(("File \"", "frame #", "stop reason"))
+              ]
+              if frames:
+                  print(f"::warning::{name} frames ({len(frames)}): {' ¦ '.join(frames[:10])[:3000]}")
+              print(f"::notice::{name}: {len(lines)} lines, tail {' ¦ '.join(lines[-2:])[:500]}")
           PY
+
+      - name: "Verdict: a crash is never a pass"
+        if: always()
+        run: |
+          # GitHub's shell is ``bash -e -o pipefail``: without this, a
+          # failing command ends the step before its exit code is recorded.
+          set +e
+          python tools/ci_verdict.py ci/status.tsv --annotate
 
   layout-profile:
     # The measurement job for the resize work: the same profiling tool, the same
@@ -462,51 +747,99 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements-dev.txt
       - name: Profile the tree the owner tested, then this branch
-        timeout-minutes: 8
+        id: profile
+        timeout-minutes: 10
         run: |
+          # GitHub's shell is ``bash -e -o pipefail``: without this, a
+          # failing command ends the step before its exit code is recorded.
+          set +e
+          mkdir -p ci
           mkdir -p /tmp/before
           git archive 445a5cb | tar -x -C /tmp/before
           python - <<'PY'
-          """Each run in its own process with a hard cap.
+          """Each run in its own process, its output streamed to a file.
 
-          The old tree can spend minutes inside a resize: its handler re-flows the
-          window synchronously, the re-flow delivers more <Configure> events, and the
-          handler answers those.  A cap turns "it never finished" into a number.
+          Two things were measured the hard way.  ``subprocess.run(...,
+          capture_output=True)`` on a timeout returns only the output it managed to
+          read, so the run that measured everything looked like a run that measured
+          nothing — therefore the child writes straight into the log file.  And the
+          exit path of this window on Aqua hangs after the numbers are printed
+          (``quit``/``destroy``/the Tcl teardown), which used to turn a finished
+          measurement into a timeout; ``finish()`` now leaves with ``os._exit`` and
+          the gate below reads the ``SUMMARY`` line, which is the measurement, while
+          a run that needed killing is recorded as a probe of its own.  Nothing is
+          swallowed: both facts stay in the table.
           """
           import os
           import pathlib
           import subprocess
           import sys
+          import time
 
           runs = (
-              ("before", "/tmp/before/src"),
-              ("after", "src"),
+              # label, tree, kind for the verdict, extra arguments, cap in seconds
+              ("before", "/tmp/before/src", "probe", ["--skip-fullscreen"], 100),
+              ("after", "src", "gate", ["--skip-fullscreen"], 100),
+              # ``-fullscreen True`` never returns on this runner: a stall is the
+              # finding.  Measured on its own so it cannot cost the gate anything.
+              ("fullscreen", "src", "probe", [], 120),
           )
-          for label, tree in runs:
-              env = dict(os.environ, PYTHONPATH=tree)
+          status: list[str] = []
+          for label, tree, kind, extra, cap in runs:
+              log = pathlib.Path(f"profile-{label}.log")
               command = [
                   sys.executable,
                   "-u",
                   "tools/profile_resize.py",
                   "--label",
                   label,
+                  *extra,
                   "--steps",
                   "4",
                   "--watchdog",
                   "30",
               ]
-              try:
-                  done = subprocess.run(command, env=env, timeout=150, capture_output=True, text=True)
-                  output = done.stdout + done.stderr
-                  print(f"--- {label} exited {done.returncode}")
-              except subprocess.TimeoutExpired as exc:
-                  raw = exc.stdout or b""
-                  output = raw.decode(errors="replace") if isinstance(raw, bytes) else raw
-                  output += f"\n--- {label} HARD TIMEOUT after 150 s, it never finished\n"
-                  print(f"--- {label} hard timeout")
-              pathlib.Path(f"profile-{label}.log").write_text(output)
+              env = dict(os.environ, PYTHONPATH=tree)
+              started = time.monotonic()
+              with log.open("w", encoding="utf-8") as handle:
+                  child = subprocess.Popen(
+                      command, env=env, stdout=handle, stderr=subprocess.STDOUT
+                  )
+                  try:
+                      code = child.wait(timeout=cap)
+                  except subprocess.TimeoutExpired:
+                      child.kill()
+                      child.wait()
+                      code = 124
+              elapsed = time.monotonic() - started
+              output = log.read_text(encoding="utf-8", errors="replace")
+              measured = "SUMMARY " in output
+              tail = [line for line in output.splitlines() if line.strip()][-2:]
+              # Annotations, because Actions log downloads are not always reachable and
+              # "exit 124" on its own never said whether the numbers were measured.
+              print(
+                  f"::notice::{label}: exit {code} after {elapsed:.1f}s, "
+                  f"measured={measured}, lines={len(output.splitlines())}, "
+                  f"tail={' ¦ '.join(tail)[:1500]}"
+              )
               print(output[-3000:])
+              if code == 0 and not measured:
+                  print(f"::error::{label}: exited 0 without a SUMMARY line — not a measurement")
+                  code = 4
+              if measured and code != 0:
+                  # The numbers are there; the process had to be killed.  The
+                  # measurement stands (it is complete), the hang is its own row.
+                  print(f"::warning::{label}: measured, then the process had to be killed")
+                  status.append(f"{label} exits cleanly\t{code}\tprobe")
+                  code = 0
+              status.append(f"{label}\t{code}\t{kind}")
+          pathlib.Path("ci/status.tsv").write_text("\n".join(status) + "\n", encoding="utf-8")
           PY
+          cat ci/status.tsv
+          # The step itself only fails for this branch's measurement: the old tree's
+          # timeout is the finding, not a defect in the run.
+          awk -F '\t' '$1 == "after" { exit ($2 == 0 ? 0 : 1) }' ci/status.tsv
+
       - name: The numbers
         if: always()
         run: |
@@ -516,7 +849,7 @@ jobs:
           for name in ("profile-before.log", "profile-after.log"):
               path = pathlib.Path(name)
               if not path.exists():
-                  print(f"::error::{name}: missing")
+                  print(f"::error::{name}: missing — the profiling step did not run")
                   continue
               lines = [line.strip() for line in path.read_text(errors="replace").splitlines() if line.strip()]
               summary = [
@@ -525,10 +858,19 @@ jobs:
                   if line.startswith(("SUMMARY", "phase ", "built:", "fullscreen", "heartbeats"))
               ]
               if not summary:
+                  # The tail is where "WATCHDOG" and "INCOMPLETE" are printed.
                   print(f"::error::{name} ({len(lines)} lines): {' ¦ '.join(lines[-12:])[:3000]}")
                   continue
               print(f"::notice::{name}: {' ¦ '.join(summary)[:6000]}")
           PY
+
+      - name: "Verdict: a crash is never a pass"
+        if: always()
+        run: |
+          # GitHub's shell is ``bash -e -o pipefail``: without this, a
+          # failing command ends the step before its exit code is recorded.
+          set +e
+          python tools/ci_verdict.py ci/status.tsv --annotate
 
   benchmark:
     name: slow benchmarks
