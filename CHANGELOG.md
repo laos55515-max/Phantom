@@ -18,20 +18,39 @@ All notable changes to PHANTOM are recorded here. The format follows
   green step. The layout profile is now a gate for this tree — it used to swallow a
   150-second timeout and a log without a `SUMMARY` line and stay green, and
   `profile_resize.py` now exits 3 instead of 0 when its watchdog ended the run.
-- **A copy leaves PHANTOM as the bytes that were copied.** Tk's clipboard on Aqua
+- **A copy no longer claims more than the board can prove.** Tk's clipboard on Aqua
   re-encodes what it is given: in CI every emoji in a 37 800-character payload
-  arrived in another application as four Latin-1 characters (`😀` → `ðŸ˜€`). The
-  window now writes through the system's own tool (`pbcopy`, `clip`, `wl-copy`,
-  `xclip`, `xsel`) with UTF-8 bytes on stdin, falls back to Tk when there is none,
-  and reads the board back to decide what the footer may claim. The TXT export
-  keeps using the payload bytes and is unchanged.
+  arrived in another application as four Latin-1 characters (`😀` → `ðŸ˜€`), and 7 of
+  24 300 characters differed in a smaller one. The window keeps Tk as the clipboard
+  owner — a native write takes the claim away, which cost six window tests their
+  clipboard in CI (stale strings, `CLIPBOARD selection doesn't exist`) — and reads
+  the board back with both readers, Tk's own answer and the system's exact one, to
+  decide what the footer says. A copy the pasteboard converted is reported as "not
+  exact, use the file" instead of a transfer that did not happen. The TXT export
+  keeps using the payload bytes and is unchanged; `tools/smoke_editor_capacity.py`
+  prints both views so the difference stays measured.
+- **A failing step no longer loses the record of its own exit code.** GitHub runs
+  every `run:` block with `bash -e -o pipefail`, so the GUI job's `ci/status.tsv` was
+  never created (verdict exit 2) and the Tk 9.1 job's two *failing* steps were the
+  two rows missing from its table: the shell stopped before the line that records
+  the code. Recording steps now start with `set +e`, the verdict prints every row as
+  an annotation, and an invariant test fails the suite if a new step forgets.
+- **The layout profile says what it measured.** On the macOS runner
+  `-fullscreen True` never returns: the callbacks behind it never run and the tool's
+  own watchdog cannot fire, so the run ended at the 150-second cap with no `SUMMARY`
+  line — and the job was green because that timeout was swallowed. `profile_resize.py`
+  grew `--skip-fullscreen` for the gate run, and the phase is probed on its own where
+  a stall is the finding.
 - **The crash that leaves no traceback is readable now.** `tools/parse_crash_report.py`
   prints the faulting thread of a macOS `.ips` report with symbols, and
   `tools/diagnose_tk_crash.py` runs one candidate per process — bare Tk, CustomTkinter,
-  tkdnd loaded, the real window with and without drag-and-drop — so a SIGSEGV costs
-  one child and the table still prints. The lldb step now clears
-  `target.process.stop-on-exec`, which is why its backtrace was always the `dyld`
-  exec stop instead of the crash.
+  tkdnd loaded, the real window with and without drag-and-drop, and the crashing
+  test's own shape: a plain root, a provider that cannot register, one `update()`,
+  plus three windows built and destroyed first — so a SIGSEGV costs one child and the
+  table still prints. The lldb step now launches the variant that crashes and stops
+  on `SIGSEGV`: it used to run the *theme smoke*, which passes, with
+  `stop-on-exec false`, which is why `bt all` answered `Command requires a process
+  which is currently stopped`.
 - **`PHANTOM_DND=0` turns drag-and-drop off before anything is imported.** The switch
   exists for a machine where the Tk build cannot survive the tkdnd library, and the
   crash diagnosis uses it to tell the window apart from the window plus tkdnd.

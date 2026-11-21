@@ -613,3 +613,132 @@ bytes it *published* were not. `write_clipboard_exact` now feeds the system tool
 `read_clipboard_exact` reads them back; the footer's claim about exactness comes
 from that read-back, not from an assumption. Tk remains the fallback where no tool
 exists, and the smoke now asserts equality rather than printing a note.
+
+## 14. What the first verdict run found — including in the hardening itself
+
+Run `44844048485` was the first with the verdict step wired in, and it went red. It
+was right to: the annotations named six distinct problems, three of them in the
+hardening that this document describes. The order below is the order they were
+measured in, not the order they were fixed in.
+
+### 14.1 `bash -e -o pipefail` ate the verdict rows
+
+`gui (macOS Aqua)` failed with exit 2 and the message
+`verdict: ci/status.tsv is missing — no step reported its exit code`. The file was
+not missing by accident: the GUI step does `mkdir -p ci`, pipes pytest into `tee`,
+reads `${PIPESTATUS[0]}` and appends the row — but GitHub runs every `run:` block
+with `bash -e -o pipefail`, so the failing pipeline ended the step *before* the line
+that records it. The directory was never created because the first step that would
+have created it died first.
+
+`gui (macOS Aqua, Tk 9.1)` showed the same defect from the other side: the verdict
+read `5 steps` while seven had run, and the two missing rows were exactly the two
+steps that failed (the suite and the repro). A verdict that silently drops the
+failures it was built to catch is worse than no verdict.
+
+The fix is one line per recording step — `set +e` — and an invariant test
+(`tests/test_repo.py::test_every_step_that_records_a_verdict_disables_errexit`)
+that fails if a future step records a code without it. The verdict now also prints
+every row as an annotation (`--annotate`), so a *missing* row is visible from the
+pull request and not only in a 600-line step log.
+
+### 14.2 The native clipboard write cost Tk its claim
+
+Six window tests went red on Tk 8.6 in the same run, all of them clipboard:
+
+| test | what it saw |
+| --- | --- |
+| `test_copy_button_puts_the_password_on_the_clipboard` | `TclError: CLIPBOARD selection doesn't exist or form "STRING" not defined` |
+| `test_copy_selection_then_copy_all_from_the_action_bar` | `'alpha' == 'alpha beta gamma'` |
+| `test_result_copy_all_uses_the_model_not_the_preview` | 7 of 24 300 characters |
+| `test_result_selects_and_copies_without_being_editable` | `'cut me ' == 'read only result — строка'` |
+| `test_copying_a_report_arms_the_clipboard_clear` | `'typed-by-paste'` |
+| `test_clipboard_timer_leaves_another_apps_copy_alone` | another application's copy was wiped |
+
+The pattern is not "the text was wrong": it is *stale*. `write_clipboard_exact` put
+the payload on `NSPasteboard` with `pbcopy` and Tk stopped being the clipboard
+owner, so `clipboard_get` answered from Tk's own store — the string a previous test
+had put there — or refused with `CLIPBOARD selection doesn't exist`. Paste, the
+30-second auto-clear and "is this still ours" all rest on that ownership.
+
+So the write went back to Tk and the *question* stayed: `_copy_to_clipboard` writes
+through Tk, then reads the board back and compares with both readers — Tk's answer
+(the window's own copy) and, where a tool exists, the system's answer (what another
+application would paste). A mismatch is reported as "not exact, use the file" instead
+of a claim. One rule keeps that honest in the other direction: if the system reader
+still shows the *previous* copy, the pasteboard has not been republished yet, which
+is not evidence that the new text is wrong.
+
+The exact writer is still what `tools/smoke_editor_capacity.py` uses to *measure*
+the pasteboard side of the question, and it prints both views:
+
+```
+clipboard round-trip large: 37800 chars via the tk writer, identical
+     system view: 37831 chars, first difference at 2347 …
+```
+
+Both lines are true at once and neither is claimed to be the other.
+
+### 14.3 The layout profile never finished — and that was the green
+
+`layout profile (macOS Aqua)` had been green with the numbers printed. It should not
+have been: both runs ended at the 150-second cap. The step caught the timeout,
+printed it, and the job stayed green; the `The numbers` step then found no `SUMMARY`
+line and only printed the `phase …` lines that had already been written, so a run
+that profiled *part* of the series looked like a run that profiled it.
+
+The reason the run ends at the cap is now measured rather than guessed: the last
+line the tool prints before it stops answering is `fullscreen applied`. On this
+runner `root.attributes("-fullscreen", True)` does not come back — the `after`
+callbacks queued behind it never run, and the tool's own watchdog cannot fire either,
+because a watchdog needs the event loop that is stuck. Nothing after that phase is
+ever reached, so there is no `SUMMARY`.
+
+`tools/profile_resize.py` grew `--skip-fullscreen`. The gate run measures the resize
+series and the burst and must finish; the fullscreen phase is a `probe` of its own,
+with a 120-second cap, where a stall is the finding. This branch's numbers from the
+run, with the phase left out, are `handlers=16986 handler_ms=5.3 pass_ms=0.5` against
+`handlers=20202 handler_ms=5.3 pass_ms=0.4` for the old tree — the earlier "8×"
+claim does not survive being measured twice, and it is withdrawn here.
+
+### 14.4 lldb was pointed at a program that does not crash
+
+The step ran the *theme smoke* under lldb, and the theme smoke passes. With
+`stop-on-exec false`, lldb let that process run to completion, so `bt all` was asked
+with nothing stopped, and answered `error: Command requires a process which is
+currently stopped` — the tail of the log, sixteen lines long.
+
+The step now launches the variant the CI report actually names
+(`tools/diagnose_tk_crash.py --child harness_churn`), stops on `SIGSEGV`, continues
+into the crash and only then prints the frames.
+
+### 14.5 The crash itself: the tkdnd hypothesis is withdrawn
+
+The frame list from the annotating job is specific:
+
+```
+Fatal Python error: Segmentation fault
+Current thread … tkinter/__init__.py line 1373 in update
+  ← customtkinter/windows/ctk_tk.py line 157 in update
+  ← tests/test_gui.py line 281
+```
+
+Line 281 is `instance.root.update()` inside
+`test_a_dnd_that_cannot_register_hides_its_hints_and_keeps_the_button`. That test
+does **not** load the tkdnd package: it subclasses `DndProvider`, overrides
+`register` to fail, and never creates a `TkinterDnD` root. So the earlier suspicion
+that a half-loaded tkdnd package causes the crash does not survive the test body —
+there is no `package require` in it. What is left is the pump itself: `update()`
+called from script level, in a process that has already built and destroyed several
+windows. That is the shape `harness_churn` now runs in its own process (three windows
+built, pumped and destroyed, then a fourth pumped once), and `harness_app_update`
+runs the test's exact steps.
+
+This is the one problem in this document that is **not** fixed. The job stays red
+while it exists, on purpose: `gui (macOS Aqua, Tk 9.1)` records its steps as
+`diagnostic`, and the verdict tolerates a *failure* there but never a signal. Two
+honest ways out remain, and both need a measurement this branch cannot make locally:
+either the suite stops pumping with `update()` (the fixture would use `mainloop` and
+`after`, which is how the application itself runs), or the crash is shown to be a Tk
+9.1 defect and the suite is pinned to 8.6 with the 9.1 job reduced to the smokes that
+do not pump.
