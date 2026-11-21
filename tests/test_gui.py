@@ -528,8 +528,14 @@ def test_the_system_theme_tick_never_flushes_from_the_timer(app, monkeypatch) ->
     import customtkinter as ctk
 
     from phantom.ui import app as ui_app
+    from phantom.ui import widgets as W
 
-    original = tk.Misc.update_idletasks
+    # ``armed`` must mean "the real flush is unreachable", not "the attribute moved":
+    # on Aqua under Tk 9 the refusal is installed process-wide before any test runs
+    # (`widgets.install_quiet_display`), so the attribute a test captures is already
+    # the refusal and comparing against it says nothing.  The original is the
+    # module's, captured at import.
+    original = W._MISC_FLUSH
     armed: list[bool] = []
     real = ctk.set_appearance_mode
 
@@ -3323,7 +3329,13 @@ def test_a_second_mapping_does_not_repeat_the_pass(tmp_path: Path) -> None:
     try:
         root.update()
         first = instance._display_passes
-        assert first >= 1
+        if _passes_are_attempted():
+            assert first >= 1
+        else:
+            # Aqua under Tk 9 attempts no display pass at all (docs/macos-aqua-crash.md
+            # §9): the rule there is the other half of this one — the window owes
+            # nothing, and re-mapping must not start owing something.
+            assert first == 0
 
         root.withdraw()
         root.deiconify()
@@ -3380,7 +3392,15 @@ def test_the_window_leaves_tk_exactly_as_it_found_it(app) -> None:
     import tkinter as tk
 
     from phantom.ui import widgets as W
+    from phantom.ui.app import DISPLAY_PASSES_UNSAFE
 
+    if DISPLAY_PASSES_UNSAFE:
+        # The documented policy for Aqua under Tk 9: the process-wide refusal stays
+        # installed (`install_quiet_display`), and the original is kept untouched in
+        # the module so a build that can flush again still has it.
+        assert tk.Canvas.update_idletasks is W._flush_refused
+        assert W._CANVAS_FLUSH is not W._flush_refused
+        return
     assert tk.Canvas.update_idletasks is W._CANVAS_FLUSH
 
 
