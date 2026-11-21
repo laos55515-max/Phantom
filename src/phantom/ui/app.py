@@ -166,6 +166,8 @@ class PhantomApp:
         self._theme_token: str | None = None
         self._clipboard_token: str | None = None
         self._clipboard_value: str | None = None
+        #: Whether the last copy was verified byte for byte (read back, compared).
+        self._clipboard_exact: bool = False
         self._operation = ""
         self._status_key = "status_ready"
         self._status_params: dict[str, object] = {}
@@ -1540,8 +1542,14 @@ class PhantomApp:
         return True
 
     def _report_copied(self, value: str, *, key: str = "status_copied") -> None:
-        """Say what was copied — and say when the clipboard is not exact."""
-        if len(value) >= C.CLIPBOARD_EXACT_WARN_CHARS:
+        """Say what was copied — and say when the clipboard is not exact.
+
+        ``_clipboard_exact`` is the answer from the read-back, not a guess: when it
+        is false the text on the board is not the text that was copied, and the
+        footer names the file path instead of claiming a transfer that did not
+        happen.
+        """
+        if not self._clipboard_exact or len(value) >= C.CLIPBOARD_EXACT_WARN_CHARS:
             # Measured on Aqua: the pasteboard round-trip re-decodes a few bytes of
             # a very large string as Latin-1.  PHANTOM does not claim an exact
             # transfer it cannot verify, so it names the file path instead.
@@ -2163,26 +2171,90 @@ class PhantomApp:
         )
 
     def _copy_to_clipboard(self, value: str) -> None:
-        self.root.clipboard_clear()
-        self.root.clipboard_append(value)
+        """Put ``value`` on the clipboard with Tk, then *check* what the board holds.
+
+        Tk owns the clipboard here on purpose.  A native write (``pbcopy``) is the
+        only byte-exact one on Aqua, but it costs Tk its claim: measured in CI, six
+        window tests then read a stale string or ``CLIPBOARD selection doesn't
+        exist``, because Tk answers ``clipboard get`` out of its own store.  Paste,
+        the 30-second auto-clear and "is this still ours" all rest on that claim, so
+        the write stays Tk's and the question "was the transfer exact" is answered by
+        reading the board back instead of assuming it.
+        """
+        if not isinstance(value, str) or not value:
+            return
+        previous = self._clipboard_value
+        if not clip.write_clipboard(self.root, value):
+            self._clipboard_value = None
+            return
         self._clipboard_value = value
         if len(value) > C.CLIPBOARD_AUTO_CLEAR_MAX_CHARS:
             # Deciding whether a 15 MiB clipboard is still ours means reading all of
             # it back on the GUI thread: a multi-megabyte copy stays on the board
             # and the footer says why exact transfer needs a file instead.
+            self._clipboard_exact = True
             return
+        self._clipboard_exact = self._verify_clipboard(
+            value, previous, check_system=self._needs_system_check(value)
+        )
         if self._clipboard_token is not None:
             self.root.after_cancel(self._clipboard_token)
         self._clipboard_token = self.root.after(
             int(C.CLIPBOARD_CLEAR_SECONDS * 1000), lambda: self._clear_clipboard_if(value)
         )
 
-    def _clipboard_holds(self, value: str) -> bool:
-        """Is ``value`` still on the clipboard?  Tk only answers while it owns it."""
+    @staticmethod
+    def _needs_system_check(value: str) -> bool:
+        """Is this one of the two payload shapes the pasteboard was measured to convert?
+
+        Long strings and characters outside the BMP.  Asking the system reader costs a
+        subprocess on the GUI thread, and a short password has nothing to distort:
+        Tk's own answer is then the whole question.
+        """
+        return len(value) >= C.CLIPBOARD_SYSTEM_CHECK_CHARS or any(
+            ord(character) > 0xFFFF for character in value
+        )
+
+    def _verify_clipboard(
+        self, value: str, previous: str | None = None, *, check_system: bool = True
+    ) -> bool:
+        """Read back what was just written; compare it, do not assume it.
+
+        Two readers, two questions.  Tk answers out of its own store, so a match
+        there means *the window* holds what it copied.  The system reader is the
+        view another application gets, and on Aqua it is not the same string: Tk
+        re-encodes on its way to ``NSPasteboard`` (measured: 7 of 24 300 characters
+        differed, every emoji among them).  A mismatch there is reported, not
+        smoothed over — except when the system still shows the *previous* copy,
+        which means the pasteboard had not been republished yet, not that the new
+        text is wrong.
+        """
         current = clip.read_clipboard(self.root)
-        if current is None:
+        if current is None or current.rstrip("\n") != value.rstrip("\n"):
             return False
-        return current.rstrip("\n") == value.rstrip("\n")
+        if not check_system:
+            return True
+        native = clip.read_clipboard_exact()
+        if native is None or native == value:
+            return True
+        if previous is not None and native == previous:
+            return True
+        LOGGER.warning(
+            "the pasteboard holds a converted copy: %d of %d characters differ",
+            sum(1 for a, b in zip(value, native, strict=False) if a != b),
+            len(value),
+        )
+        return False
+
+    def _clipboard_holds(self, value: str) -> bool:
+        """Is ``value`` still on the clipboard?  Tk answers only while it owns it."""
+        current = clip.read_clipboard(self.root)
+        if current is not None:
+            return current.rstrip("\n") == value.rstrip("\n")
+        native = clip.read_clipboard_exact()
+        if native is None:
+            return False
+        return native == value
 
     def _clear_clipboard_if(self, value: str) -> None:
         self._clipboard_token = None

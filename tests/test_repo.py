@@ -120,3 +120,106 @@ def test_every_python_file_compiles() -> None:
     targets += sorted((ROOT / "tools").rglob("*.py"))
     for path in targets:
         py_compile.compile(str(path), doraise=True)
+
+
+def _workflow_steps() -> list[dict]:
+    """Every step in ci.yml, without needing a YAML dependency at test time."""
+    text = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    steps: list[dict] = []
+    current: dict | None = None
+    body: list[str] = []
+    def flush() -> None:
+        if current is not None:
+            current["run"] = "\n".join(body)
+            steps.append(current)
+    for line in text.splitlines():
+        if re.match(r"^\s{6}- (name|uses|if|id|with|env|continue-on-error|timeout-minutes|run):", line):
+            flush()
+            current, body = {"header": line}, []
+        elif current is not None:
+            body.append(line)
+    flush()
+    return steps
+
+
+def test_every_step_that_records_a_verdict_disables_errexit() -> None:
+    """``run:`` is ``bash -e -o pipefail``: a failing command must not skip the record.
+
+    Measured in run 44844048485: the GUI job's ``ci/status.tsv`` was missing entirely
+    — the verdict exited 2 — because pytest failed and the shell stopped before the
+    line that writes the row, and the ``gui-tk9`` job lost the rows of exactly the
+    two steps that failed.  A recorder has to survive its own failure.
+    """
+    recorders = [step for step in _workflow_steps() if "ci/status.tsv" in step["run"]]
+    assert len(recorders) >= 10, "the workflow no longer records step exit codes"
+    for step in recorders:
+        header = step["header"].strip()
+        assert "set +e" in step["run"], f"{header} records a verdict without disabling errexit"
+
+
+def test_every_job_that_records_codes_ends_with_the_verdict_step() -> None:
+    text = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    jobs_text = text.split("\njobs:\n", 1)[1]
+    jobs = [
+        job
+        for job in re.split(r"^  (?=[a-z][a-z0-9-]*:\s*$)", jobs_text, flags=re.MULTILINE)
+        if job.strip()
+    ]
+    assert len(jobs) >= 6
+    recording = [job for job in jobs if "ci/status.tsv" in job]
+    # test, gui-macos, gui-tk9, layout-profile; lint and benchmark decide by themselves.
+    assert len(recording) >= 4, "the jobs stopped recording their exit codes"
+    for job in recording:
+        name = job.split(":", 1)[0]
+        assert "python tools/ci_verdict.py ci/status.tsv" in job, f"{name} has no verdict step"
+        assert "--annotate" in job, f"{name}: the verdict table never reaches the PR"
+
+
+def test_the_profile_gate_leaves_out_the_phase_that_never_returns() -> None:
+    """Measured: ``-fullscreen True`` never comes back on the macOS runner.
+
+    The job was green for months because the 150 s cap was caught and printed; the
+    resize numbers are now measured without that phase, and the phase is probed on
+    its own so a stall stays visible instead of swallowing the measurement.
+    """
+    text = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    assert "--skip-fullscreen" in text
+    assert '"fullscreen", "src", "probe"' in text
+    # The gate reads the SUMMARY line, and a process that needed killing after the
+    # numbers still gets a row of its own.
+    assert 'measured = "SUMMARY " in output' in text
+    assert "exits cleanly" in text
+
+
+def test_the_macos_jobs_require_every_gate_row_they_write() -> None:
+    """A green run is not a run that verified anything: the rows must be there.
+
+    Measured: with every other row green and `gui suite (tk9)` absent from
+    `ci/status.tsv`, `tools/ci_verdict.py` returned 0 — a step that is skipped writes
+    nothing, and counting the rows that *are* there cannot see the one that is not.
+    Both macOS jobs now name their mandatory rows with `--require`, and this test keeps
+    that list equal to the `gate` rows the job writes, so a new mandatory step cannot
+    be added without a name (and a renamed step cannot leave a stale one behind).
+    """
+    text = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    jobs_text = text.split("\njobs:\n", 1)[1]
+    jobs = {
+        job.split(":", 1)[0]: job
+        for job in re.split(r"^  (?=[a-z][a-z0-9-]*:\s*$)", jobs_text, flags=re.MULTILINE)
+        if job.strip()
+    }
+    for name in ("gui-macos", "gui-tk9"):
+        job = jobs[name]
+        written = set(
+            re.findall(r"printf '([^']+)\\t%s\\t(gate|diagnostic|probe)\\n'", job)
+        )
+        gates = {row for row, kind in written if kind == "gate"}
+        required = set(re.findall(r"--require '([^']+)'", job))
+        assert gates, f"{name} writes no gate rows at all"
+        assert required == gates, (
+            f"{name}: mandatory rows {sorted(gates - required)} are never required as present; "
+            f"required rows that no step writes: {sorted(required - gates)}"
+        )
+        # The decisive row of this platform must be among them, by name.
+        assert ("gui suite (tk9)" if name == "gui-tk9" else "gui suite") in required
+

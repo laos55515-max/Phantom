@@ -117,6 +117,139 @@ def write_clipboard(widget: Any, text: str) -> bool:
     return True
 
 
+def native_write_command(
+    platform: str | None = None,
+    which: Callable[[str], str | None] = shutil.which,
+) -> tuple[str, ...] | None:
+    """This system's own way of *filling* the clipboard from stdin, or ``None``.
+
+    The tools here take the text as UTF-8 bytes on stdin and hand them to the
+    pasteboard untouched.  Tk does not: measured in CI on Aqua, every emoji in a
+    37 800-character payload came back as four Latin-1 characters, because Tk
+    re-encodes the string on its way to ``NSPasteboard``.
+
+    The window itself does *not* write through this any more.  A native write takes
+    the clipboard away from Tk, and Tk then answers ``clipboard get`` out of its own
+    store — measured in CI as six window tests reading a stale string, or
+    ``CLIPBOARD selection doesn't exist``, while paste and the 30-second auto-clear
+    depend on that claim.  So the window keeps Tk as the owner and *verifies* with
+    the exact reader; this writer stays for the tools and for the smoke test, which
+    needs to measure the pasteboard side of the same question.
+    """
+    system = sys.platform if platform is None else platform
+    if system == "darwin":
+        return ("pbcopy",) if which("pbcopy") else None
+    if system.startswith("win"):
+        return ("clip",) if which("clip") else None
+    for candidate in ("wl-copy", "xclip", "xsel"):
+        if which(candidate):
+            return {
+                "wl-copy": ("wl-copy",),
+                "xclip": ("xclip", "-selection", "clipboard", "-i"),
+                "xsel": ("xsel", "--clipboard", "--input"),
+            }[candidate]
+    return None
+
+
+def native_read_command(
+    platform: str | None = None,
+    which: Callable[[str], str | None] = shutil.which,
+) -> tuple[str, ...] | None:
+    """This system's own way of *reading* the clipboard as bytes, or ``None``.
+
+    Windows is deliberately absent: there is no stock tool that prints the
+    clipboard as bytes, and the PowerShell detour would decode it again — the very
+    step that loses characters.  Tk remains the reader there.
+    """
+    system = sys.platform if platform is None else platform
+    if system == "darwin":
+        return ("pbpaste",) if which("pbpaste") else None
+    if system.startswith("win"):
+        return None
+    for candidate in ("wl-paste", "xclip", "xsel"):
+        if which(candidate):
+            return {
+                "wl-paste": ("wl-paste", "--no-newline"),
+                "xclip": ("xclip", "-selection", "clipboard", "-o"),
+                "xsel": ("xsel", "--clipboard", "--output"),
+            }[candidate]
+    return None
+
+
+def write_clipboard_exact(
+    text: str,
+    *,
+    runner: Callable[..., Any] = subprocess.run,
+    platform: str | None = None,
+    which: Callable[[str], str | None] = shutil.which,
+    timeout: float = CLIPBOARD_TOOL_TIMEOUT,
+) -> bool:
+    """Put ``text`` on the clipboard as UTF-8 bytes; ``False`` when there is no tool.
+
+    No shell, no temporary file, no encoding guess: the bytes that go in are
+    ``text.encode("utf-8")``, which is the same byte string the TXT export writes.
+    """
+    if not isinstance(text, str) or not text:
+        return False
+    command = native_write_command(platform, which)
+    if command is None:
+        LOGGER.debug("no native clipboard writer on this system")
+        return False
+    try:
+        done = runner(
+            list(command),
+            input=text.encode("utf-8"),
+            timeout=timeout,
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except Exception as exc:  # noqa: BLE001 - a missing tool must not break the app
+        LOGGER.warning("native clipboard write failed: %s", exc)
+        return False
+    return int(getattr(done, "returncode", 0) or 0) == 0
+
+
+def read_clipboard_exact(
+    *,
+    runner: Callable[..., Any] = subprocess.run,
+    platform: str | None = None,
+    which: Callable[[str], str | None] = shutil.which,
+    timeout: float = CLIPBOARD_TOOL_TIMEOUT,
+) -> str | None:
+    """Read the clipboard as UTF-8 text, or ``None`` when this system cannot.
+
+    ``None`` means "ask Tk instead", never "the clipboard is empty": invalid UTF-8
+    is also ``None``, because guessing an encoding for a payload is how a copied
+    string comes back different from the one that was copied.
+    """
+    command = native_read_command(platform, which)
+    if command is None:
+        return None
+    try:
+        done = runner(
+            list(command),
+            capture_output=True,
+            timeout=timeout,
+            check=False,
+        )
+    except Exception as exc:  # noqa: BLE001 - a missing tool must not break the app
+        LOGGER.debug("native clipboard read failed: %s", exc)
+        return None
+    if int(getattr(done, "returncode", 0) or 0) != 0:
+        return None
+    data = getattr(done, "stdout", b"") or b""
+    if isinstance(data, str):  # a test double may answer with text already
+        data = data.encode("utf-8")
+    if not data:
+        return None
+    try:
+        return data.decode("utf-8").replace("\r\n", "\n")
+    except UnicodeDecodeError:
+        LOGGER.debug("clipboard bytes are not UTF-8; Tk will be asked instead")
+        return None
+
+
 def _entry_selection(widget: Any) -> tuple[int, int] | None:
     """Selection bounds of a single-line entry, or ``None`` without selection."""
     index = getattr(widget, "index", None)

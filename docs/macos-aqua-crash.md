@@ -531,3 +531,437 @@ failed event handler (logged only). Both now carry a reason, the cancellation is
 «ОТМЕНЕНО», and a failed handler names the step. `СИСТЕМА ГОТОВА` is replaced by
 «ПРЕВЫШЕНА ЁМКОСТЬ» whenever the panel says the payload does not fit, and a
 finished verdict is cleared as soon as the payload changes.
+
+## 13. The exit 139 that a green run was hiding (post-2.1.0 hardening)
+
+Three things were wrong at once, and two of them were in the reporting rather than
+in the window.
+
+**The run was green while a process inside it had been killed.** Run
+`44837469975` (the first run on `main` after PR #17 merged) reported seven
+successful jobs. Its `gui (macOS Aqua, Tk 9.1)` check carried these annotations:
+
+```
+[failure] gui-tk9.log (56 lines): File ".../pluggy/_caller.py", line 197 in __call__ ¦ ...
+[failure] Process completed with exit code 139
+[notice]  Python-2026-11-20-233350.ips: {"app_name":"Python", ...}
+[notice]  crash reports: 1
+```
+
+Every step in that job concluded `success`, because the three steps that can die —
+the pytest suite, the minimal reproduction, lldb — are `continue-on-error: true`,
+and GitHub's rule for that flag is "this step cannot fail the job". The annotation
+survived; the status did not. That is the whole reason the crash was never
+explained: no run ever *failed* because of it, so nobody had to look.
+
+**The evidence was in the report, and only the header was printed.** macOS writes
+a `.ips` with `exception`, `termination` and `threads[faultingThread].frames` —
+image, symbol and offset per frame. The step printed the first 2 000 characters of
+the file, which is the header: application name, version, bundle id. The stack was
+never shown. Two tools fix that:
+
+* `tools/parse_crash_report.py` reads both halves of the `.ips` (`--json` for a
+  machine-readable copy) and prints the faulting thread as
+  `#0 libtk9.1.dylib TkMacOSX… + 1234`;
+* `tools/diagnose_tk_crash.py` runs one candidate per **process**, so a SIGSEGV
+  costs that child and the table still prints. A child prints
+  `child: <name> done` as its last statement, which separates "died while working"
+  from "died while exiting" — the second is the signature the smoke tools showed
+  (they printed `main loop finished cleanly` and then the shell reported 139).
+
+The variants are: bare `tkinter.Tk()`; the same with `update()`; `customtkinter.CTk()`;
+a tab view with the canvas load of the real window; a root that has loaded tkdnd
+through `TkinterDnD._require`; the same plus a failed `drop_target_register`; the
+real window with drag-and-drop on; the real window with `PHANTOM_DND=0`; the real
+window on Tk's own loop closed by `_on_close`; and the pytest fixture's own pump.
+`--gate` fails the job only for the variants that are the application's own code —
+a crash in the harness pump is reported with its reason and is already documented
+in §9, and it is not a place to hide anything, because the product variants run the
+same widgets without that pump.
+
+The lldb step had its own defect and now sets
+`target.process.stop-on-exec false`. Without it lldb stops on the exec of the
+interpreter itself, which is why every backtrace this job ever produced read
+`thread #2, stop reason = exec ¦ frame #0: dyld`_dyld_start` — the inside of the
+dynamic loader, said three times, about nothing.
+
+**A crash is a status, not an annotation.** `tools/ci_verdict.py` reads a small
+TSV that every step appends to (`name`, exit code, kind) and decides:
+
+| kind | non-zero exit | signal (`128 + N`) | timeout (124) | 125/126/127 |
+| --- | --- | --- | --- | --- |
+| `gate` | fails the job | fails the job | fails the job | fails the job |
+| `diagnostic` | printed as a warning | **fails the job** | fails the job | fails the job |
+| `probe` | printed as a warning | **fails the job** | printed as a warning | fails the job |
+
+`probe` exists for one thing: the *older* tree in the layout profile is expected to
+spend minutes inside a resize, so its timeout is the measurement. This branch's
+profile is a `gate`: it used to hit the 150-second cap, write a log with no
+`SUMMARY` line, and leave a green job — `profile_resize.py` now returns 3 when its
+watchdog ended the run instead of 0, and CI fails when the summary is missing
+(exit 4). The rules have their own tests (`tests/test_ci_verdict.py`), including the
+139-in-a-diagnostic case that this run demonstrated.
+
+**The clipboard re-encoded what it was given.** The same run's editor smoke carried
+`note clipboard copy-all differs: first difference at 2347: payload '😀\n000087 строк'
+vs clipboard 'ðŸ˜€\n000087 ст'; 9 characters more`. Four UTF-8 bytes had become four
+Latin-1 characters: Tk converts the string on its way to `NSPasteboard`. The TXT
+export was byte-exact throughout (SHA-256 of the written file equal to the payload's),
+which is what made the difference visible — the bytes PHANTOM held were right, the
+bytes it *published* were not. `write_clipboard_exact` now feeds the system tool
+(`pbcopy` / `clip` / `wl-copy` / `xclip` / `xsel`) the UTF-8 bytes of the text and
+`read_clipboard_exact` reads them back; the footer's claim about exactness comes
+from that read-back, not from an assumption. Tk remains the fallback where no tool
+exists, and the smoke now asserts equality rather than printing a note.
+
+## 14. What the first verdict run found — including in the hardening itself
+
+Run `44844048485` was the first with the verdict step wired in, and it went red. It
+was right to: the annotations named six distinct problems, three of them in the
+hardening that this document describes. The order below is the order they were
+measured in, not the order they were fixed in.
+
+### 14.1 `bash -e -o pipefail` ate the verdict rows
+
+`gui (macOS Aqua)` failed with exit 2 and the message
+`verdict: ci/status.tsv is missing — no step reported its exit code`. The file was
+not missing by accident: the GUI step does `mkdir -p ci`, pipes pytest into `tee`,
+reads `${PIPESTATUS[0]}` and appends the row — but GitHub runs every `run:` block
+with `bash -e -o pipefail`, so the failing pipeline ended the step *before* the line
+that records it. The directory was never created because the first step that would
+have created it died first.
+
+`gui (macOS Aqua, Tk 9.1)` showed the same defect from the other side: the verdict
+read `5 steps` while seven had run, and the two missing rows were exactly the two
+steps that failed (the suite and the repro). A verdict that silently drops the
+failures it was built to catch is worse than no verdict.
+
+The fix is one line per recording step — `set +e` — and an invariant test
+(`tests/test_repo.py::test_every_step_that_records_a_verdict_disables_errexit`)
+that fails if a future step records a code without it. The verdict now also prints
+every row as an annotation (`--annotate`), so a *missing* row is visible from the
+pull request and not only in a 600-line step log.
+
+### 14.2 The native clipboard write cost Tk its claim
+
+Six window tests went red on Tk 8.6 in the same run, all of them clipboard:
+
+| test | what it saw |
+| --- | --- |
+| `test_copy_button_puts_the_password_on_the_clipboard` | `TclError: CLIPBOARD selection doesn't exist or form "STRING" not defined` |
+| `test_copy_selection_then_copy_all_from_the_action_bar` | `'alpha' == 'alpha beta gamma'` |
+| `test_result_copy_all_uses_the_model_not_the_preview` | 7 of 24 300 characters |
+| `test_result_selects_and_copies_without_being_editable` | `'cut me ' == 'read only result — строка'` |
+| `test_copying_a_report_arms_the_clipboard_clear` | `'typed-by-paste'` |
+| `test_clipboard_timer_leaves_another_apps_copy_alone` | another application's copy was wiped |
+
+The pattern is not "the text was wrong": it is *stale*. `write_clipboard_exact` put
+the payload on `NSPasteboard` with `pbcopy` and Tk stopped being the clipboard
+owner, so `clipboard_get` answered from Tk's own store — the string a previous test
+had put there — or refused with `CLIPBOARD selection doesn't exist`. Paste, the
+30-second auto-clear and "is this still ours" all rest on that ownership.
+
+So the write went back to Tk and the *question* stayed: `_copy_to_clipboard` writes
+through Tk, then reads the board back and compares with both readers — Tk's answer
+(the window's own copy) and, where a tool exists, the system's answer (what another
+application would paste). A mismatch is reported as "not exact, use the file" instead
+of a claim. One rule keeps that honest in the other direction: if the system reader
+still shows the *previous* copy, the pasteboard has not been republished yet, which
+is not evidence that the new text is wrong.
+
+The system reader costs a subprocess on the GUI thread, so it is asked only for the
+payload shapes the conversion was measured on — 4 096 characters or more
+(`CLIPBOARD_SYSTEM_CHECK_CHARS`), or any character outside the BMP. A short password
+has nothing to distort, and Tk's own answer is the whole question there.
+
+The exact writer is still what `tools/smoke_editor_capacity.py` uses to *measure*
+the pasteboard side of the question, and it prints both views:
+
+```
+clipboard round-trip large: 37800 chars via the tk writer, identical
+     system view: 37831 chars, first difference at 2347 …
+```
+
+Both lines are true at once and neither is claimed to be the other.
+
+The same run measured the conversion inside the *window's* own path, which is worse
+than the emoji case and settles what Tk does: a 260 000-character Cyrillic document
+came back from `clipboard_get` as Latin-1 (`'ая строка доку'` reading
+`'Ð°я строка док'`), and the 37 800-character result came back with every emoji
+converted. Tk converts on *both* sides of `NSPasteboard`, so a Tk-written copy of
+non-ASCII text is not what another application pastes, and the window cannot fix it
+through Tk.
+
+What it does instead: `_needs_system_check` asks the exact reader for the shapes
+where this was measured, `_report_copied` says *"not exact — use the file"* rather
+than *"copied"*, and the smoke test now separates what PHANTOM controls (a gate: the
+window's own value, byte for byte) from what Tk does to it (a printed `note` with the
+diff, counted in `SUMMARY … notes=N`). The remaining fix is a native clipboard
+backend for the window — `write_clipboard_exact` and `read_clipboard_exact` are the
+two pieces it needs — and it is not attempted here, because every window test that
+touches the clipboard would have to move to it at once, and this branch cannot run
+those tests on the machine it is written on.
+
+### 14.3 The layout profile never finished — and the tool itself was the reason
+
+`layout profile (macOS Aqua)` had been green with the numbers printed. It should not
+have been: the runs ended at the cap, the step caught the timeout and printed it, and
+the job stayed green; the `The numbers` step then found no `SUMMARY` line and printed
+only the `phase …` lines that had already been written, so a run that measured part of
+the series looked like a run that measured it.
+
+Getting to the cause took four runs, and each run removed one wrong answer:
+
+1. **The fullscreen phase.** The last line before the run stopped answering was
+   `fullscreen applied`: `root.attributes("-fullscreen", True)` does not come back on
+   this runner, the `after` callbacks queued behind it never run, and the tool's own
+   watchdog cannot fire either, because a watchdog needs the loop that is stuck. So
+   `--skip-fullscreen` exists, the gate run leaves the phase out, and the phase is a
+   `probe` of its own where a stall is the finding.
+2. **The read, not the run.** With the phase left out, the step still reported a
+   timeout, and `subprocess.run(..., capture_output=True)` returns only the output it
+   managed to read when the timeout fires — so a run that had printed everything could
+   be filed as a run that printed nothing. The step now streams each child's output
+   straight into `profile-<label>.log`.
+3. **The exit path.** The logs then ended at `phase final`, the last mark taken inside
+   `finish()`, microseconds before `SUMMARY`. `finish()` now prints the
+   machine-readable line first and leaves with `os._exit` the moment the numbers are
+   on the wire, because the Tcl teardown behind it can hang for longer than any cap
+   and a hang *after* a measurement must not turn it into a timeout.
+4. **The actual bug, and it was ours.** The summary call passed `flush=True` to
+   `say`, which was `lambda what: print(what, flush=True)` — one positional argument.
+   Every run raised `TypeError: <lambda>() got an unexpected keyword argument
+   'flush'` *inside a Tk callback*. Tk prints a callback exception and carries on, so
+   the loop kept turning with nothing left to do, `SUMMARY` was never written, and the
+   job reported a timeout with no measurement. `say` takes the keyword now (it is
+   dropped rather than forwarded, because forwarding it produced the same mistake a
+   second time: `print() got multiple values for keyword argument 'flush'`) — and
+   `root.report_callback_exception` is wired to print the traceback and exit non-zero,
+   so the next swallowed callback failure fails the run instead of hanging it.
+
+The job is green on run `44852903515`, and every row is a measurement now — the old
+tree included, which used to end at the cap:
+
+```
+step: fullscreen — probe — ok        exit 0 after 2.4s, measured=True
+step: after      — gate  — ok        exit 0 after 2.0s, measured=True
+step: before     — probe — ok        exit 0 after 2.3s, measured=True
+```
+
+| run (`--steps 4`) | handlers | time in handlers | time in refit passes |
+| --- | --- | --- | --- |
+| `445a5cb` (the tree the owner tested) | 15 440 | 31.1 ms | 26.6 ms |
+| this branch | 14 402 | 3.8 ms | 0.2 ms |
+
+Per handler that is 2.0 ms against 0.26 ms, and the refit passes are ~130× cheaper.
+The earlier "8× cheaper" claim came from a run that never finished; this one is
+measured, and this branch's run must print a `SUMMARY` or the job is red.
+
+One thing to keep an eye on: the `fullscreen` probe finished this time (22 260
+handlers, `phase final`), where the runs before it stalled inside
+`attributes("-fullscreen", True)`. So the stall is intermittent on this runner, which
+is exactly why the phase is a `probe` and not part of the gate — and why its row
+prints the exit code and elapsed time now.
+
+### 14.4 lldb was pointed at a program that does not crash
+
+The step ran the *theme smoke* under lldb, and the theme smoke passes. With
+`stop-on-exec false`, lldb let that process run to completion, so `bt all` was asked
+with nothing stopped, and answered `error: Command requires a process which is
+currently stopped` — the tail of the log, sixteen lines long.
+
+The step now launches the variant the CI report actually names
+(`tools/diagnose_tk_crash.py --child harness_churn`), stops on `SIGSEGV`, continues
+into the crash and only then prints the frames.
+
+### 14.5 The crash itself: the tkdnd hypothesis is withdrawn
+
+The frame list from the annotating job is specific:
+
+```
+Fatal Python error: Segmentation fault
+Current thread … tkinter/__init__.py line 1373 in update
+  ← customtkinter/windows/ctk_tk.py line 157 in update
+  ← tests/test_gui.py line 281
+```
+
+Line 281 is `instance.root.update()` inside
+`test_a_dnd_that_cannot_register_hides_its_hints_and_keeps_the_button`. That test
+does **not** load the tkdnd package: it subclasses `DndProvider`, overrides
+`register` to fail, and never creates a `TkinterDnD` root. So the earlier suspicion
+that a half-loaded tkdnd package causes the crash does not survive the test body —
+there is no `package require` in it. What is left is the pump itself: `update()`
+called from script level, in a process that has already built and destroyed several
+windows. That is the shape `harness_churn` now runs in its own process (three windows
+built, pumped and destroyed, then a fourth pumped once), and `harness_app_update`
+runs the test's exact steps.
+
+This is the one problem in this document that is **not** fixed. The job stays red
+while it exists, on purpose: `gui (macOS Aqua, Tk 9.1)` records its steps as
+`diagnostic`, and the verdict tolerates a *failure* there but never a signal. Two
+honest ways out remain, and both need a measurement this branch cannot make locally:
+either the suite stops pumping with `update()` (the fixture would use `mainloop` and
+`after`, which is how the application itself runs), or the crash is shown to be a Tk
+9.1 defect and the suite is pinned to 8.6 with the 9.1 job reduced to the smokes that
+do not pump.
+
+## 15. The Tk 9.1 crash, named: `showRootWindow` on a freed menu
+
+The crash had a reproduction, then a stack, then a cause. This section is in that
+order, because the two earlier hypotheses (tkdnd, the `update()` pump) were both
+wrong and both are recorded above.
+
+### 15.1 The stack, from the `.ips` macOS writes
+
+`tools/parse_crash_report.py --annotate` now puts the faulting thread of the report
+into the pull request, and the frame list is the whole answer:
+
+```
+CRASH proc=Python signal=SIGSEGV type=EXC_BAD_ACCESS thread=0
+  indicator='Segmentation fault: 11'
+  subtype='KERN_INVALID_ADDRESS at 0x0000000000000170'
+#5  libtcl9tk9.1.dylib            showRootWindow
+#6  libtcl9.1.dylib               TclServiceIdle
+#7  libtcl9.1.dylib               Tcl_DoOneEvent
+#8  _tkinter.cpython-312-darwin.so _tkinter_tkapp_mainloop
+```
+
+Not one frame belongs to PHANTOM, to CustomTkinter or to pytest: the process dies
+inside **Tk's own idle handler**. `showRootWindow` is Tk's Aqua menu-bar code; it is
+armed as a Tcl *idle* callback and it points at the menu of the interpreter that armed
+it. `0x170` is a field of the object it dereferences — memory that is no longer there.
+
+### 15.2 The same fault, seen as a message to a freed object
+
+The next run produced a second report from the same idle handler, and this one says
+what the first one implies:
+
+```
+SIGTRAP / EXC_BREAKPOINT
+#0 libobjc.A.dylib   objc_opt_respondsToSelector
+#1 libtcl9tk9.1.dylib Tk_MacOSXGetTkWindow
+#2 libtcl9tk9.1.dylib showRootWindow
+#3 libtcl9.1.dylib    TclServiceIdle
+```
+
+`objc_opt_respondsToSelector` takes the `isa` pointer of its receiver: the trap means
+the Objective-C object Tk asked about **had already been deallocated**. Tk is holding
+a window that its interpreter no longer owns.
+
+### 15.3 Why the suite dies and one test does not
+
+Two measurements made in the Tk 9.1 job, in separate processes, on the same build:
+
+| case | what ran | result |
+| --- | --- | --- |
+| one test, one window | `pytest tests/test_gui.py -k dnd_that_cannot_register` | **ok, 1 passed, 172 deselected** |
+| the whole suite without that test | `pytest tests/test_gui.py -k "not dnd_that_cannot_register"` | **exit 139, SIGSEGV** |
+
+So the crashing test is not the cause of anything: the *history* is. Every test builds
+a `ctk.CTk()` root and closes it, which destroys a Tcl interpreter; Tk's Aqua menu
+idle handler still points at the destroyed interpreter's menu, and the next event-loop
+service runs it against freed memory. Whichever test happens to be pumping at that
+moment dies — the frame moved from
+`test_a_dnd_that_cannot_register_hides_its_hints_and_keeps_the_button` to
+`test_a_theme_switch_refuses_every_display_pass` between two runs of the same code.
+
+That also explains the shape of the evidence collected in §9–§14: the smokes never
+crash (one interpreter, one long loop), the app never crashes in normal use (one
+interpreter per process), and `update()` versus `mainloop()` makes no difference —
+both service Tcl idles. Driving the harness with `mainloop` was measured and did not
+fix it, so that change was reverted rather than kept as decoration.
+
+### 15.4 What the product does about it
+
+Nothing needs to change in PHANTOM: the application creates exactly one interpreter
+and never calls `Tk_DoOneEvent` from script level on Aqua/Tk 9 (`quiet_redraws`,
+§9). The defect is exposed by a **test process that builds and destroys dozens of
+windows**, which is not a thing the product does.
+
+### 15.5 What CI does about it
+
+Chunking by eight tests was tried first and was **not enough** — four of twenty-two
+chunks still died (`tests 97-104`, `113-120`, `161-168`, `169-173`), and the
+one-test-alone probe crashed once in three runs. That is what pointed at the probe
+root: `tests/test_gui.py` opened a `tkinter.Tk()` at import and **destroyed** it, so a
+process began with an already-freed interpreter and the first test's loop serviced its
+stale menu idle. Two changes followed, both measured by the table above:
+
+* the availability probe stops opening a root **in this process**: it asks a child
+  (`python -c "import tkinter; tkinter.Tk()"`), so the test process never destroys an
+  interpreter before its first test. Keeping the probe root alive instead was tried
+  and rejected — it fixed the crash but put a second, hidden root in front of every
+  test, which made the theme test hang and the touchpad test scroll the wrong way on
+  Tk 8.6, where the suite had been green;
+* the Tk 9.1 job runs **one test per process** (`PHANTOM_GUI_CHUNK=1`), so nothing
+  ever services an idle belonging to a destroyed interpreter: the last thing a chunk
+  process does is the destroy, and then it exits.
+
+The Tk 9.1 job therefore runs the suite in **one process per test**:
+
+* every test still runs — this is process isolation, not exclusion, and the chunk list
+  comes from `pytest --collect-only`, so a new test is picked up automatically; the
+  chunk size is `PHANTOM_GUI_CHUNK` and a bigger chunk is a smaller cost with more
+  exposure, which is why the default here is one;
+* every chunk must pass, and the worst exit code is what the verdict sees, with a
+  signal outranking a plain failure — a crash still turns the job red (it did, twice,
+  while this was being measured);
+* a probe row (`one window alone`) re-measures the claim on every run: if a single
+  interpreter ever crashes there, the isolation is hiding something and this section
+  is wrong;
+* `gui (macOS Aqua)` — Tk 8.6.16 — still runs the whole suite in **one** process, so
+  cross-test interference remains covered on the build where it is safe.
+
+The result, measured on run `44863350963` (head `9c29eae`): `gui (macOS Aqua, Tk 9.1)`
+green — `verdict: 8 steps, 0 crashed, 0 blocking failures`, `gui suite: 173 tests,
+chunks of 1, worst exit 0`, `no crash report was written by this job`. All seven jobs
+of that run are green, including `gui (macOS Aqua)` on Tk 8.6.16 with the whole suite
+in one process.
+
+One hole was left in the verdict itself, and it is closed here: a step that is skipped
+writes no row, so counting the rows that *are* present cannot see a missing one. Measured
+against `tools/ci_verdict.py`: a `ci/status.tsv` with every other row green and
+`gui suite (tk9)` absent returned 0. The tool now takes `--require NAME` for every
+mandatory step, and an absent one is a failure that names itself
+(`::error::missing: gui suite (tk9)`). The Tk 9.1 job requires its five gate rows
+(`theme smoke`, `crash diagnosis`, `gui suite (tk9)`, `editor smoke`, `crash reports`),
+the Tk 8.6 job its two, and
+`tests/test_repo.py::test_the_macos_jobs_require_every_gate_row_they_write` keeps each
+list equal to the gate rows that job writes — a new mandatory step, or a renamed one,
+fails a test instead of passing quietly.
+
+### 15.6 What per-test isolation exposed
+
+Once every test ran on its own, four of them failed — and none had ever run on
+Tk 9 before, because the run always crashed first (the touchpad test is number 46
+of 173). Three asserted Tk 8.6 behaviour as if it were universal, and the fourth
+asserted the opposite of what `scroll.py` documents:
+
+| test | what it asserted | what Tk 9.1 does |
+| --- | --- | --- |
+| theme tick | the flush attribute moved during the tick | the refusal is already installed process-wide, so the attribute never moves — the real flush is what must be unreachable |
+| second mapping | the build owed at least one display pass | no pass is attempted at all, by design (§9) |
+| leaves Tk as it found it | the canvas flush is the original again | the process-wide refusal stays installed; the original is kept in `widgets._CANVAS_FLUSH` untouched |
+| touchpad | a `%D` of +40 moves the view towards the end | the router scrolls by `-dy` pixels, Tk's own formula (`yview scroll -dy pixels`), so the view moves up |
+
+The three policy ones now branch on `DISPLAY_PASSES_UNSAFE` / `_passes_are_attempted()`
+and assert what holds in each world. The touchpad one was simply wrong and is now
+pinned in both directions: the view moves up, and by the 40 pixels Tk reported
+(measured with `PHANTOM_SCROLL_DEBUG=1`: `raw=%D=40 decoded=(0,40) yview=0.5027->0.4663`);
+`tests/test_scroll.py::test_the_touchpad_scrolls_by_pixels_and_follows_tks_sign`
+already said the same thing at the unit level, which is how the contradiction was
+settled without a trackpad.
+
+### 15.7 Supported platforms, stated plainly
+
+| platform | Tk | status |
+| --- | --- | --- |
+| macOS Aqua, Python 3.11/3.12 | 8.6.16 | **supported** — the whole GUI suite in one process, plus the editor/capacity smoke |
+| macOS Aqua, Python 3.12 | 9.1 (Homebrew) | **supported for the application**, which is what the theme smoke, the editor smoke and the layout profile exercise; the *test process* must not accumulate interpreters, so the suite runs chunked |
+| Linux Xvfb | 8.6 | supported, unchanged |
+
+A user never sees the crash; a CI process that opens and closes dozens of windows
+does, and that is an upstream Tk 9.1 defect (idle menu handler, freed interpreter).
+The two ways to make Tk 9.1 survive an unbounded number of interpreters would be a
+one-interpreter test fixture (a redesign of every GUI fixture, untestable from this
+sandbox) or a fix in Tk itself. Neither is claimed here.
