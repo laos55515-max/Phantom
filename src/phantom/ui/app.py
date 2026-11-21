@@ -2194,14 +2194,30 @@ class PhantomApp:
             # and the footer says why exact transfer needs a file instead.
             self._clipboard_exact = True
             return
-        self._clipboard_exact = self._verify_clipboard(value, previous)
+        self._clipboard_exact = self._verify_clipboard(
+            value, previous, check_system=self._needs_system_check(value)
+        )
         if self._clipboard_token is not None:
             self.root.after_cancel(self._clipboard_token)
         self._clipboard_token = self.root.after(
             int(C.CLIPBOARD_CLEAR_SECONDS * 1000), lambda: self._clear_clipboard_if(value)
         )
 
-    def _verify_clipboard(self, value: str, previous: str | None = None) -> bool:
+    @staticmethod
+    def _needs_system_check(value: str) -> bool:
+        """Is this one of the two payload shapes the pasteboard was measured to convert?
+
+        Long strings and characters outside the BMP.  Asking the system reader costs a
+        subprocess on the GUI thread, and a short password has nothing to distort:
+        Tk's own answer is then the whole question.
+        """
+        return len(value) >= C.CLIPBOARD_SYSTEM_CHECK_CHARS or any(
+            ord(character) > 0xFFFF for character in value
+        )
+
+    def _verify_clipboard(
+        self, value: str, previous: str | None = None, *, check_system: bool = True
+    ) -> bool:
         """Read back what was just written; compare it, do not assume it.
 
         Two readers, two questions.  Tk answers out of its own store, so a match
@@ -2216,6 +2232,8 @@ class PhantomApp:
         current = clip.read_clipboard(self.root)
         if current is None or current.rstrip("\n") != value.rstrip("\n"):
             return False
+        if not check_system:
+            return True
         native = clip.read_clipboard_exact()
         if native is None or native == value:
             return True

@@ -231,6 +231,11 @@ RESULT_PREVIEW_CHARS: Final = 200_000
 #: large strings as Latin-1, and PHANTOM will not claim an exact transfer it
 #: cannot check.
 CLIPBOARD_EXACT_WARN_CHARS: Final = 1_000_000
+#: Above this many characters a clipboard read-back also asks the system reader.
+#: The two shapes the Aqua conversion was measured on are long payloads (7 of
+#: 24 300 characters differed) and characters outside the BMP (every emoji became
+#: four Latin-1 characters); a short password is Tk's own answer.
+CLIPBOARD_SYSTEM_CHECK_CHARS: Final = 4_096
 #: Largest clipboard value PHANTOM arms its 30 s auto-clear for.  Checking whether
 #: the board still holds our text reads the whole value back on the GUI thread, so
 #: the promise stays a password-sized one instead of a 15 MiB stall.

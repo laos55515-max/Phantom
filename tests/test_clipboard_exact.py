@@ -245,14 +245,32 @@ def test_a_pasteboard_that_holds_mojibake_is_not_called_exact(monkeypatch) -> No
 
 def test_a_pasteboard_that_still_shows_the_previous_copy_is_not_evidence(monkeypatch) -> None:
     """Not every mismatch is a lost character: the board may not be republished yet."""
-    monkeypatch.setattr(clip, "read_clipboard_exact", lambda **_k: "first copy")
+    first = "first copy " * 600
+    second = "second copy " * 600
+    monkeypatch.setattr(clip, "read_clipboard_exact", lambda **_k: first)
     window = _window()
-    window._copy_to_clipboard("first copy")
+    window._copy_to_clipboard(first)
     assert window._clipboard_exact is True
     # The system reader still answers with the old text while Tk hands back the new
     # one: the pasteboard has not caught up, which is not a difference worth a warn.
-    window._copy_to_clipboard("second copy")
+    window._copy_to_clipboard(second)
     assert window._clipboard_exact is True
+
+
+def test_a_short_password_is_not_worth_a_subprocess(monkeypatch) -> None:
+    """The measured conversions are long payloads and characters outside the BMP."""
+
+    def refuse(**_kwargs: object) -> str:
+        raise AssertionError("the system reader was asked about a short password")
+
+    monkeypatch.setattr(clip, "read_clipboard_exact", refuse)
+    window = _window()
+    window._copy_to_clipboard("Tr0ub4dor&3")
+    assert window._clipboard_exact is True
+    # Non-BMP characters are the other measured shape, however short the string.
+    monkeypatch.setattr(clip, "read_clipboard_exact", lambda **_k: "\u00f0\u0178\u02dc\u20ac")
+    window._copy_to_clipboard("\U0001f600")
+    assert window._clipboard_exact is False
 
 
 def test_the_auto_clear_is_scheduled_for_every_copy(monkeypatch) -> None:

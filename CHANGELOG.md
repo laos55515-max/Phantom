@@ -26,9 +26,12 @@ All notable changes to PHANTOM are recorded here. The format follows
   clipboard in CI (stale strings, `CLIPBOARD selection doesn't exist`) — and reads
   the board back with both readers, Tk's own answer and the system's exact one, to
   decide what the footer says. A copy the pasteboard converted is reported as "not
-  exact, use the file" instead of a transfer that did not happen. The TXT export
-  keeps using the payload bytes and is unchanged; `tools/smoke_editor_capacity.py`
-  prints both views so the difference stays measured.
+  exact, use the file" instead of a transfer that did not happen. The system reader
+  is asked only for the shapes the conversion was measured on — 4 096 characters or
+  more, or a character outside the BMP — so a short password costs no subprocess.
+  The TXT export keeps using the payload bytes and is unchanged;
+  `tools/smoke_editor_capacity.py` prints both views so the difference stays
+  measured.
 - **A failing step no longer loses the record of its own exit code.** GitHub runs
   every `run:` block with `bash -e -o pipefail`, so the GUI job's `ci/status.tsv` was
   never created (verdict exit 2) and the Tk 9.1 job's two *failing* steps were the

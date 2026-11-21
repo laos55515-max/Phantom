@@ -669,6 +669,11 @@ of a claim. One rule keeps that honest in the other direction: if the system rea
 still shows the *previous* copy, the pasteboard has not been republished yet, which
 is not evidence that the new text is wrong.
 
+The system reader costs a subprocess on the GUI thread, so it is asked only for the
+payload shapes the conversion was measured on — 4 096 characters or more
+(`CLIPBOARD_SYSTEM_CHECK_CHARS`), or any character outside the BMP. A short password
+has nothing to distort, and Tk's own answer is the whole question there.
+
 The exact writer is still what `tools/smoke_editor_capacity.py` uses to *measure*
 the pasteboard side of the question, and it prints both views:
 
