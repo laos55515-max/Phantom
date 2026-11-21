@@ -474,9 +474,29 @@ jobs:
           import sys
 
           runs = (
-              ("before", "/tmp/frame-base/src", 3),
-              ("after", "src", 3),
+              ("before", "/tmp/frame-base/src", 2),
+              ("after", "src", 2),
           )
+          for variant in ("baseline", "deiconify_before", "deiconify_after", "withdraw_after"):
+              vp = pathlib.Path(f"probe-{variant}.json")
+              vl = pathlib.Path(f"probe-{variant}.log")
+              with vl.open("w", encoding="utf-8") as vh:
+                  vd = subprocess.run(
+                      [
+                          sys.executable, "-u", "tools/measure_startup_frame.py",
+                          "--label", f"probe-{variant}", "--watch", "6.0",
+                          "--variant", variant, "--json", str(vp),
+                      ],
+                      check=False, stdout=vh, stderr=subprocess.STDOUT,
+                      env={**__import__("os").environ, "PYTHONPATH": "src"},
+                      timeout=180,
+                  )
+              vlines = [
+                  line[len("FRAME: "):].strip()
+                  for line in vl.read_text(encoding="utf-8", errors="replace").splitlines()
+                  if line.startswith("FRAME:") and not line.startswith("FRAME: sample ")
+              ]
+              print(f"::notice::PROBE {variant} exit={vd.returncode}: " + " | ".join(vlines)[:900])
           results: dict[str, list[dict]] = {}
           for label, tree, count in runs:
               results[label] = []

@@ -272,7 +272,7 @@ def first_paint(capture: Capture) -> float | None:
 # ---------------------------------------------------------------------------
 # one run
 # ---------------------------------------------------------------------------
-def run(label: str, watch: float) -> dict[str, Any]:
+def run(label: str, watch: float, *, variant: str = 'baseline') -> dict[str, Any]:
     import tkinter as tk
 
     import customtkinter as ctk
@@ -327,7 +327,13 @@ def run(label: str, watch: float) -> dict[str, Any]:
     # a different measurement from the one the owner reports.
     root = ctk.CTk()
     tk_version = f"{tk.TkVersion} {root.tk.call('info', 'patchlevel')}"
+    if variant == "deiconify_before":
+        root.deiconify()
+    elif variant == "withdraw_after":
+        root.withdraw()
     app = PhantomApp(root, trace=trace)
+    if variant in ("withdraw_after", "deiconify_after"):
+        root.deiconify()
     build_ms = (time.perf_counter() - started) * 1000.0
     phase[0] = "loop_setup"
 
@@ -351,11 +357,22 @@ def run(label: str, watch: float) -> dict[str, Any]:
         if getattr(event, "widget", None) is root:
             mark("mapped")
 
-    def on_expose(event: Any) -> None:
+    expose_widgets: list[str] = []
+
+    def on_expose_any(event: Any) -> None:
         counts["expose"] += 1
         mark("expose_any")
-        if getattr(event, "widget", None) is root:
+        w = getattr(event, "widget", None)
+        if w is root:
+            counts["expose_root"] = counts.get("expose_root", 0) + 1
             mark("expose_root")
+        if len(expose_widgets) < 20:
+            expose_widgets.append(type(w).__name__ if w is not None else "?")
+        if counts["expose"] >= 20:
+            # Stop after 20 events: binding <Expose> globally on Tk 9.1 Aqua fires
+            # ~800k times if an expose storm happens, adding 20s of Python overhead.
+            with contextlib.suppress(Exception):
+                root.unbind_all("<Expose>")
 
     def on_visibility(event: Any) -> None:
         if getattr(event, "widget", None) is root:
@@ -398,12 +415,11 @@ def run(label: str, watch: float) -> dict[str, Any]:
             root.after(10, beat)
 
     root.bind("<Map>", on_map, add="+")
-    root.bind("<Expose>", on_expose, add="+")
     root.bind("<Visibility>", on_visibility, add="+")
     root.bind("<FocusIn>", on_focus_in, add="+")
     root.bind("<Activate>", on_activate, add="+")
     root.bind("<Configure>", on_configure, add="+")
-    root.bind_all("<Expose>", on_expose, add="+")
+    root.bind_all("<Expose>", on_expose_any, add="+")
     root.after_idle(on_idle)
     root.after(0, on_loop)
     last_beat[0] = time.perf_counter()
@@ -517,6 +533,8 @@ def run(label: str, watch: float) -> dict[str, Any]:
             "last_configure_ms": round(marks.get("last_configure", -1), 1),
             "configure_count": counts["configure"],
             "expose_count": counts["expose"],
+            "expose_root_count": counts.get("expose_root", 0),
+            "expose_widgets": expose_widgets[:8],
             "idle_ms": round(marks.get("idle", -1), 1),
             "beats": beats[0],
             "worst_gap_ms": round(worst_gap_ms[0], 1),
@@ -568,7 +586,8 @@ def report(result: dict[str, Any]) -> None:
     say(
         "visibility_ms={visibility_ms} focus_in_ms={focus_in_ms} activate_ms={activate_ms} "
         "configure={configure_count}({first_configure_ms}..{last_configure_ms}ms) "
-        "expose_count={expose_count}".format(**result)
+        "expose_count={expose_count} expose_root={expose_root_count} "
+        "expose_widgets={expose_widgets}".format(**result)
     )
     say(
         "beats={beats} worst_gap_ms={worst_gap_ms} at={worst_gap_at_ms}ms "
@@ -617,11 +636,12 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--label", default="run", help="name for this run in the report")
     parser.add_argument("--watch", type=float, default=WATCH_SECONDS, help="seconds to watch")
+    parser.add_argument("--variant", default="baseline", help="startup order variant")
     parser.add_argument("--json", help="write the raw numbers here")
     args = parser.parse_args(argv)
 
     try:
-        result = run(args.label, args.watch)
+        result = run(args.label, args.watch, variant=args.variant)
     except Exception as exc:  # noqa: BLE001 - a measurement reports, it never raises
         say(f"label={args.label} error={type(exc).__name__}: {exc}")
         return 1
