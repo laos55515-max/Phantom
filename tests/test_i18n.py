@@ -167,3 +167,32 @@ def test_security_numbers_come_from_constants() -> None:
         rendered = hint.format(min_len=C.MIN_PASSWORD_LENGTH, kdf=expected)
         assert expected in rendered
         assert "200 000" not in rendered and "200,000" not in rendered
+
+
+def test_password_length_statuses_are_neutral() -> None:
+    """The meter checks length only, so statuses must not promise strength."""
+    expected_need = {
+        "en": f"Minimum {C.MIN_PASSWORD_LENGTH} characters",
+        "ru": f"Минимум {C.MIN_PASSWORD_LENGTH} символов",
+        "uk": f"Мінімум {C.MIN_PASSWORD_LENGTH} символів",
+    }
+    expected_met = {
+        "en": "Minimum length reached",
+        "ru": "Минимальная длина достигнута",
+        "uk": "Мінімальну довжину досягнуто",
+    }
+    for code in ("uk", "ru", "en"):
+        data = load_locale(code, LOCALES)
+        for obsolete in (
+            "pwd_strength_empty",
+            "pwd_strength_weak",
+            "pwd_strength_good",
+            "pwd_strength_strong",
+        ):
+            assert obsolete not in data
+        assert data["pwd_len_counter"].format(count=5, min_len=C.MIN_PASSWORD_LENGTH) == (
+            f"5 / {C.MIN_PASSWORD_LENGTH}"
+        )
+        assert data["pwd_len_need_min"].format(min_len=C.MIN_PASSWORD_LENGTH) == expected_need[code]
+        assert data["pwd_len_met"] == expected_met[code]
+

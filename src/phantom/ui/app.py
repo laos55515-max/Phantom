@@ -868,7 +868,9 @@ class PhantomApp:
         )
         head3.pack(fill="x", padx=18, pady=(14, 10))
         self.binder.bind(self.password_card_title, "step_embed_password")
-        self.pwd_strength_label.configure(text=self.i18n.t("pwd_strength_empty"))
+        self.pwd_strength_label.configure(
+            text=self.i18n.t("pwd_len_need_min", min_len=C.MIN_PASSWORD_LENGTH)
+        )
 
         pwd_box = inset_panel(password_card, border_width=1)
         pwd_box.pack(fill="x", padx=18, pady=(0, 6))
@@ -1807,25 +1809,23 @@ class PhantomApp:
             self.pwd_meter_bar.set(0.0)
             self.pwd_meter_bar.configure(progress_color=T.CLR_PROGRESS_TROUGH)
             self.pwd_strength_label.configure(
-                text=self.i18n.t("pwd_strength_empty"), text_color=T.CLR_MUTED
+                text=self.i18n.t("pwd_len_need_min", min_len=C.MIN_PASSWORD_LENGTH),
+                text_color=T.CLR_MUTED,
             )
             return
-        frac = min(1.0, length / float(max(16, C.MIN_PASSWORD_LENGTH)))
+        frac = min(1.0, length / float(C.MIN_PASSWORD_LENGTH))
         self.pwd_meter_bar.set(frac)
         if length < C.MIN_PASSWORD_LENGTH:
-            self.pwd_meter_bar.configure(progress_color=T.CLR_RED)
+            self.pwd_meter_bar.configure(progress_color=T.CLR_ACCENT)
             self.pwd_strength_label.configure(
-                text=self.i18n.t("pwd_strength_weak"), text_color=T.CLR_RED
-            )
-        elif length < 16:
-            self.pwd_meter_bar.configure(progress_color=T.CLR_YELLOW)
-            self.pwd_strength_label.configure(
-                text=self.i18n.t("pwd_strength_good"), text_color=T.CLR_YELLOW
+                text=self.i18n.t("pwd_len_need_min", min_len=C.MIN_PASSWORD_LENGTH),
+                text_color=T.CLR_MUTED,
             )
         else:
             self.pwd_meter_bar.configure(progress_color=T.CLR_GREEN)
             self.pwd_strength_label.configure(
-                text=self.i18n.t("pwd_strength_strong"), text_color=T.CLR_GREEN
+                text=self.i18n.t("pwd_len_met"),
+                text_color=T.CLR_GREEN,
             )
 
     def _refresh_embed_summary(self) -> None:
