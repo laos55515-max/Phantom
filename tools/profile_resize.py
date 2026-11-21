@@ -321,6 +321,11 @@ def run(label: str, steps: int, gap: int, watchdog: float = 45.0) -> int:
     with contextlib.suppress(tk.TclError):
         root.destroy()
     say("main loop finished cleanly")
+    if not finished[0]:
+        # The window was destroyed by the watchdog, so no series and no SUMMARY:
+        # a shell that reads only the exit code must not read this as a measurement.
+        say(f"INCOMPLETE: the resize series never finished (watchdog {watchdog:.0f}s)")
+        return 3
     return 0
 
 
