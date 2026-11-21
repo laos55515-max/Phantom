@@ -278,6 +278,20 @@ def run(
     def finish() -> None:
         finished[0] = True
         net_snapshot("final")
+        # The machine-readable line first: everything below it is for people, and a
+        # runner that hangs mid-summary must not be able to hide a finished
+        # measurement (this happened twice — see docs/macos-aqua-crash.md §14.3).
+        say(
+            f"SUMMARY label={label} steps={steps} rows={rows} "
+            f"walks={numbers.flows_walks} reflow={numbers.reflow} "
+            f"changes={numbers.layout_changes} grid={numbers.grid} "
+            f"forget={numbers.grid_forget} wrap={numbers.apply} "
+            f"handlers={numbers.resize} handler_ms={numbers.seconds_resize * 1000:.1f} "
+            f"pass_ms={numbers.seconds_pass * 1000:.1f} "
+            f"worst_gap_ms={worst[0] * 1000:.1f} "
+            f"fullscreen={numbers.fullscreen}",
+            flush=True,
+        )
         say("")
         say(f"--- {label}")
         say(f"flow rows                {rows}")
@@ -292,17 +306,6 @@ def run(
         say(f"time in refit passes     {numbers.seconds_pass * 1000:.1f} ms")
         say(f"worst event-loop gap     {worst[0] * 1000:.1f} ms")
         say(f"fullscreen               {numbers.fullscreen}")
-        say(
-            f"SUMMARY label={label} steps={steps} rows={rows} "
-            f"walks={numbers.flows_walks} reflow={numbers.reflow} "
-            f"changes={numbers.layout_changes} grid={numbers.grid} "
-            f"forget={numbers.grid_forget} wrap={numbers.apply} "
-            f"handlers={numbers.resize} handler_ms={numbers.seconds_resize * 1000:.1f} "
-            f"pass_ms={numbers.seconds_pass * 1000:.1f} "
-            f"worst_gap_ms={worst[0] * 1000:.1f} "
-            f"fullscreen={numbers.fullscreen}",
-            flush=True,
-        )
         for name, values in marks:
             say(
                 f"PHASE label={label} phase={name} walks={values['walks']:.0f} "

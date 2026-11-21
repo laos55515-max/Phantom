@@ -721,6 +721,14 @@ ever reached, so there is no `SUMMARY`.
 series and the burst and must finish; the fullscreen phase is a `probe` of its own,
 with a 120-second cap, where a stall is the finding.
 
+A third run still reported `after TIMED OUT`, with the log ending at the
+`fullscreen skipped` line — one line before `SUMMARY`. `finish()` now prints the
+machine-readable line **first** and the human-readable summary after it, the records a
+hang can no longer take the measurement with it, and the step annotates each run's
+exit code, elapsed time and last line so the next run says which of the two it was.
+The paragraph below is the earlier diagnosis, kept because it is the other half of the
+same defect.
+
 The run after that measured everything twice and still reported a timeout, and the
 answer is in how the step read it: `subprocess.run(..., capture_output=True)` returns
 only the output it managed to read when the timeout fires, so a run that printed its

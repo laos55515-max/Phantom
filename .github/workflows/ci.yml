@@ -695,7 +695,14 @@ jobs:
               elapsed = time.monotonic() - started
               output = log.read_text(encoding="utf-8", errors="replace")
               measured = "SUMMARY " in output
-              print(f"--- {label}: exit {code} after {elapsed:.1f}s, measured={measured}")
+              tail = [line for line in output.splitlines() if line.strip()][-2:]
+              # Annotations, because Actions log downloads are not always reachable and
+              # "exit 124" on its own never said whether the numbers were measured.
+              print(
+                  f"::notice::{label}: exit {code} after {elapsed:.1f}s, "
+                  f"measured={measured}, lines={len(output.splitlines())}, "
+                  f"tail={' ¦ '.join(tail)[:1500]}"
+              )
               print(output[-3000:])
               if code == 0 and not measured:
                   print(f"::error::{label}: exited 0 without a SUMMARY line — not a measurement")
