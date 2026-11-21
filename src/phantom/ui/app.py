@@ -532,41 +532,35 @@ class PhantomApp:
     def _build_header(self) -> None:
         toolbar = ctk.CTkFrame(self.root, fg_color=T.CLR_LAYER, corner_radius=0)
         toolbar.grid(row=0, column=0, rowspan=2, sticky="ew")
-        toolbar.grid_columnconfigure(0, weight=1)
+        toolbar.grid_columnconfigure(1, weight=1)
 
-        header = ctk.CTkFrame(toolbar, fg_color="transparent")
-        header.grid(row=0, column=0, sticky="ew", padx=24, pady=(14, 6))
-        header.grid_columnconfigure(0, weight=1)
-
-        brand_col = ctk.CTkFrame(header, fg_color="transparent")
-        brand_col.grid(row=0, column=0, sticky="w")
         title = ctk.CTkLabel(
-            brand_col,
+            toolbar,
             text="PHANTOM",
             font=display_font(self.root, 20, weight="bold"),
             text_color=T.CLR_TEXT,
             anchor="w",
         )
-        title.pack(side="left")
+        title.grid(row=0, column=0, padx=(24, 0), pady=(14, 6), sticky="w")
         version = ctk.CTkLabel(
-            brand_col,
+            toolbar,
             text=f"v{C.APP_VERSION}",
             font=mono_font(self.root, T.FONT_SIZE_SMALL),
             text_color=T.CLR_MUTED,
             anchor="w",
         )
-        version.pack(side="left", padx=(10, 0), pady=(2, 0))
+        version.grid(row=0, column=1, padx=(10, 0), pady=(16, 6), sticky="w")
 
         # ``text=""``: a CTkLabel without text paints "CTkLabel" until something
         # sets it, and an empty label is a much better first frame than that.
         subtitle = ctk.CTkLabel(
-            header,
+            toolbar,
             text="",
             font=sans_font(self.root, T.FONT_SIZE_SMALL),
             text_color=T.CLR_MUTED,
             anchor="e",
         )
-        subtitle.grid(row=0, column=1, sticky="e")
+        subtitle.grid(row=0, column=2, padx=(0, 24), pady=(14, 6), sticky="e")
         self.binder.bind_map(subtitle, "header_subtitle", self._security_params())
 
         self._toolbar = toolbar
@@ -585,8 +579,8 @@ class PhantomApp:
             unselected_hover_color=T.CLR_BORDER,
             text_color=T.CLR_TEXT,
         )
-        self.tab_bar.grid(row=1, column=0, padx=24, pady=(2, 12), sticky="ew")
-        separator(self._toolbar).grid(row=2, column=0, sticky="ew")
+        self.tab_bar.grid(row=1, column=0, columnspan=3, padx=24, pady=(2, 12), sticky="ew")
+        separator(self._toolbar).grid(row=2, column=0, columnspan=3, sticky="ew")
 
     # ------------------------------------------------------------------
     # embed tab
@@ -614,27 +608,25 @@ class PhantomApp:
         self.carrier_drop.pack(fill="x", padx=18, pady=(0, 6))
         self.carrier_drop.grid_columnconfigure(0, weight=1)
 
-        drop_copy = ctk.CTkFrame(self.carrier_drop, fg_color="transparent")
-        drop_copy.grid(row=0, column=0, sticky="ew", padx=(14, 10), pady=8)
         self.drop_carrier_title = ctk.CTkLabel(
-            drop_copy,
+            self.carrier_drop,
             text="",
             font=sans_font(self.root, T.FONT_SIZE_BODY, weight="bold"),
             text_color=T.CLR_TEXT,
             anchor="w",
         )
-        self.drop_carrier_title.pack(fill="x")
+        self.drop_carrier_title.grid(row=0, column=0, sticky="ew", padx=(14, 10), pady=(8, 0))
         self.binder.bind(self.drop_carrier_title, "drop_carrier_title")
-        self.drop_carrier_sub = hint_label(drop_copy, self.root, "", wrap=520)
-        self.drop_carrier_sub.pack(fill="x", pady=(1, 0))
+        self.drop_carrier_sub = hint_label(self.carrier_drop, self.root, "", wrap=520)
+        self.drop_carrier_sub.grid(row=1, column=0, sticky="ew", padx=(14, 10), pady=(1, 0))
         self.binder.bind(self.drop_carrier_sub, "drop_carrier_sub")
-        self.dnd_carrier_hint = hint_label(drop_copy, self.root, "", wrap=520)
-        self.dnd_carrier_hint.pack(fill="x", pady=(1, 0))
+        self.dnd_carrier_hint = hint_label(self.carrier_drop, self.root, "", wrap=520)
+        self.dnd_carrier_hint.grid(row=2, column=0, sticky="ew", padx=(14, 10), pady=(1, 8))
 
         self.carrier_button = quiet_button(
             self.carrier_drop, self.root, "", self._choose_carrier
         )
-        self.carrier_button.grid(row=0, column=1, sticky="e", padx=(0, 14), pady=8)
+        self.carrier_button.grid(row=0, column=1, rowspan=3, sticky="e", padx=(0, 14), pady=8)
         self._seat_drop_zone("carrier", self.carrier_drop)
 
         self.embed_carrier_error = ctk.CTkFrame(
@@ -876,25 +868,24 @@ class PhantomApp:
 
         pwd_box = inset_panel(password_card, border_width=1)
         pwd_box.pack(fill="x", padx=18, pady=(0, 6))
-        pwd_row = ctk.CTkFrame(pwd_box, fg_color="transparent")
-        pwd_row.pack(fill="x", padx=10, pady=(8, 6))
+        pwd_box.grid_columnconfigure(0, weight=1)
         self.embed_pwd = ctk.CTkEntry(
-            pwd_row,
+            pwd_box,
             height=36,
             show="•",
             font=sans_font(self.root, T.FONT_SIZE_BODY),
             fg_color="transparent",
             border_width=0,
         )
-        self.embed_pwd.pack(side="left", fill="x", expand=True)
+        self.embed_pwd.grid(row=0, column=0, sticky="ew", padx=(10, 4), pady=(8, 4))
         self._paragraph_shortcuts(self.embed_pwd)
         self.embed_pwd.bind("<KeyRelease>", self._on_password_changed)
         self.show_embed_pwd: ctk.CTkCheckBox = ctk.CTkCheckBox(
-            pwd_row,
+            pwd_box,
             text="",
             command=lambda: self._toggle_password_visibility(self.embed_pwd, self.show_embed_pwd),
         )
-        self.show_embed_pwd.pack(side="left", padx=(8, 0))
+        self.show_embed_pwd.grid(row=0, column=1, padx=(4, 10), pady=(8, 4), sticky="e")
         fit_checkbox_on_change(self.show_embed_pwd)
 
         self.pwd_meter_bar = ctk.CTkProgressBar(
@@ -905,7 +896,7 @@ class PhantomApp:
             fg_color=T.CLR_PROGRESS_TROUGH,
         )
         self.pwd_meter_bar.set(0)
-        self.pwd_meter_bar.pack(fill="x", padx=10, pady=(0, 8))
+        self.pwd_meter_bar.grid(row=1, column=0, columnspan=2, sticky="ew", padx=10, pady=(0, 8))
 
         actions = self.embed_password_actions = FlowRow(password_card)
         actions.pack(fill="x", padx=18, pady=(2, 4))
@@ -1055,27 +1046,25 @@ class PhantomApp:
         self.stego_drop.pack(fill="x", padx=18, pady=(0, 8))
         self.stego_drop.grid_columnconfigure(0, weight=1)
 
-        stego_copy = ctk.CTkFrame(self.stego_drop, fg_color="transparent")
-        stego_copy.grid(row=0, column=0, sticky="ew", padx=(14, 10), pady=12)
         self.drop_stego_title = ctk.CTkLabel(
-            stego_copy,
+            self.stego_drop,
             text="",
             font=sans_font(self.root, T.FONT_SIZE_BODY, weight="bold"),
             text_color=T.CLR_TEXT,
             anchor="w",
         )
-        self.drop_stego_title.pack(fill="x")
+        self.drop_stego_title.grid(row=0, column=0, sticky="ew", padx=(14, 10), pady=(10, 0))
         self.binder.bind(self.drop_stego_title, "drop_stego_title")
-        self.drop_stego_sub = hint_label(stego_copy, self.root, "", wrap=520)
-        self.drop_stego_sub.pack(fill="x", pady=(2, 0))
+        self.drop_stego_sub = hint_label(self.stego_drop, self.root, "", wrap=520)
+        self.drop_stego_sub.grid(row=1, column=0, sticky="ew", padx=(14, 10), pady=(2, 0))
         self.binder.bind(self.drop_stego_sub, "drop_stego_sub")
-        self.dnd_stego_hint = hint_label(stego_copy, self.root, "", wrap=520)
-        self.dnd_stego_hint.pack(fill="x", pady=(2, 0))
+        self.dnd_stego_hint = hint_label(self.stego_drop, self.root, "", wrap=520)
+        self.dnd_stego_hint.grid(row=2, column=0, sticky="ew", padx=(14, 10), pady=(2, 10))
 
         self.stego_button = quiet_button(
             self.stego_drop, self.root, "", self._choose_stego
         )
-        self.stego_button.grid(row=0, column=1, padx=(0, 14), pady=12, sticky="e")
+        self.stego_button.grid(row=0, column=1, rowspan=3, padx=(0, 14), pady=10, sticky="e")
         self._seat_drop_zone("stego", self.stego_drop)
 
         self.extract_carrier_error = ctk.CTkFrame(
@@ -1121,27 +1110,26 @@ class PhantomApp:
 
         ex_pwd_box = inset_panel(ex_pwd_card, border_width=1)
         ex_pwd_box.pack(fill="x", padx=18, pady=(0, 6))
-        pwd_row = ctk.CTkFrame(ex_pwd_box, fg_color="transparent")
-        pwd_row.pack(fill="x", padx=10, pady=8)
+        ex_pwd_box.grid_columnconfigure(0, weight=1)
         self.extract_pwd = ctk.CTkEntry(
-            pwd_row,
+            ex_pwd_box,
             height=36,
             show="•",
             font=sans_font(self.root, T.FONT_SIZE_BODY),
             fg_color="transparent",
             border_width=0,
         )
-        self.extract_pwd.pack(side="left", fill="x", expand=True)
+        self.extract_pwd.grid(row=0, column=0, sticky="ew", padx=(10, 4), pady=8)
         self.extract_pwd.bind("<KeyRelease>", lambda _e: self._refresh_extract_summary())
         self._paragraph_shortcuts(self.extract_pwd)
         self.show_extract_pwd: ctk.CTkCheckBox = ctk.CTkCheckBox(
-            pwd_row,
+            ex_pwd_box,
             text="",
             command=lambda: self._toggle_password_visibility(
                 self.extract_pwd, self.show_extract_pwd
             ),
         )
-        self.show_extract_pwd.pack(side="left", padx=(8, 0))
+        self.show_extract_pwd.grid(row=0, column=1, padx=(4, 10), pady=8, sticky="e")
         fit_checkbox_on_change(self.show_extract_pwd)
 
         extract_actions = self.extract_password_actions = FlowRow(ex_pwd_card)
@@ -1267,31 +1255,32 @@ class PhantomApp:
         self.audit_title = card_title(audit_card, self.root, "")
         self.audit_title.pack(fill="x", padx=18, pady=(14, 6))
         self.binder.bind(self.audit_title, "card_audit")
+        audit_box = inset_panel(audit_card)
+        audit_box.pack(fill="x", padx=18, pady=(0, 4))
+        audit_box.grid_columnconfigure(1, weight=1)
         self.audit_rows: dict[str, ctk.CTkLabel] = {}
-        for key in (
+        for idx, key in enumerate((
             "audit_layout",
             "audit_cipher",
             "audit_kdf",
             "audit_integrity",
             "audit_size",
-        ):
-            holder = ctk.CTkFrame(audit_card, fg_color="transparent")
-            holder.pack(fill="x", padx=18, pady=1)
+        )):
             caption = ctk.CTkLabel(
-                holder,
+                audit_box,
                 text="",
                 width=110,
                 anchor="w",
                 font=sans_font(self.root, T.FONT_SIZE_SMALL, weight="bold"),
                 text_color=T.CLR_MUTED,
             )
-            caption.pack(side="left")
+            caption.grid(row=idx, column=0, sticky="w", padx=(12, 8), pady=3)
             self.binder.bind(caption, key)
-            value = value_label(holder, self.root, "", mono=True)
-            value.pack(side="left", fill="x", expand=True)
+            value = value_label(audit_box, self.root, "", mono=True)
+            value.grid(row=idx, column=1, sticky="ew", padx=(0, 12), pady=3)
             self.audit_rows[key] = value
         self.audit_status = hint_label(audit_card, self.root, "", wrap=620)
-        self.audit_status.pack(fill="x", padx=18, pady=(8, 12))
+        self.audit_status.pack(fill="x", padx=18, pady=(6, 12))
         return frame
 
     # ------------------------------------------------------------------
@@ -1326,26 +1315,25 @@ class PhantomApp:
         self.options_title.pack(fill="x", padx=18, pady=(14, 8))
         self.binder.bind(self.options_title, "settings_group_everyday")
 
+        grouped = inset_panel(everyday_card)
+        grouped.pack(fill="x", padx=18, pady=(0, 14))
+        grouped.grid_columnconfigure(0, weight=1)
+
         # Row 1: Language
-        lang_row = inset_panel(everyday_card)
-        lang_row.pack(fill="x", padx=18, pady=(0, 3))
-        lang_row.grid_columnconfigure(0, weight=1)
-        lang_copy = ctk.CTkFrame(lang_row, fg_color="transparent")
-        lang_copy.grid(row=0, column=0, sticky="ew", padx=(14, 10), pady=12)
         self.lang_title = ctk.CTkLabel(
-            lang_copy,
+            grouped,
             text="",
             font=sans_font(self.root, T.FONT_SIZE_BODY, weight="bold"),
             text_color=T.CLR_TEXT,
             anchor="w",
         )
-        self.lang_title.pack(fill="x")
+        self.lang_title.grid(row=0, column=0, sticky="ew", padx=(14, 10), pady=(12, 0))
         self.binder.bind(self.lang_title, "settings_language")
-        self.lang_sub = hint_label(lang_copy, self.root, "", wrap=460)
-        self.lang_sub.pack(fill="x", pady=(2, 0))
+        self.lang_sub = hint_label(grouped, self.root, "", wrap=460)
+        self.lang_sub.grid(row=1, column=0, sticky="ew", padx=(14, 10), pady=(2, 10))
         self.binder.bind(self.lang_sub, "settings_language_sub")
         self.lang_bar = ctk.CTkSegmentedButton(
-            lang_row,
+            grouped,
             values=[],
             command=self._on_language_click,
             font=sans_font(self.root, T.FONT_SIZE_LABEL, weight="bold"),
@@ -1357,28 +1345,25 @@ class PhantomApp:
             unselected_hover_color=T.CLR_BORDER,
             text_color=T.CLR_TEXT,
         )
-        self.lang_bar.grid(row=0, column=1, padx=(0, 14), pady=12, sticky="e")
+        self.lang_bar.grid(row=0, column=1, rowspan=2, padx=(0, 14), pady=10, sticky="e")
+
+        separator(grouped).grid(row=2, column=0, columnspan=2, sticky="ew", padx=14)
 
         # Row 2: Appearance theme
-        theme_row = inset_panel(everyday_card)
-        theme_row.pack(fill="x", padx=18, pady=(0, 3))
-        theme_row.grid_columnconfigure(0, weight=1)
-        theme_copy = ctk.CTkFrame(theme_row, fg_color="transparent")
-        theme_copy.grid(row=0, column=0, sticky="ew", padx=(14, 10), pady=12)
         self.theme_title = ctk.CTkLabel(
-            theme_copy,
+            grouped,
             text="",
             font=sans_font(self.root, T.FONT_SIZE_BODY, weight="bold"),
             text_color=T.CLR_TEXT,
             anchor="w",
         )
-        self.theme_title.pack(fill="x")
+        self.theme_title.grid(row=3, column=0, sticky="ew", padx=(14, 10), pady=(10, 0))
         self.binder.bind(self.theme_title, "settings_appearance")
-        self.theme_sub = hint_label(theme_copy, self.root, "", wrap=460)
-        self.theme_sub.pack(fill="x", pady=(2, 0))
+        self.theme_sub = hint_label(grouped, self.root, "", wrap=460)
+        self.theme_sub.grid(row=4, column=0, sticky="ew", padx=(14, 10), pady=(2, 10))
         self.binder.bind(self.theme_sub, "settings_appearance_sub")
         self.theme_bar = ctk.CTkSegmentedButton(
-            theme_row,
+            grouped,
             values=[],
             command=self._on_theme_click,
             font=sans_font(self.root, T.FONT_SIZE_LABEL, weight="bold"),
@@ -1390,28 +1375,25 @@ class PhantomApp:
             unselected_hover_color=T.CLR_BORDER,
             text_color=T.CLR_TEXT,
         )
-        self.theme_bar.grid(row=0, column=1, padx=(0, 14), pady=12, sticky="e")
+        self.theme_bar.grid(row=3, column=1, rowspan=2, padx=(0, 14), pady=10, sticky="e")
+
+        separator(grouped).grid(row=5, column=0, columnspan=2, sticky="ew", padx=14)
 
         # Row 3: Reduce animations
-        anim_row = inset_panel(everyday_card)
-        anim_row.pack(fill="x", padx=18, pady=(0, 3))
-        anim_row.grid_columnconfigure(0, weight=1)
-        anim_copy = ctk.CTkFrame(anim_row, fg_color="transparent")
-        anim_copy.grid(row=0, column=0, sticky="ew", padx=(14, 10), pady=12)
         self.anim_title = ctk.CTkLabel(
-            anim_copy,
+            grouped,
             text="",
             font=sans_font(self.root, T.FONT_SIZE_BODY, weight="bold"),
             text_color=T.CLR_TEXT,
             anchor="w",
         )
-        self.anim_title.pack(fill="x")
+        self.anim_title.grid(row=6, column=0, sticky="ew", padx=(14, 10), pady=(10, 0))
         self.binder.bind(self.anim_title, "settings_reduce_motion")
-        self.anim_sub = hint_label(anim_copy, self.root, "", wrap=520)
-        self.anim_sub.pack(fill="x", pady=(2, 0))
+        self.anim_sub = hint_label(grouped, self.root, "", wrap=520)
+        self.anim_sub.grid(row=7, column=0, sticky="ew", padx=(14, 10), pady=(2, 10))
         self.binder.bind(self.anim_sub, "settings_reduce_motion_sub")
         self.animations_switch = ctk.CTkSwitch(
-            anim_row,
+            grouped,
             text="",
             width=46,
             command=self._on_animations_toggle,
@@ -1420,28 +1402,25 @@ class PhantomApp:
             button_color=T.CLR_ON_ACCENT,
             button_hover_color=T.CLR_ACCENT_DIM,
         )
-        self.animations_switch.grid(row=0, column=1, padx=(0, 14), pady=12, sticky="e")
+        self.animations_switch.grid(row=6, column=1, rowspan=2, padx=(0, 14), pady=10, sticky="e")
+
+        separator(grouped).grid(row=8, column=0, columnspan=2, sticky="ew", padx=14)
 
         # Row 4: Verify output after embed
-        verify_row = inset_panel(everyday_card)
-        verify_row.pack(fill="x", padx=18, pady=(0, 14))
-        verify_row.grid_columnconfigure(0, weight=1)
-        verify_copy = ctk.CTkFrame(verify_row, fg_color="transparent")
-        verify_copy.grid(row=0, column=0, sticky="ew", padx=(14, 10), pady=12)
         self.verify_title = ctk.CTkLabel(
-            verify_copy,
+            grouped,
             text="",
             font=sans_font(self.root, T.FONT_SIZE_BODY, weight="bold"),
             text_color=T.CLR_TEXT,
             anchor="w",
         )
-        self.verify_title.pack(fill="x")
+        self.verify_title.grid(row=9, column=0, sticky="ew", padx=(14, 10), pady=(10, 0))
         self.binder.bind(self.verify_title, "settings_verify_embed")
-        self.verify_sub = hint_label(verify_copy, self.root, "", wrap=520)
-        self.verify_sub.pack(fill="x", pady=(2, 0))
+        self.verify_sub = hint_label(grouped, self.root, "", wrap=520)
+        self.verify_sub.grid(row=10, column=0, sticky="ew", padx=(14, 10), pady=(2, 12))
         self.binder.bind(self.verify_sub, "settings_verify_embed_sub")
         self.verify_switch = ctk.CTkSwitch(
-            verify_row,
+            grouped,
             text="",
             width=46,
             command=self._on_verify_switch,
@@ -1450,7 +1429,7 @@ class PhantomApp:
             button_color=T.CLR_ON_ACCENT,
             button_hover_color=T.CLR_ACCENT_DIM,
         )
-        self.verify_switch.grid(row=0, column=1, padx=(0, 14), pady=12, sticky="e")
+        self.verify_switch.grid(row=9, column=1, rowspan=2, padx=(0, 14), pady=10, sticky="e")
 
         # Group 2: About PHANTOM & Reset -----------------------------------
         about_card = card(scroll)
@@ -1473,24 +1452,20 @@ class PhantomApp:
         self.reset_button.grid(row=0, column=1, sticky="e")
         self.binder.bind(self.reset_button, "settings_reset")
 
-        stack_box = inset_panel(about_card)
-        stack_box.pack(fill="x", padx=18, pady=(0, 10))
-        self.about_label = value_label(stack_box, self.root, "", mono=True)
-        self.about_label.pack(fill="x", padx=12, pady=10)
+        about_box = inset_panel(about_card)
+        about_box.pack(fill="x", padx=18, pady=(0, 14))
+        self.about_label = value_label(about_box, self.root, "", mono=True)
+        self.about_label.pack(fill="x", padx=12, pady=(10, 6))
         self.binder.bind_map(self.about_label, "settings_about", self._security_params())
 
-        threat_box = inset_panel(about_card)
-        threat_box.pack(fill="x", padx=18, pady=(0, 6))
-        self.threat_label = hint_label(threat_box, self.root, "", wrap=760)
-        self.threat_label.pack(fill="x", padx=12, pady=10)
+        self.threat_label = hint_label(about_box, self.root, "", wrap=760)
+        self.threat_label.pack(fill="x", padx=12, pady=(4, 4))
         self.binder.bind(self.threat_label, "settings_threat_model")
 
-        limits_box = inset_panel(about_card)
-        limits_box.pack(fill="x", padx=18, pady=(0, 14))
-        self.limitations_label = hint_label(limits_box, self.root, "", wrap=760)
-        self.limitations_label.pack(fill="x", padx=12, pady=(10, 4))
+        self.limitations_label = hint_label(about_box, self.root, "", wrap=760)
+        self.limitations_label.pack(fill="x", padx=12, pady=(4, 4))
         self.binder.bind(self.limitations_label, "about_limitations")
-        self.wipe_warning_label = hint_label(limits_box, self.root, "", wrap=760)
+        self.wipe_warning_label = hint_label(about_box, self.root, "", wrap=760)
         self.wipe_warning_label.pack(fill="x", padx=12, pady=(2, 10))
         self.binder.bind(self.wipe_warning_label, "settings_wipe_warning")
         return frame
