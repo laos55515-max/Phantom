@@ -65,7 +65,7 @@ from dataclasses import dataclass, field
 from typing import Any, Final
 
 #: How long one run watches the window before it closes itself.
-WATCH_SECONDS: Final = 12.0
+WATCH_SECONDS: Final = 8.0
 
 #: When the "push the window forward" experiment happens, if nothing is drawn yet.
 PUSH_AT: Final = 2.5
@@ -272,7 +272,7 @@ def first_paint(capture: Capture) -> float | None:
 # ---------------------------------------------------------------------------
 # one run
 # ---------------------------------------------------------------------------
-def run(label: str, watch: float, *, variant: str = 'baseline') -> dict[str, Any]:
+def run(label: str, watch: float) -> dict[str, Any]:
     import tkinter as tk
 
     import customtkinter as ctk
@@ -327,13 +327,7 @@ def run(label: str, watch: float, *, variant: str = 'baseline') -> dict[str, Any
     # a different measurement from the one the owner reports.
     root = ctk.CTk()
     tk_version = f"{tk.TkVersion} {root.tk.call('info', 'patchlevel')}"
-    if variant == "deiconify_before":
-        root.deiconify()
-    elif variant == "withdraw_after":
-        root.withdraw()
     app = PhantomApp(root, trace=trace)
-    if variant in ("withdraw_after", "deiconify_after"):
-        root.deiconify()
     build_ms = (time.perf_counter() - started) * 1000.0
     phase[0] = "loop_setup"
 
@@ -636,12 +630,11 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--label", default="run", help="name for this run in the report")
     parser.add_argument("--watch", type=float, default=WATCH_SECONDS, help="seconds to watch")
-    parser.add_argument("--variant", default="baseline", help="startup order variant")
     parser.add_argument("--json", help="write the raw numbers here")
     args = parser.parse_args(argv)
 
     try:
-        result = run(args.label, args.watch, variant=args.variant)
+        result = run(args.label, args.watch)
     except Exception as exc:  # noqa: BLE001 - a measurement reports, it never raises
         say(f"label={args.label} error={type(exc).__name__}: {exc}")
         return 1

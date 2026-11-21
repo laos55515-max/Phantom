@@ -474,6 +474,28 @@ class PhantomApp:
         # <Destroy> fires for the root itself, and the release only needs Python
         # attributes, so it works even once the Tcl side is gone.
         self.root.bind("<Destroy>", self._on_root_destroyed, add="+")
+        self._ensure_root_mapped_for_build()
+
+    def _ensure_root_mapped_for_build(self) -> None:
+        """Realize a non-withdrawn root before building the widget tree.
+
+        On macOS Aqua under Tcl/Tk 9.1, building the full widget tree on a
+        ``CTk()`` root that was never ``deiconify()``-ed leaves the native
+        window unmapped until the first event-loop turn (or a post-build
+        ``deiconify()``), where realizing ~300 subviews at once stalls the loop
+        for seconds with a spinning wait cursor and an empty frame.  Callers
+        that explicitly withdrew or iconified the root first stay hidden.
+        """
+        if getattr(self.root, "_withdraw_called_before_window_exists", False):
+            return
+        if getattr(self.root, "_iconify_called_before_window_exists", False):
+            return
+        try:
+            if str(self.root.state()) != "normal":
+                return
+            self.root.deiconify()
+        except Exception as exc:  # noqa: BLE001 - a fake/headless root may lack wm state
+            LOGGER.debug("pre-build deiconify skipped: %s", exc)
 
     def _build(self) -> None:
         self._build_header()
@@ -3386,14 +3408,20 @@ class PhantomApp:
     def refresh_window(self) -> None:
         """Bring the window forward and give it its display pass, on every platform.
 
-        macOS additionally needs ``lift()``: a window the window server has not
-        brought forward yet paints late.  The pass itself goes through
-        :meth:`_flush_layout`, so it is skipped for a window that is not on screen
-        instead of forcing Tk to display one that has no surface.
+        macOS additionally needs ``lift()`` and activation when launched from
+        Terminal so the window comes forward and paints without requiring a
+        manual focus switch; a withdrawn window is left hidden.  The pass itself
+        goes through :meth:`_flush_layout`, so it stays skipped on Tk 9.1 Aqua.
         """
         if T.IS_MACOS:
             try:
-                self.root.lift()
+                if str(self.root.state()) == "normal":
+                    focused = self.root.focus_get()
+                    self.root.lift()
+                    self.root.focus_force()
+                    if focused is not None and focused is not self.root:
+                        with contextlib.suppress(Exception):
+                            focused.focus_set()
             except Exception as exc:  # noqa: BLE001 - pragma: no cover, macOS only
                 LOGGER.debug("macOS lift skipped: %s", exc)
         self._flush_layout()
