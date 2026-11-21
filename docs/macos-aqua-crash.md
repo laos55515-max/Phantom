@@ -739,17 +739,29 @@ Getting to the cause took four runs, and each run removed one wrong answer:
    `root.report_callback_exception` is wired to print the traceback and exit non-zero,
    so the next swallowed callback failure fails the run instead of hanging it.
 
-The numbers are complete, from one run with `--steps 4` on both trees:
+The job is green on run `44852903515`, and every row is a measurement now — the old
+tree included, which used to end at the cap:
 
-| run | handlers | time in handlers | time in refit passes |
+```
+step: fullscreen — probe — ok        exit 0 after 2.4s, measured=True
+step: after      — gate  — ok        exit 0 after 2.0s, measured=True
+step: before     — probe — ok        exit 0 after 2.3s, measured=True
+```
+
+| run (`--steps 4`) | handlers | time in handlers | time in refit passes |
 | --- | --- | --- | --- |
-| `445a5cb` (the tree the owner tested) | 15 440 | 31.4 ms | 26.6 ms |
-| this branch | 14 402 | 5.2 ms | 0.3 ms |
+| `445a5cb` (the tree the owner tested) | 15 440 | 31.1 ms | 26.6 ms |
+| this branch | 14 402 | 3.8 ms | 0.2 ms |
 
-Per handler that is 2.0 ms against 0.36 ms, and the refit passes are ~90× cheaper.
+Per handler that is 2.0 ms against 0.26 ms, and the refit passes are ~130× cheaper.
 The earlier "8× cheaper" claim came from a run that never finished; this one is
-measured, the old tree still ends at its cap (`probe`: the finding), and this branch's
-run must print a `SUMMARY` or the job is red.
+measured, and this branch's run must print a `SUMMARY` or the job is red.
+
+One thing to keep an eye on: the `fullscreen` probe finished this time (22 260
+handlers, `phase final`), where the runs before it stalled inside
+`attributes("-fullscreen", True)`. So the stall is intermittent on this runner, which
+is exactly why the phase is a `probe` and not part of the gate — and why its row
+prints the exit code and elapsed time now.
 
 ### 14.4 lldb was pointed at a program that does not crash
 

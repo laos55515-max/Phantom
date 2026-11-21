@@ -72,6 +72,15 @@ All notable changes to PHANTOM are recorded here. The format follows
   on `SIGSEGV`: it used to run the *theme smoke*, which passes, with
   `stop-on-exec false`, which is why `bt all` answered `Command requires a process
   which is currently stopped`.
+- **The layout profile is a measurement again.** Three defects stood between the job
+  and its numbers: a `TypeError` raised inside a Tk callback (Tk prints it and carries
+  on, so `SUMMARY` was never written and the job timed out "without a measurement"), a
+  capture that returned only the output it had read when a timeout fired, and a native
+  fullscreen call that does not always return on a runner. The tool now prints its
+  machine-readable line first, exits with the numbers, fails loudly on a callback that
+  raises, and `--skip-fullscreen` keeps the phase out of the gate; the step streams
+  each log and reads `SUMMARY`. On run `44852903515` the old tree costs 2.0 ms per
+  resize handler and this branch 0.26 ms, with refit passes 130× cheaper.
 - **`PHANTOM_DND=0` turns drag-and-drop off before anything is imported.** The switch
   exists for a machine where the Tk build cannot survive the tkdnd library, and the
   crash diagnosis uses it to tell the window apart from the window plus tkdnd.
