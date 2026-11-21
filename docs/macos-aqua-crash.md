@@ -912,6 +912,12 @@ The Tk 9.1 job therefore runs the suite in **one process per test**:
 * `gui (macOS Aqua)` — Tk 8.6.16 — still runs the whole suite in **one** process, so
   cross-test interference remains covered on the build where it is safe.
 
+The result, measured on run `44863350963` (head `9c29eae`): `gui (macOS Aqua, Tk 9.1)`
+green — `verdict: 8 steps, 0 crashed, 0 blocking failures`, `gui suite: 173 tests,
+chunks of 1, worst exit 0`, `no crash report was written by this job`. All seven jobs
+of that run are green, including `gui (macOS Aqua)` on Tk 8.6.16 with the whole suite
+in one process.
+
 ### 15.6 What per-test isolation exposed
 
 Once every test ran on its own, four of them failed — and none had ever run on
