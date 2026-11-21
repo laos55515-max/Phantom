@@ -149,6 +149,11 @@ def verdict(steps: list[Step]) -> tuple[bool, list[str]]:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("status", help="the TSV written by the steps")
+    parser.add_argument(
+        "--annotate",
+        action="store_true",
+        help="also print each row as an annotation, so the table reaches the PR",
+    )
     args = parser.parse_args(argv)
 
     path = pathlib.Path(args.status)
@@ -167,6 +172,11 @@ def main(argv: list[str] | None = None) -> int:
 
     for step in steps:
         print(f"{step.name:34s} {step.kind:11s} {describe(step)}")
+        if args.annotate:
+            # A workflow command's message ends at the first newline, so one row per
+            # annotation: the table used to live only in the raw step log, so a row
+            # that was never written could not be told apart from a row that passed.
+            print(f"::notice::step: {step.name} — {step.kind} — {describe(step)}")
     acceptable, lines = verdict(steps)
     for line in lines:
         print(line)

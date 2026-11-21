@@ -120,3 +120,32 @@ def test_a_command_that_never_started_is_not_a_test_failure(code: int) -> None:
     acceptable, lines = ci_verdict.verdict([step])
     assert acceptable is False
     assert any("::error::unstarted: x" in line for line in lines)
+
+
+def test_the_table_reaches_the_pr_when_annotations_are_on(
+    tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Every row is an annotation, so a *missing* row is visible from the PR too.
+
+    Run 44844048485: ``verdict: 5 steps`` while seven steps had run, and the two that
+    were missing were exactly the two that failed — the table only existed in the raw
+    step log, which is where nobody looked.
+    """
+    path = tmp_path / "rows.tsv"
+    path.write_text("suite (diagnostic)\t139\tdiagnostic\nbefore\t124\tprobe\n", encoding="utf-8")
+    assert ci_verdict.main([str(path), "--annotate"]) == 1
+    out = capsys.readouterr().out
+    rows = [line for line in out.splitlines() if line.startswith("::notice::step: ")]
+    assert len(rows) == 2
+    assert "suite (diagnostic) — diagnostic — CRASHED" in rows[0]
+
+
+def test_without_annotations_the_output_is_the_plain_table(
+    tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    path = tmp_path / "rows.tsv"
+    path.write_text("suite\t0\tgate\n", encoding="utf-8")
+    assert ci_verdict.main([str(path)]) == 0
+    out = capsys.readouterr().out
+    assert "::notice::step:" not in out
+    assert "suite" in out

@@ -86,6 +86,9 @@ jobs:
         timeout-minutes: 15
         continue-on-error: true
         run: |
+          # GitHub's shell is ``bash -e -o pipefail``: without this, a
+          # failing command ends the step before its exit code is recorded.
+          set +e
           set -o pipefail
           mkdir -p ci
           # A wedged job leaves a non-daemon thread behind and the interpreter
@@ -199,7 +202,10 @@ jobs:
       - name: "Verdict: a crash is never a pass"
         if: always()
         run: |
-          python tools/ci_verdict.py ci/status.tsv
+          # GitHub's shell is ``bash -e -o pipefail``: without this, a
+          # failing command ends the step before its exit code is recorded.
+          set +e
+          python tools/ci_verdict.py ci/status.tsv --annotate
 
   gui-macos:
     # The GUI suite on real Aqua.  Xvfb proves the Tk *widget* logic, not the
@@ -244,6 +250,9 @@ jobs:
         id: gui
         timeout-minutes: 20
         run: |
+          # GitHub's shell is ``bash -e -o pipefail``: without this, a
+          # failing command ends the step before its exit code is recorded.
+          set +e
           set -o pipefail
           mkdir -p ci
           # No xvfb-run: Aqua needs the session, not a virtual display.  No
@@ -260,6 +269,9 @@ jobs:
         # suite failure must not hide whether the editor itself works on this Tk.
         if: always()
         run: |
+          # GitHub's shell is ``bash -e -o pipefail``: without this, a
+          # failing command ends the step before its exit code is recorded.
+          set +e
           set -o pipefail
           mkdir -p ci
           export PYTHONPATH=src
@@ -335,7 +347,10 @@ jobs:
         # out.  See tools/ci_verdict.py for the rules and their tests.
         if: always()
         run: |
-          python tools/ci_verdict.py ci/status.tsv
+          # GitHub's shell is ``bash -e -o pipefail``: without this, a
+          # failing command ends the step before its exit code is recorded.
+          set +e
+          python tools/ci_verdict.py ci/status.tsv --annotate
 
   gui-tk9:
     # Tcl/Tk 9.1 on macOS, next to the 8.6 job: the build the theme switch segfaulted
@@ -367,6 +382,9 @@ jobs:
 
       - name: The window survives a theme switch on Tk's own loop
         run: |
+          # GitHub's shell is ``bash -e -o pipefail``: without this, a
+          # failing command ends the step before its exit code is recorded.
+          set +e
           . .venv-tk9/bin/activate
           set -o pipefail
           mkdir -p ci
@@ -385,6 +403,9 @@ jobs:
         # harness pump is printed with its reason (docs/macos-aqua-crash.md §13).
         continue-on-error: true
         run: |
+          # GitHub's shell is ``bash -e -o pipefail``: without this, a
+          # failing command ends the step before its exit code is recorded.
+          set +e
           . .venv-tk9/bin/activate
           export PYTHONPATH=src
           python -X faulthandler -u tools/diagnose_tk_crash.py \
@@ -400,6 +421,9 @@ jobs:
         # fails the job on the signal even though this step cannot.
         continue-on-error: true
         run: |
+          # GitHub's shell is ``bash -e -o pipefail``: without this, a
+          # failing command ends the step before its exit code is recorded.
+          set +e
           . .venv-tk9/bin/activate
           set -o pipefail
           mkdir -p ci
@@ -414,6 +438,9 @@ jobs:
       - name: The minimal reproduction, default and with the refusal
         continue-on-error: true
         run: |
+          # GitHub's shell is ``bash -e -o pipefail``: without this, a
+          # failing command ends the step before its exit code is recorded.
+          set +e
           . .venv-tk9/bin/activate
           mkdir -p ci
           export PYTHONPATH=src
@@ -437,6 +464,9 @@ jobs:
         # theme smoke gives.  The assertion run is what decides; on failure the
         # diagnostic run repeats every step and prints what it saw.
         run: |
+          # GitHub's shell is ``bash -e -o pipefail``: without this, a
+          # failing command ends the step before its exit code is recorded.
+          set +e
           . .venv-tk9/bin/activate
           set -o pipefail
           mkdir -p ci
@@ -453,18 +483,26 @@ jobs:
           exit "$code"
 
       - name: Native backtrace of the crash (lldb)
-        # Diagnostic.  ``stop-on-exec`` is off on purpose: without it lldb stops on
-        # the exec of the interpreter itself ("stop reason = exec", which is what
-        # every earlier run reported) and never reaches the crash.
+        # Diagnostic, and it only says something if it is pointed at a program that
+        # actually dies.  Two corrections from the last run: the target was the theme
+        # smoke, which passes (so there was no crash to unwind), and
+        # ``stop-on-exec false`` ran the child to completion, which is exactly why
+        # ``bt all`` answered "Command requires a process which is currently
+        # stopped".  Now: stop on the SIGSEGV, launch the variant the CI report names,
+        # and read the frames.
         if: always()
         continue-on-error: true
         run: |
+          # GitHub's shell is ``bash -e -o pipefail``: without this, a
+          # failing command ends the step before its exit code is recorded.
+          set +e
           . .venv-tk9/bin/activate
           mkdir -p ci
           lldb --batch \
-            -o "settings set target.process.stop-on-exec false" \
-            -o "run" -o "bt all" -o "quit" -- \
-            python -X faulthandler -u tools/smoke_tk91_theme.py > lldb.log 2>&1 || true
+            -o "process handle SIGSEGV --stop true --pass true --notify true" \
+            -o "run" -o "continue" -o "bt all" -o "quit" -- \
+            python -X faulthandler -u tools/diagnose_tk_crash.py \
+              --child harness_churn > lldb.log 2>&1 || true
           python - <<'PY'
           import pathlib
 
@@ -489,6 +527,9 @@ jobs:
         if: always()
         continue-on-error: true
         run: |
+          # GitHub's shell is ``bash -e -o pipefail``: without this, a
+          # failing command ends the step before its exit code is recorded.
+          set +e
           . .venv-tk9/bin/activate
           mkdir -p ci
           export PYTHONPATH=src
@@ -542,7 +583,10 @@ jobs:
       - name: "Verdict: a crash is never a pass"
         if: always()
         run: |
-          python tools/ci_verdict.py ci/status.tsv
+          # GitHub's shell is ``bash -e -o pipefail``: without this, a
+          # failing command ends the step before its exit code is recorded.
+          set +e
+          python tools/ci_verdict.py ci/status.tsv --annotate
 
   layout-profile:
     # The measurement job for the resize work: the same profiling tool, the same
@@ -575,6 +619,9 @@ jobs:
         id: profile
         timeout-minutes: 8
         run: |
+          # GitHub's shell is ``bash -e -o pipefail``: without this, a
+          # failing command ends the step before its exit code is recorded.
+          set +e
           mkdir -p ci
           mkdir -p /tmp/before
           git archive 445a5cb | tar -x -C /tmp/before
@@ -602,6 +649,12 @@ jobs:
               # label, tree, kind for the verdict
               ("before", "/tmp/before/src", "probe"),
               ("after", "src", "gate"),
+              # Measured on this runner: ``-fullscreen True`` never returns — the
+              # ``after`` callback behind it never runs, the tool's own watchdog
+              # cannot fire (it needs the loop) and the run ends at the cap with no
+              # SUMMARY.  So the resize numbers are measured without it, and the
+              # phase is probed on its own: a stall is the finding, not a defect.
+              ("fullscreen", "src", "probe"),
           )
           status: list[str] = []
           for label, tree, kind in runs:
@@ -617,9 +670,15 @@ jobs:
                   "--watchdog",
                   "30",
               ]
+              if label == "fullscreen":
+                  # Only this run asks for the native mode, and with a short series.
+                  command += ["--steps", "2"]
+              else:
+                  command += ["--skip-fullscreen"]
+              cap = 120 if label == "fullscreen" else 100
               try:
                   done = subprocess.run(
-                      command, env=env, timeout=150, capture_output=True, text=True, check=False
+                      command, env=env, timeout=cap, capture_output=True, text=True, check=False
                   )
                   output = done.stdout + done.stderr
                   code = done.returncode
@@ -627,7 +686,7 @@ jobs:
               except subprocess.TimeoutExpired as exc:
                   raw = exc.stdout or b""
                   output = raw.decode(errors="replace") if isinstance(raw, bytes) else raw
-                  output += f"\n--- {label} HARD TIMEOUT after 150 s, it never finished\n"
+                  output += f"\n--- {label} HARD TIMEOUT after {cap} s, it never finished\n"
                   code = 124
                   print(f"--- {label} hard timeout")
               pathlib.Path(f"profile-{label}.log").write_text(output)
@@ -671,7 +730,10 @@ jobs:
       - name: "Verdict: a crash is never a pass"
         if: always()
         run: |
-          python tools/ci_verdict.py ci/status.tsv
+          # GitHub's shell is ``bash -e -o pipefail``: without this, a
+          # failing command ends the step before its exit code is recorded.
+          set +e
+          python tools/ci_verdict.py ci/status.tsv --annotate
 
   benchmark:
     name: slow benchmarks

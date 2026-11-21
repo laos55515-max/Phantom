@@ -161,6 +161,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--json", metavar="PATH", help="write the summary here")
     parser.add_argument("--limit", type=int, default=1, help="how many newest reports to read")
     parser.add_argument(
+        "--annotate",
+        action="store_true",
+        help="print each report as an annotation, so the stack reaches the PR",
+    )
+    parser.add_argument(
         "--since",
         type=float,
         metavar="SECONDS",
@@ -195,6 +200,12 @@ def main(argv: list[str] | None = None) -> int:
         summaries.append(summary)
         print(f"--- {report.name}")
         print(format_summary(summary))
+        if args.annotate:
+            # One line, because a workflow command's message ends at the newline.
+            print(
+                f"::error::crash report {report.name}: "
+                f"{format_summary(summary).replace(chr(10), ' ¦ ')}"[:30000]
+            )
 
     if args.json:
         pathlib.Path(args.json).write_text(json.dumps(summaries, indent=2, ensure_ascii=False))

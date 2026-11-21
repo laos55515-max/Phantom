@@ -57,6 +57,22 @@ VARIANTS: Final[dict[str, tuple[str, str]]] = {
     "app_dnd": ("product", "the real window with drag-and-drop loaded, update(), close"),
     "app_smoke": ("product", "the real window on Tk's own loop, closed by _on_close"),
     "harness_pump": ("harness", "the pytest fixture: CTk root + PhantomApp + 200 x update()"),
+    # The two below are the crashing test itself, not a guess about it:
+    # ``test_a_dnd_that_cannot_register_hides_its_hints_and_keeps_the_button`` builds
+    # its own plain ``ctk.CTk()`` root, hands the window a provider whose ``register``
+    # fails, and pumps once with ``update()`` — the frame the CI report names.
+    "harness_app_update": (
+        "harness",
+        "the crashing test: plain CTk root + PhantomApp(failing dnd) + one update()",
+    ),
+    "harness_app_update_nodnd": (
+        "harness",
+        "the same with PHANTOM_DND=0, to see whether drag-and-drop is involved",
+    ),
+    "harness_churn": (
+        "harness",
+        "the suite's history: three windows built and destroyed, then a fourth pumped",
+    ),
 }
 
 #: A product crash is a failure; a harness crash is reported, not gated.  The
@@ -99,6 +115,64 @@ def _drop_target_command_present(root: Any) -> bool:
         return bool(root.tk.call("info", "commands", "tkdnd::drop_target"))
     except Exception:  # noqa: BLE001 - a broken interpreter is an answer too
         return False
+
+
+def _app_update_child(*, rounds: int = 1) -> None:
+    """Build the window the way the crashing test does and pump it with ``update()``.
+
+    ``rounds`` > 1 reproduces the *history* the suite has by the time that test runs:
+    several windows created and destroyed in one process.  The frame CI reported is
+    ``root.update()`` inside ``PhantomApp``'s first pump, so the pump is the last
+    statement before the marker.
+    """
+    import tempfile
+
+    import customtkinter as ctk
+
+    from phantom.ui.app import PhantomApp
+    from phantom.ui.dnd import DndProvider
+    from phantom.ui.settings import SettingsStore
+
+    class UnregisterableDnd(DndProvider):
+        """Imports fine, registers nothing — what the Tk 9 test simulates."""
+
+        def __init__(self) -> None:
+            super().__init__()
+            self.reason = None
+            self._dnd_module = object()
+            self._registration_failed = False
+
+        def register(self, _target: object) -> bool:
+            self.reason = 'drop registration failed: invalid command name "tkdnd::drop_target"'
+            self._registration_failed = True
+            return False
+
+    ctk.set_default_color_theme("blue")
+    scratch = pathlib.Path(tempfile.mkdtemp())
+    for index in range(rounds - 1):
+        root = ctk.CTk()
+        root.deiconify()
+        settings = SettingsStore(path=scratch / f"settings-{index}.json")
+        app = PhantomApp(root, settings_store=settings, dnd=UnregisterableDnd())
+        for _ in range(20):
+            root.update()
+        with contextlib.suppress(Exception):
+            app.worker.shutdown(timeout=2)
+        with contextlib.suppress(Exception):
+            root.destroy()
+        print(f"child: round {index + 1} built, pumped and destroyed")
+
+    root = ctk.CTk()
+    root.deiconify()
+    settings = SettingsStore(path=scratch / "settings-last.json")
+    app = PhantomApp(root, settings_store=settings, dnd=UnregisterableDnd())
+    # One pump, exactly as the test does it: this is where the SIGSEGV frame is.
+    root.update()
+    print(f"child: pump done, dnd usable={app.dnd.usable}")
+    with contextlib.suppress(Exception):
+        app.worker.shutdown(timeout=2)
+    with contextlib.suppress(Exception):
+        root.destroy()
 
 
 def _child(name: str) -> int:
@@ -189,6 +263,10 @@ def _child(name: str) -> int:
         # update() anywhere, which is how the application really runs.
         root.after(800, app._on_close)
         root.mainloop()
+    elif name in {"harness_app_update", "harness_app_update_nodnd", "harness_churn"}:
+        if name == "harness_app_update_nodnd":
+            os.environ["PHANTOM_DND"] = "0"
+        _app_update_child(rounds=3 if name == "harness_churn" else 1)
     elif name == "harness_pump":
         import customtkinter as ctk
 
@@ -325,6 +403,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--timeout", type=float, default=180.0, help="per child, seconds")
     parser.add_argument("--gate", action="store_true", help="exit 1 when a product variant crashes")
     parser.add_argument("--json", metavar="PATH", help="write the table here")
+    parser.add_argument(
+        "--annotate",
+        action="store_true",
+        help="print each variant as an annotation instead of only in the log",
+    )
     args = parser.parse_args(argv)
 
     if args.child:
@@ -353,6 +436,14 @@ def main(argv: list[str] | None = None) -> int:
             f"finished={result['finished']} verdict={result['verdict']} "
             f"{result['seconds']}s — {note}"
         )
+        if args.annotate:
+            # The evidence has to reach the PR: a crash that only exists in a job
+            # log is a crash nobody reads.
+            level = "error" if result["verdict"].startswith("crash") else "notice"
+            print(
+                f"::{level}::variant {result['variant']} ({result['kind']}): "
+                f"{result['verdict']} {result['exit_text']} in {result['seconds']}s"
+            )
     crashes = [result for result in results if result["verdict"].startswith("crash")]
     reports = _print_crash_reports(stamp) if crashes else []
     gated = [

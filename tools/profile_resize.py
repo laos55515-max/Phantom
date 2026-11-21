@@ -131,7 +131,14 @@ def instrument(numbers: Numbers) -> None:
     tk.Grid.grid_forget = grid_forget  # type: ignore[method-assign]
 
 
-def run(label: str, steps: int, gap: int, watchdog: float = 45.0) -> int:
+def run(
+    label: str,
+    steps: int,
+    gap: int,
+    watchdog: float = 45.0,
+    *,
+    fullscreen_wanted: bool = True,
+) -> int:
     import customtkinter as ctk
 
     from phantom.ui.app import PhantomApp
@@ -223,7 +230,10 @@ def run(label: str, steps: int, gap: int, watchdog: float = 45.0) -> int:
             except tk.TclError as exc:  # pragma: no cover - platform dependent
                 say(f"event_generate failed: {exc}")
                 break
-        root.after(gap, lambda: (net_snapshot("burst"), fullscreen()))
+        if fullscreen_wanted:
+            root.after(gap, lambda: (net_snapshot("burst"), fullscreen()))
+        else:
+            root.after(gap, lambda: (net_snapshot("burst"), finish()))
 
     def net_snapshot(name: str) -> None:
         snapshot(name)
@@ -237,7 +247,16 @@ def run(label: str, steps: int, gap: int, watchdog: float = 45.0) -> int:
         )
 
     def fullscreen() -> None:
-        """The transition the owner feels most: in and out of the native mode."""
+        """The transition the owner feels most: in and out of the native mode.
+
+        Measured on the macOS runner: this call does not come back.  ``after``
+        callbacks queued behind it never run, the tool's own watchdog cannot fire
+        (it needs the loop), and the run ends at the outer cap with no SUMMARY —
+        the profile job was green for months because that timeout was swallowed.
+        ``--skip-fullscreen`` leaves the phase out so the resize numbers can be
+        measured and gated on their own; the phase gets its own step, with a cap and
+        the stall reported instead of hidden.
+        """
         try:
             root.attributes("-fullscreen", True)
         except tk.TclError as exc:
@@ -257,7 +276,7 @@ def run(label: str, steps: int, gap: int, watchdog: float = 45.0) -> int:
 
     def finish() -> None:
         finished[0] = True
-        net_snapshot("fullscreen")
+        net_snapshot("final")
         say("")
         say(f"--- {label}")
         say(f"flow rows                {rows}")
@@ -332,6 +351,11 @@ def run(label: str, steps: int, gap: int, watchdog: float = 45.0) -> int:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--label", default="run", help="name for this run in the summary")
+    parser.add_argument(
+        "--skip-fullscreen",
+        action="store_true",
+        help="leave out the native fullscreen round (it does not return on a runner)",
+    )
     parser.add_argument("--steps", type=int, default=len(WIDTHS), help="resize steps")
     parser.add_argument("--gap", type=int, default=90, help="milliseconds between steps")
     parser.add_argument(
@@ -341,7 +365,13 @@ def main(argv: list[str] | None = None) -> int:
         help="seconds after which the window is destroyed and the run gives up",
     )
     args = parser.parse_args(argv)
-    return run(args.label, args.steps, args.gap, args.watchdog)
+    return run(
+        args.label,
+        args.steps,
+        args.gap,
+        args.watchdog,
+        fullscreen_wanted=not args.skip_fullscreen,
+    )
 
 
 if __name__ == "__main__":
