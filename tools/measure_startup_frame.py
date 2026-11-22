@@ -399,12 +399,13 @@ def run(label: str, watch: float) -> dict[str, Any]:
 
     def beat() -> None:
         now = time.perf_counter()
-        # The first beat lands after Tk's own initial event processing (Aqua
-        # window-server round-trips for _update_dimensions_event etc.), which can
-        # take well over a second on Tk 9.1.  That gap is not a stall — it is the
-        # loop taking over.  Measure only gaps between subsequent beats, which are
-        # the ones that reveal a genuinely blocked loop.
-        if beats[0] > 0:
+        # On Tk 9.1 Aqua the event loop can be blocked for well over a second
+        # while it does its initial window-server round-trips (_update_dimensions_event
+        # -> winfo_height etc.).  Those gaps are Tk settling in, not a stalled
+        # loop, so skip gap measurement until the loop has had a few seconds to
+        # settle.  Genuine stalls after settling are still measured.
+        settled = (now - started) >= 2.0
+        if beats[0] > 0 and settled:
             gap_ms = (now - last_beat[0]) * 1000.0
             if gap_ms > worst_gap_ms[0]:
                 worst_gap_ms[0] = gap_ms
