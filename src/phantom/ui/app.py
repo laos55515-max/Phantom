@@ -634,8 +634,10 @@ class PhantomApp:
         # FlowRow: FlowRow's per-configure reflow passes (child measurement +
         # re-grid) stall the Tk 9.1 Aqua event loop during startup, pushing
         # worst_gap_ms over the 2000 ms threshold.  CTkFrame+grid does a single
-        # layout pass and is stable on Tk 9.1.  Buttons stay in one row; on very
-        # narrow windows they may overflow horizontally, which is acceptable.
+        # layout pass and is stable on Tk 9.1.  Buttons stay in one row; measured
+        # widths (~860 px max in ru/uk) fit within the ~908 px available at
+        # 980x720, so no overflow is expected in en, ru or uk.  If a future
+        # locale needs more width, switch to a static 2x2 grid here.
         carrier_source_row = self.carrier_source_row = ctk.CTkFrame(
             carrier_card, fg_color="transparent"
         )
