@@ -774,6 +774,82 @@ def test_example_clear_discards_saved_state(app, rgb_carrier: Path) -> None:
     assert app.embed_vm.password == ""
 
 
+def test_example_full_cycle_save_and_extract(app, tmp_path: Path, password: str) -> None:
+    """Demo: empty window → example → embed → save → extract → restore form.
+
+    Covers the whole offline path: no user-supplied image or attachment is
+    needed; the built-in carrier and test attachment do everything.
+    """
+    from phantom.ui.app import EXAMPLE_SECRET
+
+    # Enter the example from an empty form.
+    app._on_try_example()
+    _pump(app)
+    assert app.worker.busy is False
+    assert app.embed_vm.password == app.embed_vm.EXAMPLE_PASSWORD
+    assert app.embed_vm.secret_path == str(EXAMPLE_SECRET)
+    assert app.embed_vm.carrier_source == app.embed_vm.SOURCE_EXAMPLE
+
+    # The example pre-fills the visible password field and suggests an output
+    # path in a user-reachable folder.
+    assert app.embed_pwd.get() == app.embed_vm.EXAMPLE_PASSWORD
+    assert app.output_entry.get() != ""
+
+    # Embed the example payload.
+    app._start_embed()
+    _pump(app)
+    assert app.worker.busy is False
+    output = Path(app.embed_vm.output_path)
+    assert output.exists(), "embed must write the stego file"
+
+    # Open the result in the Extract tab and extract it.
+    app._open_in_extract()
+    _pump(app)
+    assert app.current_tab == "extract"
+    app.extract_pwd.insert(0, app.embed_vm.EXAMPLE_PASSWORD)
+    app._start_extract()
+    _pump(app)
+    assert app.worker.busy is False
+    result = app.extract_vm.result
+    assert result is not None and result.integrity_ok, "extraction must verify"
+    assert result.payload.data == EXAMPLE_SECRET.read_bytes()
+
+    # Leaving the example (closing the result panel counts as done with it)
+    # restores the original empty form.
+    app._clear_embed()
+    assert app._example_saved_state is None
+    assert app.embed_vm.carrier_path == ""
+    assert app.embed_vm.password == ""
+    assert app.embed_vm.secret_path == ""
+
+
+def test_temp_png_deleted_by_saved_path(app, jpg_carrier: Path, password: str) -> None:
+    """The temporary PNG of a JPEG carrier is removed by its saved path.
+
+    Covers: drop → conversion → embed → save → temp gone.
+    """
+    app._drop_carrier([str(jpg_carrier)])
+    _pump(app)
+    assert app.worker.busy is False
+    temp_path = app._temp_carrier
+    assert temp_path is not None and Path(temp_path).exists()
+
+    # Embed and save (the temp carrier is the one being embedded from).
+    app.embed_pwd.insert(0, password)
+    app._set_textbox(app.embed_text, "temp cleanup payload")
+    app._refresh_all()
+    app._start_embed()
+    _pump(app)
+    assert app.worker.busy is False
+    output = Path(app.embed_vm.output_path)
+    assert output.exists()
+
+    # The temp PNG is gone once the carrier is replaced / cleared.
+    app._clear_embed()
+    assert app._temp_carrier is None
+    assert not Path(temp_path).exists(), "temp PNG must be deleted after clear"
+
+
 def _extracted(version: int):
     from phantom.core.payload import ExtractedPayload, PayloadKind
 

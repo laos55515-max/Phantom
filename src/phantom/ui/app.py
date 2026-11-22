@@ -2893,7 +2893,12 @@ class PhantomApp:
 
     def _carrier_rejection_message(self, path: str) -> str | None:
         ext = os.path.splitext(path)[1].lower()
-        allowed = C.IMAGE_EXTENSIONS + C.AUDIO_WAV_EXTENSIONS + C.AUDIO_FLAC_EXTENSIONS
+        allowed = (
+            C.IMAGE_EXTENSIONS
+            + C.JPEG_EXTENSIONS
+            + C.AUDIO_WAV_EXTENSIONS
+            + C.AUDIO_FLAC_EXTENSIONS
+        )
         if ext in allowed:
             return None
         shown = ext.lstrip(".").upper() or "FILE"
@@ -2982,7 +2987,29 @@ class PhantomApp:
             with contextlib.suppress(OSError):
                 os.unlink(temp)
 
+    def _is_builtin_resource(self, path: str) -> bool:
+        """True if ``path`` is one of the built-in resources shipped with the app.
+
+        Built-in carriers and the example attachment are read-only: they must
+        never be overwritten or deleted, and they are not offered as user
+        carriers.
+        """
+        try:
+            resolved = Path(path).resolve()
+            resources = RESOURCES_DIR.resolve()
+            return resources in resolved.parents or resolved == resources
+        except (OSError, ValueError):
+            return False
+
     def _set_carrier(self, path: str) -> None:
+        # Built-in resources are read-only examples: never treat them as a
+        # user-chosen carrier.
+        if self._is_builtin_resource(path):
+            self._show_embed_carrier_error(
+                self.i18n.t("err_builtin_resource", path=path)
+            )
+            return
+
         # Leaving the built-in example: restore the user's attachment, image,
         # password and save path before anything else.
         if self.embed_vm.carrier_source == self.embed_vm.SOURCE_EXAMPLE:
@@ -2994,14 +3021,14 @@ class PhantomApp:
             return
         self._dismiss_embed_carrier_error()
         self.embed_result_panel.pack_forget()
-        # A JPEG photo becomes a temporary PNG copy; the original stays intact
-        # and the copy is removed when the carrier changes.
-        self._drop_temp_carrier()
+        # The previous carrier (temp PNG or original) stays in place until the
+        # new one is successfully resolved — a failed conversion must not leave
+        # the user without a carrier.
         previous_output = self.embed_vm.output_path
         extension = os.path.splitext(path)[1].lower()
         if extension in C.JPEG_EXTENSIONS:
             # Convert outside the UI thread: a large photo must not freeze the
-            # window.  The DONE handler applies the copy and starts the probe.
+            # window.  The DONE handler drops the old temp and applies the copy.
             self._pending_carrier = {"path": path, "previous_output": previous_output}
             self._start_job(
                 "prepare_carrier",
@@ -3009,7 +3036,7 @@ class PhantomApp:
                 "status_embedding",
             )
             return
-        # PNG or any non-JPEG carrier: apply directly.
+        # PNG or any non-JPEG carrier: apply directly (drops any old temp first).
         self._apply_carrier(path, None, None, previous_output)
 
     def _make_prepare_carrier_job(
@@ -3032,8 +3059,12 @@ class PhantomApp:
         """Apply a resolved carrier path to the view model and start its probe.
 
         Called both for PNGs (no conversion) and for JPEGs once the worker has
-        finished converting them.
+        finished converting them.  Any previous temporary PNG is removed first,
+        so a failed conversion earlier never leaves the user without a carrier.
         """
+        # Drop the previous temporary PNG (if any) before taking ownership of
+        # the new one — the old one is no longer needed.
+        self._drop_temp_carrier()
         # For a JPEG conversion, carrier_path is the temp PNG and temp == carrier_path.
         # For a direct PNG, temp is None and nothing is owned by this window.
         self._temp_carrier = carrier_path if temp is not None else None
@@ -3060,7 +3091,8 @@ class PhantomApp:
         """Built-in example: carrier plus a test attachment, offline.
 
         The user's form (attachment, image, password, output path) is saved
-        first and restored when they leave example mode.
+        first and restored when they leave example mode.  Repeated presses keep
+        the original form — the snapshot is taken only once, the first time.
         """
         if self.worker.busy:
             self._show_warning("warn_operation_t", "warn_operation_m")
@@ -3070,14 +3102,17 @@ class PhantomApp:
                 PhantomError("built-in example is missing", detail=str(RESOURCES_DIR))
             )
             return
-        # Save the user's form before the example overwrites it.
-        self._example_saved_state = self.embed_vm.embed_form_snapshot()
+        # Save the user's form only the first time: a second press must not
+        # overwrite the snapshot taken when the example was first entered.
+        if self._example_saved_state is None:
+            self._example_saved_state = self.embed_vm.embed_form_snapshot()
         self.embed_result_panel.pack_forget()
         self._drop_temp_carrier()
         self.embed_vm.set_carrier_example(str(EXAMPLE_CARRIER), str(EXAMPLE_SECRET))
         # The example comes with a test password so the full cycle works
-        # without the user typing anything.
+        # without the user typing anything.  Fill the visible field too.
         self.embed_vm.set_password(self.embed_vm.EXAMPLE_PASSWORD)
+        self._set_entry_text(self.embed_pwd, self.embed_vm.EXAMPLE_PASSWORD)
         # Offer saving in a folder the user can actually reach.
         self._suggest_example_output()
         self._invalidate_estimate()

@@ -416,7 +416,6 @@ def run(label: str, watch: float) -> dict[str, Any]:
     root.bind_all("<Expose>", on_expose_any, add="+")
     root.after_idle(on_idle)
     root.after(0, on_loop)
-    last_beat[0] = time.perf_counter()
     root.after(10, beat)
 
     # ``main`` paints once before the loop; on this platform the guard refuses it and
@@ -424,6 +423,11 @@ def run(label: str, watch: float) -> dict[str, Any]:
     refreshed = time.perf_counter()
     app.refresh_window()
     result["refresh_ms"] = round((time.perf_counter() - refreshed) * 1000.0, 1)
+
+    # The heartbeat watches the *event loop*, not the initialization that happens
+    # before it.  Arm it only after ``refresh_window`` has returned so a slow
+    # macOS ``lift()``/``focus_force()`` isn't reported as a stalled loop.
+    last_beat[0] = time.perf_counter()
 
     capture.screen = (root.winfo_screenwidth(), root.winfo_screenheight())
     sampler = threading.Thread(target=capture.run, args=(started + watch,), daemon=True)

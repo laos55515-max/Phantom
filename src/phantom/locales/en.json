@@ -132,6 +132,7 @@
   "err_ui_handler": "Internal interface error at step “{step}”. The operation stopped and no file on disk was changed. Repeat the action; if it happens again, reduce the amount of data and attach the log.",
   "err_ui_handler_t": "Interface error",
   "err_unsupported_carrier_inline": "Unsupported file ({ext}). Only lossless PNG, WAV and FLAC are supported.",
+  "err_builtin_resource": "“{path}” is a built-in example file and is read-only. Choose your own file instead.",
   "extract_error_title": "Could not extract data",
   "extract_summary_idle": "Choose a container and enter password",
   "extract_summary_ready": "Ready to extract · {carrier}",
