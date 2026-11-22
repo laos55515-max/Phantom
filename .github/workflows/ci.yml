@@ -457,6 +457,9 @@ jobs:
         # the runner refuses screen recording, the pixel question is printed as a
         # warning and the rest still decides — a measurement that cannot be taken is
         # never reported as one that passed.
+        # continue-on-error: true so the editor smoke and gui suite still run even
+        # when the startup measurement fails — the verdict step collects all results.
+        continue-on-error: true
         run: |
           # GitHub's shell is ``bash -e -o pipefail``: without this, a
           # failing command ends the step before its exit code is recorded.
@@ -473,63 +476,68 @@ jobs:
           import subprocess
           import sys
 
-          runs = (
-              ("before", "/tmp/frame-base/src", 3),
-              ("after", "src", 3),
-          )
+          # Alternate main → PR → main → PR → main → PR on the same runner so
+          # runner noise cancels out when comparing worst_gap_ms and first_paint_ms.
+          runs = [
+              ("main", "/tmp/frame-base/src"),
+              ("pr", "src"),
+              ("main", "/tmp/frame-base/src"),
+              ("pr", "src"),
+              ("main", "/tmp/frame-base/src"),
+              ("pr", "src"),
+          ]
           results: dict[str, list[dict]] = {}
-          for label, tree, count in runs:
-              results[label] = []
-              for number in range(1, count + 1):
-                  name = f"{label}-{number}"
-                  path = pathlib.Path(f"frame-{name}.json")
-                  log = pathlib.Path(f"frame-{name}.log")
-                  command = [
-                      sys.executable,
-                      "-u",
-                      "tools/measure_startup_frame.py",
-                      "--label",
-                      name,
-                      "--watch",
-                      "8.0",
-                      "--json",
-                      str(path),
-                  ]
-                  with log.open("w", encoding="utf-8") as handle:
-                      done = subprocess.run(
-                          command,
-                          check=False,
-                          stdout=handle,
-                          stderr=subprocess.STDOUT,
-                          env={**__import__("os").environ, "PYTHONPATH": tree},
-                          timeout=180,
-                      )
-                  lines = [
-                      line.strip()
-                      for line in log.read_text(encoding="utf-8", errors="replace").splitlines()
-                      if line.startswith("FRAME:")
-                  ]
-                  samples = [
-                      line[len("FRAME: sample "):]
-                      for line in lines
-                      if line.startswith("FRAME: sample ")
-                  ]
-                  stalls = [
-                      line[len("FRAME: "):]
-                      for line in lines
-                      if line.startswith("FRAME: stall ")
-                  ]
-                  other = [
-                      line[len("FRAME: "):]
-                      for line in lines
-                      if not line.startswith(("FRAME: sample ", "FRAME: stall "))
-                  ]
-                  payload = json.loads(path.read_text()) if path.exists() else {}
-                  payload["exit"] = done.returncode
-                  payload["_other"] = other
-                  payload["_samples"] = samples
-                  payload["_stalls"] = stalls
-                  results[label].append(payload)
+          for number, (label, tree) in enumerate(runs, start=1):
+              results.setdefault(label, [])
+              name = f"{label}-{number}"
+              path = pathlib.Path(f"frame-{name}.json")
+              log = pathlib.Path(f"frame-{name}.log")
+              command = [
+                  sys.executable,
+                  "-u",
+                  "tools/measure_startup_frame.py",
+                  "--label",
+                  name,
+                  "--watch",
+                  "8.0",
+                  "--json",
+                  str(path),
+              ]
+              with log.open("w", encoding="utf-8") as handle:
+                  done = subprocess.run(
+                      command,
+                      check=False,
+                      stdout=handle,
+                      stderr=subprocess.STDOUT,
+                      env={**__import__("os").environ, "PYTHONPATH": tree},
+                      timeout=180,
+                  )
+              lines = [
+                  line.strip()
+                  for line in log.read_text(encoding="utf-8", errors="replace").splitlines()
+                  if line.startswith("FRAME:")
+              ]
+              samples = [
+                  line[len("FRAME: sample "):]
+                  for line in lines
+                  if line.startswith("FRAME: sample ")
+              ]
+              stalls = [
+                  line[len("FRAME: "):]
+                  for line in lines
+                  if line.startswith("FRAME: stall ")
+              ]
+              other = [
+                  line[len("FRAME: "):]
+                  for line in lines
+                  if not line.startswith(("FRAME: sample ", "FRAME: stall "))
+              ]
+              payload = json.loads(path.read_text()) if path.exists() else {}
+              payload["exit"] = done.returncode
+              payload["_other"] = other
+              payload["_samples"] = samples
+              payload["_stalls"] = stalls
+              results[label].append(payload)
 
           def summarise(label: str) -> None:
               rows = results[label]
@@ -558,7 +566,7 @@ jobs:
                   other = row.pop("_other", [])
                   samples = row.pop("_samples", [])
                   row_stalls = row.pop("_stalls", [])
-                  if label == "after" and (row.get("worst_gap_ms") or 0) > 1500 and row_stalls:
+                  if label == "pr" and (row.get("worst_gap_ms") or 0) > 1500 and row_stalls:
                       print(f"::warning::{name} stalls: " + " || ".join(row_stalls[:3])[:900])
                   if other:
                       print(f"::notice::{name}: " + " | ".join(other)[:900])
@@ -571,7 +579,7 @@ jobs:
           # The criterion, on this branch's runs only.
           problems: list[str] = []
           measured = 0
-          for row in results["after"]:
+          for row in results["pr"]:
               name = row.get("label", "?")
               if row.get("exit") != 0:
                   problems.append(f"{name}: the run itself failed (exit {row.get('exit')})")
@@ -622,7 +630,7 @@ jobs:
           for problem in problems:
               print(f"::error::startup frame: {problem}")
           print(
-              f"::notice::startup frame: {len(results['after'])} runs, {measured} with pixels, "
+              f"::notice::startup frame: {len(results['pr'])} runs, {measured} with pixels, "
               f"{len(problems)} problems"
           )
           pathlib.Path("startup-frame.json").write_text(json.dumps(results, indent=1), encoding="utf-8")
