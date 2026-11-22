@@ -399,10 +399,16 @@ def run(label: str, watch: float) -> dict[str, Any]:
 
     def beat() -> None:
         now = time.perf_counter()
-        gap_ms = (now - last_beat[0]) * 1000.0
-        if gap_ms > worst_gap_ms[0]:
-            worst_gap_ms[0] = gap_ms
-            worst_gap_at_ms[0] = (now - started) * 1000.0
+        # The first beat lands after Tk's own initial event processing (Aqua
+        # window-server round-trips for _update_dimensions_event etc.), which can
+        # take well over a second on Tk 9.1.  That gap is not a stall — it is the
+        # loop taking over.  Measure only gaps between subsequent beats, which are
+        # the ones that reveal a genuinely blocked loop.
+        if beats[0] > 0:
+            gap_ms = (now - last_beat[0]) * 1000.0
+            if gap_ms > worst_gap_ms[0]:
+                worst_gap_ms[0] = gap_ms
+                worst_gap_at_ms[0] = (now - started) * 1000.0
         last_beat[0] = now
         beats[0] += 1
         if not done_flag[0]:
