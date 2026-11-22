@@ -320,12 +320,62 @@ def fit_button_on_change(button: Any, *, font: Any = None, minimum: int = 0) -> 
 def card(master: Any, **kwargs: Any) -> ctk.CTkFrame:
     options: dict[str, Any] = {
         "fg_color": T.CLR_CARD,
-        "corner_radius": 18,
-        "border_width": 1,
+        "corner_radius": 14,
+        "border_width": 0,
+    }
+    options.update(kwargs)
+    return ctk.CTkFrame(master, **options)
+
+
+def inset_panel(master: Any, **kwargs: Any) -> ctk.CTkFrame:
+    options: dict[str, Any] = {
+        "fg_color": T.CLR_FIELD,
+        "corner_radius": 11,
+        "border_width": 0,
         "border_color": T.CLR_BORDER,
     }
     options.update(kwargs)
     return ctk.CTkFrame(master, **options)
+
+
+def step_badge(master: Any, root: Any, text: str) -> ctk.CTkLabel:
+    return ctk.CTkLabel(
+        master,
+        text=text,
+        width=24,
+        height=24,
+        corner_radius=12,
+        fg_color=T.CLR_CARD_ALT,
+        text_color=T.CLR_TEXT_DIM,
+        font=sans_font(root, T.FONT_SIZE_SMALL, weight="bold"),
+        anchor="center",
+    )
+
+
+def step_header(
+    master: Any, root: Any, number: str
+) -> tuple[ctk.CTkFrame, ctk.CTkLabel, ctk.CTkLabel, ctk.CTkLabel]:
+    head = ctk.CTkFrame(master, fg_color="transparent")
+    head.grid_columnconfigure(1, weight=1)
+    badge = step_badge(head, root, number)
+    badge.grid(row=0, column=0, padx=(0, 10), sticky="w")
+    title = ctk.CTkLabel(
+        head,
+        text="",
+        font=sans_font(root, T.FONT_SIZE_CARD_TITLE, weight="bold"),
+        text_color=T.CLR_TEXT,
+        anchor="w",
+    )
+    title.grid(row=0, column=1, sticky="ew")
+    meta = ctk.CTkLabel(
+        head,
+        text="",
+        font=sans_font(root, T.FONT_SIZE_SMALL),
+        text_color=T.CLR_MUTED,
+        anchor="e",
+    )
+    meta.grid(row=0, column=2, padx=(10, 0), sticky="e")
+    return head, badge, title, meta
 
 
 def card_title(master: Any, root: Any, text: str = "") -> ctk.CTkLabel:
@@ -333,7 +383,7 @@ def card_title(master: Any, root: Any, text: str = "") -> ctk.CTkLabel:
         master,
         text=text,
         font=sans_font(root, T.FONT_SIZE_CARD_TITLE, weight="bold"),
-        text_color=T.CLR_MUTED,
+        text_color=T.CLR_TEXT,
         anchor="w",
         height=22,
     )
@@ -405,8 +455,8 @@ def primary_button(master: Any, root: Any, text: str, command: Any, **kwargs: An
     options: dict[str, Any] = {
         "text": text,
         "command": command,
-        "height": 46,
-        "corner_radius": 12,
+        "height": 44,
+        "corner_radius": 11,
         "font": font,
         "fg_color": T.CLR_ACCENT,
         "hover_color": T.CLR_ACCENT_HOVER,
@@ -423,18 +473,59 @@ def secondary_button(
     master: Any, root: Any, text: str, command: Any, **kwargs: Any
 ) -> ctk.CTkButton:
     minimum = int(kwargs.get("width", 0) or 0)
-    font = sans_font(root, T.FONT_SIZE_HINT)
+    font = sans_font(root, T.FONT_SIZE_LABEL)
     options: dict[str, Any] = {
         "text": text,
         "command": command,
-        "height": 38,
-        "corner_radius": 10,
+        "height": 34,
+        "corner_radius": 9,
         "font": font,
         "fg_color": T.CLR_CARD_ALT,
-        "hover_color": T.CLR_ACCENT_DIM,
+        "hover_color": T.CLR_BORDER,
         "text_color": T.CLR_TEXT,
-        "border_width": 1,
-        "border_color": T.CLR_BORDER,
+        "border_width": 0,
+    }
+    options.update(kwargs)
+    button = ctk.CTkButton(master, **options)
+    return fit_button_on_change(button, font=font, minimum=minimum)
+
+
+def quiet_button(
+    master: Any, root: Any, text: str, command: Any, **kwargs: Any
+) -> ctk.CTkButton:
+    minimum = int(kwargs.get("width", 0) or 0)
+    font = sans_font(root, T.FONT_SIZE_LABEL, weight="bold")
+    options: dict[str, Any] = {
+        "text": text,
+        "command": command,
+        "height": 32,
+        "corner_radius": 9,
+        "font": font,
+        "fg_color": T.CLR_CARD_ALT,
+        "hover_color": T.CLR_BORDER,
+        "text_color": T.CLR_TEXT,
+        "border_width": 0,
+    }
+    options.update(kwargs)
+    button = ctk.CTkButton(master, **options)
+    return fit_button_on_change(button, font=font, minimum=minimum)
+
+
+def link_button(
+    master: Any, root: Any, text: str, command: Any, **kwargs: Any
+) -> ctk.CTkButton:
+    minimum = int(kwargs.get("width", 0) or 0)
+    font = sans_font(root, T.FONT_SIZE_LABEL)
+    options: dict[str, Any] = {
+        "text": text,
+        "command": command,
+        "height": 28,
+        "corner_radius": 8,
+        "font": font,
+        "fg_color": "transparent",
+        "hover_color": T.CLR_CARD_ALT,
+        "text_color": T.CLR_TEXT_DIM,
+        "border_width": 0,
     }
     options.update(kwargs)
     button = ctk.CTkButton(master, **options)

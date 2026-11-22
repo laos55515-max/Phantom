@@ -49,11 +49,14 @@ from phantom.ui.widgets import (
     card,
     card_title,
     hint_label,
+    inset_panel,
     mono_font,
     primary_button,
+    quiet_button,
     sans_font,
     secondary_button,
     set_enabled,
+    step_header,
     value_label,
 )
 
@@ -141,51 +144,153 @@ class MetadataPanel:
         self.app.binder.bind(caption, key)
         return caption
 
+    def _step_head(
+        self, parent: Any, number: str, title_key: str, meta_key: str | None = None
+    ) -> None:
+        head, _badge, title, meta = step_header(parent, self.root, number)
+        head.pack(fill="x", padx=18, pady=(14, 8))
+        self.app.binder.bind(title, title_key)
+        if meta_key is not None:
+            self.app.binder.bind(meta, meta_key)
+
     def _build_file_card(self, parent: Any, *, row: int) -> ctk.CTkFrame:
         box = card(parent)
-        box.grid(row=row, column=0, sticky="ew", pady=(0, 10))
-        self._title(box, "meta_card_file")
-        # Choosing and resetting belong together: a flow row keeps both visible
-        # when the window is narrow, instead of pushing the reset button off the card.
-        self.file_row = FlowRow(box)
-        self.file_row.pack(fill="x", padx=18, pady=(0, 6))
+        box.grid(row=row, column=0, sticky="ew", pady=(0, 12))
+        self._step_head(box, "1", "meta_step_file", "step_extract_carrier_meta")
+
+        drop_box = inset_panel(box, border_width=1)
+        drop_box.pack(fill="x", padx=18, pady=(0, 8))
+        drop_box.grid_columnconfigure(0, weight=1)
+
+        drop_copy = ctk.CTkFrame(drop_box, fg_color="transparent")
+        drop_copy.grid(row=0, column=0, sticky="ew", padx=(14, 10), pady=12)
+        self.drop_title_label = ctk.CTkLabel(
+            drop_copy,
+            text="",
+            font=sans_font(self.root, T.FONT_SIZE_BODY, weight="bold"),
+            text_color=T.CLR_TEXT,
+            anchor="w",
+            justify="left",
+            wraplength=520,
+        )
+        self.drop_title_label._phantom_autowrap = 520
+        self.drop_title_label.pack(fill="x")
+        self.drop_hint = hint_label(drop_copy, self.root, "", wrap=520)
+        self.drop_hint.pack(fill="x", pady=(2, 0))
+
+        self.file_row = FlowRow(drop_box)
+        self.file_row.grid(row=0, column=1, sticky="e", padx=(0, 14), pady=12)
         self.file_button = self.file_row.add(
-            primary_button(self.file_row, self.root, "", self.choose_file, width=200)
+            quiet_button(self.file_row, self.root, "", self.choose_file)
         )
         self.reset_button = self.file_row.add(
             secondary_button(self.file_row, self.root, "", self.reset)
         )
-        self.name_label = value_label(box, self.root, "", mono=True)
-        self.name_label.pack(fill="x", padx=18, pady=(2, 0))
-        self.size_label = value_label(box, self.root, "", mono=True)
-        self.size_label.pack(fill="x", padx=18, pady=(2, 0))
-        self.format_label = value_label(box, self.root, "", mono=True)
-        self.format_label.pack(fill="x", padx=18, pady=(2, 0))
-        self.technical_label = hint_label(box, self.root, "", wrap=760)
-        self.technical_label.pack(fill="x", padx=18, pady=(2, 4))
-        self.drop_hint = hint_label(box, self.root, "", wrap=760)
-        self.drop_hint.pack(fill="x", padx=18, pady=(0, 10))
-        self.app._seat_drop_zone("metadata", box)
+
+        self.file_error_box = ctk.CTkFrame(
+            box, fg_color=T.CLR_RED_BG, corner_radius=10, border_width=0
+        )
+        self.file_error_box.grid_columnconfigure(0, weight=1)
+        self.file_error_label = ctk.CTkLabel(
+            self.file_error_box,
+            text="",
+            font=sans_font(self.root, T.FONT_SIZE_LABEL),
+            text_color=T.CLR_RED,
+            anchor="w",
+            justify="left",
+            wraplength=640,
+        )
+        self.file_error_label._phantom_autowrap = 640
+        self.file_error_label.grid(row=0, column=0, sticky="ew", padx=(12, 8), pady=8)
+        self.file_error_dismiss = secondary_button(
+            self.file_error_box, self.root, "", self.clear_file_error
+        )
+        self.file_error_dismiss.grid(row=0, column=1, padx=(0, 10), pady=8)
+
+        info_box = inset_panel(box)
+        info_box.pack(fill="x", padx=18, pady=(0, 14))
+        self.name_label = value_label(info_box, self.root, "", mono=True)
+        self.name_label.pack(fill="x", padx=12, pady=(8, 0))
+        self.size_label = value_label(info_box, self.root, "", mono=True)
+        self.size_label.pack(fill="x", padx=12, pady=(2, 0))
+        self.format_label = value_label(info_box, self.root, "", mono=True)
+        self.format_label.pack(fill="x", padx=12, pady=(2, 0))
+        self.technical_label = hint_label(info_box, self.root, "", wrap=760)
+        self.technical_label.pack(fill="x", padx=12, pady=(2, 8))
+
+        self.app._seat_drop_zone("metadata", drop_box)
         return box
 
     def _build_results_card(self, parent: Any, *, row: int) -> ctk.CTkFrame:
         box = card(parent)
-        box.grid(row=row, column=0, sticky="ew", pady=(0, 10))
-        self._title(box, "meta_card_results")
+        box.grid(row=row, column=0, sticky="ew", pady=(0, 12))
+        self._step_head(box, "2", "meta_step_fields")
         # Which file these numbers describe. After a clean the card describes the
         # cleaned copy, while the card above still names the file that was opened:
         # without this line the two read as one file.
         self.target_label = hint_label(box, self.root, "", wrap=760)
         self.target_label.pack(fill="x", padx=18, pady=(0, 2))
         self.summary_label = value_label(box, self.root, "", mono=True)
-        self.summary_label.pack(fill="x", padx=18, pady=(0, 4))
+        self.summary_label.pack(fill="x", padx=18, pady=(0, 6))
+
+        pills_row = FlowRow(box)
+        pills_row.pack(fill="x", padx=18, pady=(0, 6))
+        self.pill_selected = ctk.CTkLabel(
+            pills_row,
+            text="",
+            corner_radius=8,
+            fg_color=T.CLR_ACCENT_BG,
+            text_color=T.CLR_ACCENT_SOFT,
+            font=sans_font(self.root, T.FONT_SIZE_SMALL, weight="bold"),
+            padx=10,
+            pady=4,
+        )
+        pills_row.add(self.pill_selected)
+        self.pill_removable = ctk.CTkLabel(
+            pills_row,
+            text="",
+            corner_radius=8,
+            fg_color=T.CLR_GREEN_BG,
+            text_color=T.CLR_GREEN,
+            font=sans_font(self.root, T.FONT_SIZE_SMALL, weight="bold"),
+            padx=10,
+            pady=4,
+        )
+        pills_row.add(self.pill_removable)
+        self.pill_protected = ctk.CTkLabel(
+            pills_row,
+            text="",
+            corner_radius=8,
+            fg_color=T.CLR_CARD_ALT,
+            text_color=T.CLR_TEXT_DIM,
+            font=sans_font(self.root, T.FONT_SIZE_SMALL, weight="bold"),
+            padx=10,
+            pady=4,
+        )
+        pills_row.add(self.pill_protected)
+
+        self.no_removable_banner = ctk.CTkFrame(
+            box, fg_color=T.CLR_ACCENT_BG, corner_radius=10, border_width=0
+        )
+        self.no_removable_label = ctk.CTkLabel(
+            self.no_removable_banner,
+            text="",
+            font=sans_font(self.root, T.FONT_SIZE_LABEL),
+            text_color=T.CLR_TEXT,
+            anchor="w",
+            justify="left",
+            wraplength=720,
+        )
+        self.no_removable_label._phantom_autowrap = 720
+        self.no_removable_label.pack(fill="x", padx=12, pady=10)
+
         self.provenance_label = hint_label(box, self.root, "", wrap=760)
         self.provenance_label.pack(fill="x", padx=18, pady=(0, 4))
         self.warning_label = hint_label(box, self.root, "", wrap=760)
         self.warning_label.pack(fill="x", padx=18, pady=(0, 4))
 
         filter_row = FlowRow(box)
-        filter_row.pack(fill="x", padx=18, pady=(2, 6))
+        filter_row.pack(fill="x", padx=18, pady=(2, 8))
         self.filter_menu = ctk.CTkOptionMenu(
             filter_row,
             values=[],
@@ -218,11 +323,11 @@ class MetadataPanel:
         # and the tab's own scroll area carries them.  Nesting two
         # CTkScrollableFrames makes their canvases chase each other's <Configure>
         # events, which is both a layout storm and a scroll bug waiting to happen.
-        self.list_area = ctk.CTkFrame(box, fg_color=T.CLR_CARD_ALT, corner_radius=10)
+        self.list_area = ctk.CTkFrame(box, fg_color="transparent", corner_radius=10)
         self.list_area.pack(fill="x", padx=18, pady=(0, 6))
         self.list_area.grid_columnconfigure(0, weight=1)
         self.truncated_label = hint_label(box, self.root, "", wrap=760)
-        self.truncated_label.pack(fill="x", padx=18, pady=(0, 10))
+        self.truncated_label.pack(fill="x", padx=18, pady=(0, 12))
         return box
 
     def _build_cleaning_card(self, parent: Any, *, row: int) -> ctk.CTkFrame:
@@ -265,8 +370,8 @@ class MetadataPanel:
 
     def _build_save_card(self, parent: Any, *, row: int) -> ctk.CTkFrame:
         box = card(parent)
-        box.grid(row=row, column=0, sticky="ew", pady=(0, 10))
-        self._title(box, "meta_card_save")
+        box.grid(row=row, column=0, sticky="ew", pady=(0, 12))
+        self._step_head(box, "3", "meta_step_save")
         entry_row = FlowRow(box)
         entry_row.pack(fill="x", padx=18, pady=(0, 6))
         self.output_entry = ctk.CTkEntry(
@@ -339,9 +444,12 @@ class MetadataPanel:
 
     def _bind_texts(self) -> None:
         binder = self.app.binder
+        binder.bind(self.drop_title_label, "drop_meta_title")
+        binder.bind(self.file_error_dismiss, "btn_dismiss")
+        binder.bind(self.no_removable_label, "meta_no_removable_banner")
         binder.bind(self.file_button, "meta_choose_file")
         binder.bind(self.reset_button, "meta_reset")
-        binder.bind(self.drop_hint, "meta_drop_hint")
+        binder.bind(self.drop_hint, "drop_meta_sub")
         binder.bind(self.removable_check, "meta_only_removable")
         binder.bind(self.select_all_button, "meta_select_all")
         binder.bind(self.select_personal_button, "meta_select_personal")
@@ -476,6 +584,8 @@ class MetadataPanel:
             self.target_label.configure(text="")
             self.provenance_label.configure(text="")
             self.warning_label.configure(text="")
+            self._update_pills()
+            self.no_removable_banner.pack_forget()
             self._clear_rows()
             self._rows_signature = None
             self.truncated_label.configure(text="")
@@ -504,6 +614,13 @@ class MetadataPanel:
                 ]
             )
         self.summary_label.configure(text=summary)
+        self._update_pills()
+        if counts.removable == 0:
+            self.no_removable_banner.pack(
+                fill="x", padx=18, pady=(0, 8), before=self.provenance_label
+            )
+        else:
+            self.no_removable_banner.pack_forget()
         self.target_label.configure(text=self._target_text(report))
         self.provenance_label.configure(text=self._provenance_text(report))
         self.warning_label.configure(
@@ -519,6 +636,26 @@ class MetadataPanel:
         if signature != self._rows_signature:
             self._render_rows()
             self._rows_signature = signature
+
+    def _update_pills(self) -> None:
+        report = self.vm.report
+        if report is None:
+            selected = 0
+            removable = 0
+            protected = 0
+        else:
+            selected = len(self.vm.selection)
+            removable = report.counts.removable
+            protected = max(0, report.counts.total - removable)
+        self.pill_selected.configure(
+            text=self.t("meta_pill_selected", count=selected)
+        )
+        self.pill_removable.configure(
+            text=self.t("meta_pill_removable", count=removable)
+        )
+        self.pill_protected.configure(
+            text=self.t("meta_pill_protected", count=protected)
+        )
 
     def _provenance_text(self, report: MetadataReport) -> str:
         """A manifest is reported as a manifest — never as confirmed authenticity."""
@@ -553,13 +690,14 @@ class MetadataPanel:
         )
 
     def _build_row(self, item: MetadataField, index: int) -> ctk.CTkFrame:
-        """Two lines per field: the caption on the first, the value under it.
-
-        One line put a 300-pixel checkbox caption next to a value clipped into the
-        remains of the row; this way the value gets the whole width and wraps.
-        """
-        row = ctk.CTkFrame(self.list_area, fg_color="transparent")
-        row.grid(row=index, column=0, sticky="ew", padx=8, pady=(3, 1))
+        """Two lines per field inside an inset tile: caption + value."""
+        row = ctk.CTkFrame(
+            self.list_area,
+            fg_color=T.CLR_FIELD,
+            corner_radius=10,
+            border_width=0,
+        )
+        row.grid(row=index, column=0, sticky="ew", padx=0, pady=(0, 6))
         row.grid_columnconfigure(0, weight=1)
         check = ctk.CTkCheckBox(
             row,
@@ -576,12 +714,12 @@ class MetadataPanel:
         )
         if item.removable and self.vm.is_selected(item.key):
             check.select()
-        check.grid(row=0, column=0, sticky="w")
+        check.grid(row=0, column=0, sticky="w", padx=12, pady=(8, 0))
         fit_checkbox(check)
         value = hint_label(row, self.root, self._row_value(item), wrap=520)
         #: A protected row is dimmed rather than hidden: the reason it stays is
         #: the point of the tab, so it is spelled out instead of being a dead row.
-        value.grid(row=1, column=0, sticky="w", padx=(26, 0), pady=(0, 2))
+        value.grid(row=1, column=0, sticky="w", padx=(38, 12), pady=(2, 8))
         return row
 
     def _row_title(self, item: MetadataField) -> str:
@@ -745,11 +883,20 @@ class MetadataPanel:
 
     def load_file(self, path: str) -> None:
         """Point the tab at a file and start the scan job."""
+        self.clear_file_error()
         self.vm.set_path(path)
         self.app.settings.last_dir = os.path.dirname(path) or self.app.settings.last_dir
         self._sync_output_entry()
         self.refresh()
         self.start_scan()
+
+    def show_file_error(self, message: str) -> None:
+        self.file_error_label.configure(text=message)
+        self.file_error_box.pack(fill="x", padx=18, pady=(0, 8))
+
+    def clear_file_error(self) -> None:
+        self.file_error_box.pack_forget()
+        self.file_error_label.configure(text="")
 
     def start_scan(self) -> None:
         if not self.vm.path:
@@ -759,6 +906,7 @@ class MetadataPanel:
 
     def reset(self) -> None:
         """Forget the file, the report and the previous result (the disk is untouched)."""
+        self.clear_file_error()
         self.vm.clear()
         self._rows_signature = None
         self._sync_output_entry()
@@ -788,6 +936,7 @@ class MetadataPanel:
     def _on_field_toggle(self, key: str) -> None:
         """A click only changes the selection: the rows stay, the plan is redrawn."""
         self.vm.toggle(key)
+        self._update_pills()
         self._render_plan()
         self._render_save_state()
 
@@ -802,18 +951,21 @@ class MetadataPanel:
 
     def select_all_removable(self) -> None:
         self.vm.select_all_removable()
+        self._update_pills()
         self._render_rows()
         self._render_plan()
         self._render_save_state()
 
     def select_personal(self) -> None:
         self.vm.select_personal()
+        self._update_pills()
         self._render_rows()
         self._render_plan()
         self._render_save_state()
 
     def clear_selection(self) -> None:
         self.vm.clear_selection()
+        self._update_pills()
         self._render_rows()
         self._render_plan()
         self._render_save_state()

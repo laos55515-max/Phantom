@@ -55,7 +55,6 @@ from phantom.ui.responsive import (
     FlowRow,
     Responsive,
     fit_checkbox_on_change,
-    fit_switch_on_change,
 )
 from phantom.ui.result_window import ResultWindow
 from phantom.ui.scroll import DIAGNOSTICS_ENV, ScrollRouter
@@ -74,17 +73,22 @@ from phantom.ui.widgets import (
     card_title,
     display_font,
     hint_label,
+    inset_panel,
     install_quiet_display,
     install_text_shortcuts,
+    link_button,
     mono_font,
     paste_into,
     primary_button,
+    quiet_button,
     quiet_idle_flush,
     quiet_redraws,
     release_appearance_callbacks,
     sans_font,
     secondary_button,
+    separator,
     set_enabled,
+    step_header,
     value_label,
 )
 from phantom.ui.worker import WorkerEvent, WorkerEventType, WorkerService
@@ -526,40 +530,44 @@ class PhantomApp:
         self._show_tab(self.current_tab)
 
     def _build_header(self) -> None:
-        header = ctk.CTkFrame(self.root, fg_color="transparent")
-        header.grid(row=0, column=0, sticky="ew", padx=24, pady=(18, 2))
-        header.grid_columnconfigure(0, weight=1)
+        toolbar = ctk.CTkFrame(self.root, fg_color=T.CLR_LAYER, corner_radius=0)
+        toolbar.grid(row=0, column=0, rowspan=2, sticky="ew")
+        toolbar.grid_columnconfigure(1, weight=1)
+
         title = ctk.CTkLabel(
-            header,
-            text="P H A N T O M",
-            font=display_font(self.root, 26, weight="bold"),
+            toolbar,
+            text="PHANTOM",
+            font=display_font(self.root, 20, weight="bold"),
             text_color=T.CLR_TEXT,
             anchor="w",
         )
-        title.grid(row=0, column=0, sticky="w")
-        # ``text=""``: a CTkLabel without text paints "CTkLabel" until something
-        # sets it, and an empty label is a much better first frame than that.
-        subtitle = ctk.CTkLabel(
-            header,
-            text="",
-            font=sans_font(self.root, T.FONT_SIZE_SMALL),
-            text_color=T.CLR_MUTED,
-            anchor="w",
-        )
-        subtitle.grid(row=1, column=0, sticky="w", pady=(2, 0))
-        self.binder.bind_map(subtitle, "header_subtitle", self._security_params())
+        title.grid(row=0, column=0, padx=(24, 0), pady=(14, 6), sticky="w")
         version = ctk.CTkLabel(
-            header,
+            toolbar,
             text=f"v{C.APP_VERSION}",
             font=mono_font(self.root, T.FONT_SIZE_SMALL),
             text_color=T.CLR_MUTED,
+            anchor="w",
+        )
+        version.grid(row=0, column=1, padx=(10, 0), pady=(16, 6), sticky="w")
+
+        # ``text=""``: a CTkLabel without text paints "CTkLabel" until something
+        # sets it, and an empty label is a much better first frame than that.
+        subtitle = ctk.CTkLabel(
+            toolbar,
+            text="",
+            font=sans_font(self.root, T.FONT_SIZE_SMALL),
+            text_color=T.CLR_MUTED,
             anchor="e",
         )
-        version.grid(row=0, column=1, rowspan=2, sticky="e")
+        subtitle.grid(row=0, column=2, padx=(0, 24), pady=(14, 6), sticky="e")
+        self.binder.bind_map(subtitle, "header_subtitle", self._security_params())
+
+        self._toolbar = toolbar
 
     def _build_tab_bar(self) -> None:
         self.tab_bar = ctk.CTkSegmentedButton(
-            self.root,
+            self._toolbar,
             values=[],
             command=self._on_tab_click,
             font=sans_font(self.root, T.FONT_SIZE_LABEL, weight="bold"),
@@ -567,11 +575,12 @@ class PhantomApp:
             corner_radius=10,
             selected_color=T.CLR_ACCENT,
             selected_hover_color=T.CLR_ACCENT_HOVER,
-            unselected_color=T.CLR_CARD,
-            unselected_hover_color=T.CLR_CARD_ALT,
+            unselected_color=T.CLR_CARD_ALT,
+            unselected_hover_color=T.CLR_BORDER,
             text_color=T.CLR_TEXT,
         )
-        self.tab_bar.grid(row=1, column=0, padx=24, pady=(10, 6), sticky="ew")
+        self.tab_bar.grid(row=1, column=0, columnspan=3, padx=24, pady=(2, 12), sticky="ew")
+        separator(self._toolbar).grid(row=2, column=0, columnspan=3, sticky="ew")
 
     # ------------------------------------------------------------------
     # embed tab
@@ -579,44 +588,140 @@ class PhantomApp:
     def _build_embed_tab(self) -> ctk.CTkFrame:
         frame = ctk.CTkFrame(self.frames, fg_color="transparent")
         scroll = ctk.CTkScrollableFrame(frame, fg_color="transparent", corner_radius=0)
-        scroll.pack(fill="both", expand=True, padx=6, pady=(4, 0))
+        scroll.pack(fill="both", expand=True, padx=6, pady=(6, 0))
         scroll.grid_columnconfigure(0, weight=1)
         self._seat_scroll(scroll)
         row = 0
 
-        # payload card ----------------------------------------------------
-        payload_card = card(scroll)
-        payload_card.grid(row=row, column=0, sticky="ew", pady=(0, 12))
+        # Step 1: carrier card (PNG / WAV / FLAC) ---------------------------
+        carrier_card = card(scroll)
+        carrier_card.grid(row=row, column=0, sticky="ew", pady=(0, 10))
         row += 1
-        self.payload_card_title = card_title(payload_card, self.root, "")
-        self.payload_card_title.pack(fill="x", padx=18, pady=(14, 6))
-        self.binder.bind(self.payload_card_title, "card_payload")
+        head1, self._embed_num_1, self.carrier_card_title, carrier_meta = step_header(
+            carrier_card, self.root, "1"
+        )
+        head1.pack(fill="x", padx=18, pady=(12, 6))
+        self.binder.bind(self.carrier_card_title, "step_embed_carrier")
+        self.binder.bind(carrier_meta, "step_embed_carrier_meta")
+
+        self.carrier_drop = inset_panel(carrier_card, border_width=1)
+        self.carrier_drop.pack(fill="x", padx=18, pady=(0, 6))
+        self.carrier_drop.grid_columnconfigure(0, weight=1)
+
+        self.drop_carrier_title = ctk.CTkLabel(
+            self.carrier_drop,
+            text="",
+            font=sans_font(self.root, T.FONT_SIZE_BODY, weight="bold"),
+            text_color=T.CLR_TEXT,
+            anchor="w",
+        )
+        self.drop_carrier_title.grid(row=0, column=0, sticky="ew", padx=(14, 10), pady=(8, 0))
+        self.binder.bind(self.drop_carrier_title, "drop_carrier_title")
+        self.drop_carrier_sub = hint_label(self.carrier_drop, self.root, "", wrap=520)
+        self.drop_carrier_sub.grid(row=1, column=0, sticky="ew", padx=(14, 10), pady=(1, 0))
+        self.binder.bind(self.drop_carrier_sub, "drop_carrier_sub")
+        self.dnd_carrier_hint = hint_label(self.carrier_drop, self.root, "", wrap=520)
+        self.dnd_carrier_hint.grid(row=2, column=0, sticky="ew", padx=(14, 10), pady=(1, 8))
+
+        self.carrier_button = quiet_button(
+            self.carrier_drop, self.root, "", self._choose_carrier
+        )
+        self.carrier_button.grid(row=0, column=1, rowspan=3, sticky="e", padx=(0, 14), pady=8)
+        self._seat_drop_zone("carrier", self.carrier_drop)
+
+        self.embed_carrier_error = ctk.CTkFrame(
+            carrier_card, fg_color=T.CLR_RED_BG, corner_radius=10, border_width=0
+        )
+        self.embed_carrier_error.grid_columnconfigure(0, weight=1)
+        self.embed_carrier_error_label = ctk.CTkLabel(
+            self.embed_carrier_error,
+            text="",
+            font=sans_font(self.root, T.FONT_SIZE_LABEL),
+            text_color=T.CLR_RED,
+            anchor="w",
+            justify="left",
+            wraplength=640,
+        )
+        self.embed_carrier_error_label._phantom_autowrap = 640
+        self.embed_carrier_error_label.grid(row=0, column=0, sticky="ew", padx=(12, 8), pady=8)
+        self.embed_carrier_error_dismiss = secondary_button(
+            self.embed_carrier_error,
+            self.root,
+            "",
+            self._dismiss_embed_carrier_error,
+        )
+        self.embed_carrier_error_dismiss.grid(row=0, column=1, padx=(0, 10), pady=8)
+        self.binder.bind(self.embed_carrier_error_dismiss, "btn_dismiss")
+
+        self.carrier_label = value_label(carrier_card, self.root, "")
+        self.carrier_label.pack(fill="x", padx=18, pady=(0, 6))
+
+        output_row = ctk.CTkFrame(carrier_card, fg_color="transparent")
+        output_row.pack(fill="x", padx=18, pady=(0, 12))
+        self.output_title = ctk.CTkLabel(
+            output_row,
+            text="",
+            font=sans_font(self.root, T.FONT_SIZE_SMALL, weight="bold"),
+            text_color=T.CLR_MUTED,
+            anchor="w",
+        )
+        self.output_title.pack(side="left", padx=(0, 10))
+        self.binder.bind(self.output_title, "lbl_output")
+        self.output_entry = ctk.CTkEntry(
+            output_row,
+            height=34,
+            font=mono_font(self.root, T.FONT_SIZE_SMALL),
+            fg_color=T.CLR_FIELD,
+            border_color=T.CLR_BORDER,
+            corner_radius=9,
+        )
+        self.output_entry.pack(side="left", fill="x", expand=True)
+        self._paragraph_shortcuts(self.output_entry)
+        self.output_entry.bind("<KeyRelease>", self._on_output_changed)
+        self.output_button = quiet_button(
+            output_row, self.root, "", self._choose_output
+        )
+        self.output_button.pack(side="left", padx=(10, 0))
+
+        # Step 2: payload card (Text / File) --------------------------------
+        payload_card = card(scroll)
+        payload_card.grid(row=row, column=0, sticky="ew", pady=(0, 10))
+        row += 1
+        head2, self._embed_num_2, self.payload_card_title, _meta2 = step_header(
+            payload_card, self.root, "2"
+        )
+        head2.pack(fill="x", padx=18, pady=(12, 6))
+        self.binder.bind(self.payload_card_title, "step_embed_payload")
 
         self.mode_bar = ctk.CTkSegmentedButton(
-            payload_card,
+            head2,
             values=[],
             command=self._on_mode_click,
             font=sans_font(self.root, T.FONT_SIZE_LABEL, weight="bold"),
-            height=32,
+            height=30,
+            corner_radius=8,
             selected_color=T.CLR_ACCENT,
             selected_hover_color=T.CLR_ACCENT_HOVER,
             unselected_color=T.CLR_FIELD,
             unselected_hover_color=T.CLR_CARD_ALT,
             text_color=T.CLR_TEXT,
         )
-        self.mode_bar.pack(fill="x", padx=18, pady=(0, 10))
+        self.mode_bar.grid(row=0, column=2, padx=(10, 0), sticky="e")
 
-        self.text_frame = ctk.CTkFrame(payload_card, fg_color="transparent")
+        payload_body = ctk.CTkFrame(payload_card, fg_color="transparent")
+        payload_body.pack(fill="both", expand=True)
+
+        self.text_frame = ctk.CTkFrame(payload_body, fg_color="transparent")
         self.text_frame.pack(fill="both", expand=True, padx=18, pady=(0, 4))
         self.embed_text = ctk.CTkTextbox(
             self.text_frame,
-            height=168,
+            height=144,
             font=sans_font(self.root, T.FONT_SIZE_BODY),
             wrap="word",
             fg_color=T.CLR_FIELD,
             border_color=T.CLR_BORDER,
             border_width=1,
-            corner_radius=10,
+            corner_radius=11,
         )
         self.embed_text.pack(fill="both", expand=True)
         self._editor_shortcuts = self._paragraph_shortcuts(
@@ -632,7 +737,7 @@ class PhantomApp:
         self._editor_inner.edit_modified(False)
         self.embed_text.bind("<FocusOut>", self._on_text_changed)
 
-        self.counter_row = ctk.CTkFrame(payload_card, fg_color="transparent")
+        self.counter_row = ctk.CTkFrame(payload_body, fg_color="transparent")
         self.char_label = ctk.CTkLabel(
             self.counter_row,
             text="",
@@ -643,39 +748,35 @@ class PhantomApp:
         self.char_label.pack(side="left", fill="x", expand=True)
         self.counter_row.pack(fill="x", padx=18, pady=(2, 4))
 
-        # The action bar: the clipboard, selection and history actions a text field
-        # is expected to have, visible instead of hidden behind a keyboard shortcut
-        # that Aqua may or may not deliver.  Every button calls the same helper as
-        # the hotkey and the context-menu entry; nothing here is a second code path.
-        # A flow row keeps them in reading order and wraps the overflow instead of
-        # cutting the last button off at the minimum window width.
-        self.editor_actions = self.editor_actions_row = FlowRow(payload_card)
+        # The action bar: visible clipboard, selection and history actions
+        # using quiet link buttons in a FlowRow so nothing clips at 980px.
+        self.editor_actions = self.editor_actions_row = FlowRow(payload_body)
         self.editor_actions.pack(fill="x", padx=18, pady=(0, 8))
         self.editor_paste_button = self.editor_actions.add(
-            secondary_button(self.editor_actions, self.root, "", self._editor_paste)
+            link_button(self.editor_actions, self.root, "", self._editor_paste)
         )
         self.editor_copy_button = self.editor_actions.add(
-            secondary_button(self.editor_actions, self.root, "", self._editor_copy)
+            link_button(self.editor_actions, self.root, "", self._editor_copy)
         )
         self.editor_cut_button = self.editor_actions.add(
-            secondary_button(self.editor_actions, self.root, "", self._editor_cut)
+            link_button(self.editor_actions, self.root, "", self._editor_cut)
         )
         self.editor_select_all_button = self.editor_actions.add(
-            secondary_button(self.editor_actions, self.root, "", self._editor_select_all)
+            link_button(self.editor_actions, self.root, "", self._editor_select_all)
         )
         self.editor_undo_button = self.editor_actions.add(
-            secondary_button(self.editor_actions, self.root, "", self._editor_undo)
+            link_button(self.editor_actions, self.root, "", self._editor_undo)
         )
         self.editor_redo_button = self.editor_actions.add(
-            secondary_button(self.editor_actions, self.root, "", self._editor_redo)
+            link_button(self.editor_actions, self.root, "", self._editor_redo)
         )
         self.editor_copy_all_button = self.editor_actions.add(
-            secondary_button(self.editor_actions, self.root, "", self._editor_copy_all)
+            link_button(self.editor_actions, self.root, "", self._editor_copy_all)
         )
         # Clears the editor and nothing else: the password, the carrier, the output
         # path and every setting stay exactly where the user put them.
         self.clear_field_button = self.editor_actions.add(
-            secondary_button(self.editor_actions, self.root, "", self._clear_field)
+            link_button(self.editor_actions, self.root, "", self._clear_field)
         )
         for widget, key in (
             (self.editor_paste_button, "btn_paste"),
@@ -688,184 +789,243 @@ class PhantomApp:
             (self.clear_field_button, "btn_clear_field"),
         ):
             self.binder.bind(widget, key)
-        self.line_hint = hint_label(payload_card, self.root, "", wrap=620)
+        self.line_hint = hint_label(payload_body, self.root, "", wrap=620)
         self.line_hint.pack(fill="x", padx=18, pady=(0, 8))
         self.line_hint.pack_forget()
 
-        self.file_frame = ctk.CTkFrame(payload_card, fg_color="transparent")
-        self.secret_button = secondary_button(
-            self.file_frame, self.root, "", self._choose_secret
-        )
-        self.secret_button.pack(side="left")
-        self.secret_label = ctk.CTkLabel(
-            self.file_frame,
+        self.file_frame = inset_panel(payload_body, border_width=1)
+        self.file_frame.grid_columnconfigure(0, weight=1)
+        secret_copy = ctk.CTkFrame(self.file_frame, fg_color="transparent")
+        secret_copy.grid(row=0, column=0, sticky="ew", padx=(14, 10), pady=12)
+        self.drop_secret_title = ctk.CTkLabel(
+            secret_copy,
             text="",
-            font=sans_font(self.root, T.FONT_SIZE_HINT),
+            font=sans_font(self.root, T.FONT_SIZE_BODY, weight="bold"),
+            text_color=T.CLR_TEXT,
+            anchor="w",
+        )
+        self.drop_secret_title.pack(fill="x")
+        self.binder.bind(self.drop_secret_title, "drop_secret_title")
+        self.drop_secret_sub = hint_label(secret_copy, self.root, "", wrap=480)
+        self.drop_secret_sub.pack(fill="x", pady=(2, 0))
+        self.binder.bind(self.drop_secret_sub, "drop_secret_sub")
+        self.secret_label = ctk.CTkLabel(
+            secret_copy,
+            text="",
+            font=mono_font(self.root, T.FONT_SIZE_SMALL),
             text_color=T.CLR_TEXT_DIM,
             anchor="w",
         )
-        self.secret_label.pack(side="left", padx=(12, 0), fill="x", expand=True)
-        self.dnd_secret_hint = hint_label(payload_card, self.root, "", wrap=520)
-        self.dnd_secret_hint.pack(fill="x", padx=18, pady=(0, 10))
+        self.secret_label.pack(fill="x", pady=(4, 0))
+        self.dnd_secret_hint = hint_label(secret_copy, self.root, "", wrap=480)
+        self.dnd_secret_hint.pack(fill="x", pady=(2, 0))
+        self.secret_button = quiet_button(
+            self.file_frame, self.root, "", self._choose_secret
+        )
+        self.secret_button.grid(row=0, column=1, padx=(0, 14), pady=12, sticky="e")
         self._seat_drop_zone("secret", self.file_frame)
 
-        # password card ---------------------------------------------------
-        password_card = card(scroll)
-        password_card.grid(row=row, column=0, sticky="ew", pady=(0, 12))
-        row += 1
-        self.password_card_title = card_title(password_card, self.root, "")
-        self.password_card_title.pack(fill="x", padx=18, pady=(14, 6))
-        self.binder.bind(self.password_card_title, "card_password")
-
-        pwd_row = ctk.CTkFrame(password_card, fg_color="transparent")
-        pwd_row.pack(fill="x", padx=18)
-        self.embed_pwd = ctk.CTkEntry(
-            pwd_row,
-            height=40,
-            show="•",
-            font=sans_font(self.root, T.FONT_SIZE_BODY),
-            fg_color=T.CLR_FIELD,
-            border_color=T.CLR_BORDER,
-            corner_radius=10,
-        )
-        self.embed_pwd.pack(side="left", fill="x", expand=True)
-        self._paragraph_shortcuts(self.embed_pwd)
-        self.embed_pwd.bind("<KeyRelease>", self._on_password_changed)
-        # The caption comes from the locale ("Show password"), so the box is
-        # measured once it has one: a fixed 22 px width cut the label to "Sh…".
-        self.show_embed_pwd: ctk.CTkCheckBox = ctk.CTkCheckBox(
-            pwd_row,
+        capacity_info = inset_panel(payload_card)
+        capacity_info.pack(fill="x", padx=18, pady=(0, 12))
+        cap_strip = ctk.CTkFrame(capacity_info, fg_color="transparent")
+        cap_strip.pack(fill="x", padx=12, pady=(8, 2))
+        cap_strip.grid_columnconfigure(0, weight=1)
+        self.usage_label = ctk.CTkLabel(
+            cap_strip,
             text="",
-            command=lambda: self._toggle_password_visibility(self.embed_pwd, self.show_embed_pwd),
+            font=sans_font(self.root, T.FONT_SIZE_LABEL),
+            text_color=T.CLR_MUTED,
+            anchor="w",
         )
-        self.show_embed_pwd.pack(side="left", padx=(10, 0))
-        fit_checkbox_on_change(self.show_embed_pwd)
-
-        # A flow row, not three packed buttons: Russian and Ukrainian captions are
-        # wider than English ones and the row has to re-wrap instead of running
-        # off the card when the window is not maximised (D15).
-        actions = self.embed_password_actions = FlowRow(password_card)
-        actions.pack(fill="x", padx=18, pady=(10, 2))
-        self.generate_button = actions.add(
-            secondary_button(actions, self.root, "", self._generate_password)
-        )
-        self.paste_pwd_button = actions.add(
-            secondary_button(actions, self.root, "", self._paste_password)
-        )
-        self.copy_pwd_button = actions.add(
-            secondary_button(actions, self.root, "", self._copy_password)
-        )
-        self.binder.bind(self.paste_pwd_button, "btn_paste")
-        self.binder.bind(self.copy_pwd_button, "btn_copy_pwd")
-        self.clipboard_hint = hint_label(password_card, self.root, "", wrap=520)
-        self.clipboard_hint.pack(fill="x", padx=18, pady=(4, 0))
-        self.password_hint = hint_label(password_card, self.root, "", wrap=620)
-        self.password_hint.pack(fill="x", padx=18, pady=(4, 12))
-
-        # carrier card ------------------------------------------------------
-        carrier_card = card(scroll)
-        carrier_card.grid(row=row, column=0, sticky="ew", pady=(0, 12))
-        row += 1
-        self.carrier_card_title = card_title(carrier_card, self.root, "")
-        self.carrier_card_title.pack(fill="x", padx=18, pady=(14, 6))
-        self.binder.bind(self.carrier_card_title, "card_carrier")
-
-        carrier_row = ctk.CTkFrame(carrier_card, fg_color="transparent")
-        carrier_row.pack(fill="x", padx=18)
-        self.carrier_button = primary_button(
-            carrier_row, self.root, "", self._choose_carrier, height=36
-        )
-        self.carrier_button.pack(side="left")
-        self.carrier_label = value_label(carrier_row, self.root, "")
-        self.carrier_label.pack(side="left", padx=(12, 0), fill="x", expand=True)
-        self.dnd_carrier_hint = hint_label(carrier_card, self.root, "", wrap=620)
-        self.dnd_carrier_hint.pack(fill="x", padx=18, pady=(6, 0))
-        self._seat_drop_zone("carrier", carrier_row)
-
-        self.capacity_label = value_label(carrier_card, self.root, "", mono=True)
-        self.capacity_label.pack(fill="x", padx=18, pady=(8, 4))
+        self.usage_label.grid(row=0, column=0, sticky="w")
+        self.capacity_label = value_label(cap_strip, self.root, "", mono=True)
+        self.capacity_label.grid(row=0, column=1, padx=(10, 0), sticky="e")
         self.fill_bar = ctk.CTkProgressBar(
-            carrier_card,
-            height=8,
-            corner_radius=4,
+            capacity_info,
+            height=5,
+            corner_radius=3,
             progress_color=T.CLR_ACCENT,
             fg_color=T.CLR_PROGRESS_TROUGH,
         )
         self.fill_bar.set(0)
-        self.fill_bar.pack(fill="x", padx=18, pady=(2, 4))
-        self.usage_label = hint_label(carrier_card, self.root, "", wrap=620)
-        self.usage_label.pack(fill="x", padx=18, pady=(0, 4))
-        # The panel: container, payload, capacity and, when it matters, the excess.
-        self.capacity_panel = value_label(carrier_card, self.root, "", mono=True)
-        self.capacity_panel.pack(fill="x", padx=18, pady=(0, 2))
-        self.capacity_note = hint_label(carrier_card, self.root, "", wrap=620)
-        self.capacity_note.pack(fill="x", padx=18, pady=(0, 4))
+        self.fill_bar.pack(fill="x", padx=12, pady=(2, 3))
+        self.capacity_panel = value_label(capacity_info, self.root, "", mono=True)
+        self.capacity_panel.pack(fill="x", padx=12, pady=(0, 1))
+        self.capacity_note = hint_label(capacity_info, self.root, "", wrap=620)
+        self.capacity_note.pack(fill="x", padx=12, pady=(0, 2))
         self.binder.bind(self.capacity_note, "cap_note")
-        self.notice_label = hint_label(carrier_card, self.root, "", wrap=620)
-        self.notice_label.pack(fill="x", padx=18, pady=(0, 4))
-        self.format_label = hint_label(carrier_card, self.root, "", wrap=620)
-        self.format_label.pack(fill="x", padx=18, pady=(0, 12))
+        self.notice_label = hint_label(capacity_info, self.root, "", wrap=620)
+        self.notice_label.pack(fill="x", padx=12, pady=(0, 1))
+        self.format_label = hint_label(capacity_info, self.root, "", wrap=620)
+        self.format_label.pack(fill="x", padx=12, pady=(0, 8))
 
-        # output card -------------------------------------------------------
-        output_card = card(scroll)
-        output_card.grid(row=row, column=0, sticky="ew", pady=(0, 12))
+        # Step 3: password card ---------------------------------------------
+        password_card = card(scroll)
+        password_card.grid(row=row, column=0, sticky="ew", pady=(0, 12))
         row += 1
-        self.output_title = card_title(output_card, self.root, "")
-        self.output_title.pack(fill="x", padx=18, pady=(14, 6))
-        self.binder.bind(self.output_title, "lbl_output")
-        output_row = ctk.CTkFrame(output_card, fg_color="transparent")
-        output_row.pack(fill="x", padx=18)
-        self.output_entry = ctk.CTkEntry(
-            output_row,
-            height=38,
-            font=mono_font(self.root, T.FONT_SIZE_MONO),
-            fg_color=T.CLR_FIELD,
-            border_color=T.CLR_BORDER,
-            corner_radius=10,
+        head3, self._embed_num_3, self.password_card_title, self.pwd_strength_label = step_header(
+            password_card, self.root, "3"
         )
-        self.output_entry.pack(side="left", fill="x", expand=True)
-        self._paragraph_shortcuts(self.output_entry)
-        self.output_entry.bind("<KeyRelease>", self._on_output_changed)
-        self.output_button = secondary_button(
-            output_row, self.root, "", self._choose_output
+        head3.pack(fill="x", padx=18, pady=(14, 10))
+        self.binder.bind(self.password_card_title, "step_embed_password")
+        self.pwd_strength_label.configure(
+            text=self.i18n.t("pwd_len_need_min", min_len=C.MIN_PASSWORD_LENGTH)
         )
-        self.output_button.pack(side="left", padx=(10, 0))
 
+        pwd_box = inset_panel(password_card, border_width=1)
+        pwd_box.pack(fill="x", padx=18, pady=(0, 6))
+        pwd_box.grid_columnconfigure(0, weight=1)
+        self.embed_pwd = ctk.CTkEntry(
+            pwd_box,
+            height=36,
+            show="•",
+            font=sans_font(self.root, T.FONT_SIZE_BODY),
+            fg_color="transparent",
+            border_width=0,
+        )
+        self.embed_pwd.grid(row=0, column=0, sticky="ew", padx=(10, 4), pady=(8, 4))
+        self._paragraph_shortcuts(self.embed_pwd)
+        self.embed_pwd.bind("<KeyRelease>", self._on_password_changed)
+        self.show_embed_pwd: ctk.CTkCheckBox = ctk.CTkCheckBox(
+            pwd_box,
+            text="",
+            command=lambda: self._toggle_password_visibility(self.embed_pwd, self.show_embed_pwd),
+        )
+        self.show_embed_pwd.grid(row=0, column=1, padx=(4, 10), pady=(8, 4), sticky="e")
+        fit_checkbox_on_change(self.show_embed_pwd)
+
+        self.pwd_meter_bar = ctk.CTkProgressBar(
+            pwd_box,
+            height=4,
+            corner_radius=2,
+            progress_color=T.CLR_PROGRESS_TROUGH,
+            fg_color=T.CLR_PROGRESS_TROUGH,
+        )
+        self.pwd_meter_bar.set(0)
+        self.pwd_meter_bar.grid(row=1, column=0, columnspan=2, sticky="ew", padx=10, pady=(0, 8))
+
+        actions = self.embed_password_actions = FlowRow(password_card)
+        actions.pack(fill="x", padx=18, pady=(2, 4))
+        self.generate_button = actions.add(
+            quiet_button(actions, self.root, "", self._generate_password)
+        )
+        self.paste_pwd_button = actions.add(
+            link_button(actions, self.root, "", self._paste_password)
+        )
+        self.copy_pwd_button = actions.add(
+            link_button(actions, self.root, "", self._copy_password)
+        )
+        self.binder.bind(self.paste_pwd_button, "btn_paste")
+        self.binder.bind(self.copy_pwd_button, "btn_copy_pwd")
+
+        hint_bar = ctk.CTkFrame(password_card, fg_color="transparent")
+        hint_bar.pack(fill="x", padx=18, pady=(2, 0))
+        hint_bar.grid_columnconfigure(0, weight=1)
+        self.password_hint = hint_label(hint_bar, self.root, "", wrap=560)
+        self.password_hint.grid(row=0, column=0, sticky="w")
+        self.pwd_len_label = ctk.CTkLabel(
+            hint_bar,
+            text=self.i18n.t("pwd_len_counter", count=0, min_len=C.MIN_PASSWORD_LENGTH),
+            font=mono_font(self.root, T.FONT_SIZE_FOOTER),
+            text_color=T.CLR_MUTED,
+            anchor="e",
+        )
+        self.pwd_len_label.grid(row=0, column=1, padx=(10, 0), sticky="e")
+
+        self.clipboard_hint = hint_label(password_card, self.root, "", wrap=620)
+        self.clipboard_hint.pack(fill="x", padx=18, pady=(2, 14))
+
+        # Step 4: action & inline result card ------------------------------
+        action_card = card(scroll)
+        action_card.grid(row=row, column=0, sticky="ew", pady=(0, 12))
+        row += 1
+        action_top = ctk.CTkFrame(action_card, fg_color="transparent")
+        action_top.pack(fill="x", padx=18, pady=(14, 8))
+        action_top.grid_columnconfigure(0, weight=1)
+
+        summary_col = ctk.CTkFrame(action_top, fg_color="transparent")
+        summary_col.grid(row=0, column=0, sticky="ew", padx=(0, 14))
+        self.embed_summary_label = hint_label(summary_col, self.root, "", wrap=520)
+        self.embed_summary_label.pack(fill="x")
         self.wipe_checkbox = ctk.CTkCheckBox(
-            output_card,
+            summary_col,
             text="",
             width=100,
-            font=sans_font(self.root, T.FONT_SIZE_BODY),
+            font=sans_font(self.root, T.FONT_SIZE_SMALL),
             command=self._on_wipe_toggle,
-            checkbox_width=20,
-            checkbox_height=20,
+            checkbox_width=18,
+            checkbox_height=18,
             corner_radius=5,
             fg_color=T.CLR_ACCENT,
             hover_color=T.CLR_ACCENT_HOVER,
         )
-        self.wipe_checkbox.pack(fill="x", padx=18, pady=(10, 4))
+        self.wipe_checkbox.pack(anchor="w", pady=(6, 2))
         self.verify_checkbox = ctk.CTkCheckBox(
-            output_card,
+            summary_col,
             text="",
             width=100,
-            font=sans_font(self.root, T.FONT_SIZE_BODY),
+            font=sans_font(self.root, T.FONT_SIZE_SMALL),
             command=self._on_verify_toggle,
-            checkbox_width=20,
-            checkbox_height=20,
+            checkbox_width=18,
+            checkbox_height=18,
             corner_radius=5,
             fg_color=T.CLR_ACCENT,
             hover_color=T.CLR_ACCENT_HOVER,
         )
-        self.verify_checkbox.pack(fill="x", padx=18, pady=(0, 12))
+        self.verify_checkbox.pack(anchor="w", pady=(0, 2))
 
-        action_row = ctk.CTkFrame(frame, fg_color="transparent")
-        action_row.pack(fill="x", padx=12, pady=(6, 10))
-        self.embed_button = primary_button(action_row, self.root, "", self._start_embed)
-        self.embed_button.pack(side="left", fill="x", expand=True)
-        self.embed_clear_button = secondary_button(
-            action_row, self.root, "", self._clear_embed, width=140
+        cta_col = ctk.CTkFrame(action_top, fg_color="transparent")
+        cta_col.grid(row=0, column=1, sticky="e")
+        self.embed_button = primary_button(cta_col, self.root, "", self._start_embed)
+        self.embed_button.pack(side="left")
+        self.embed_clear_button = link_button(
+            cta_col, self.root, "", self._clear_embed
         )
-        self.embed_clear_button.pack(side="left", padx=(10, 0))
+        self.embed_clear_button.pack(side="left", padx=(8, 0))
+
+        self.embed_result_panel = ctk.CTkFrame(
+            action_card, fg_color=T.CLR_GREEN_BG, corner_radius=12, border_width=0
+        )
+        res_top = ctk.CTkFrame(self.embed_result_panel, fg_color="transparent")
+        res_top.pack(fill="x", padx=14, pady=(12, 6))
+        res_top.grid_columnconfigure(0, weight=1)
+        self.embed_result_title = ctk.CTkLabel(
+            res_top,
+            text="",
+            font=sans_font(self.root, T.FONT_SIZE_BODY, weight="bold"),
+            text_color=T.CLR_GREEN,
+            anchor="w",
+        )
+        self.embed_result_title.grid(row=0, column=0, sticky="w")
+        self.embed_result_sub = hint_label(res_top, self.root, "", wrap=520)
+        self.embed_result_sub.grid(row=1, column=0, sticky="w", pady=(2, 0))
+        self.embed_again_button = link_button(
+            res_top, self.root, "", self._clear_embed
+        )
+        self.embed_again_button.grid(row=0, column=1, rowspan=2, sticky="e")
+        self.binder.bind(self.embed_again_button, "btn_embed_again")
+
+        res_path_box = inset_panel(self.embed_result_panel)
+        res_path_box.pack(fill="x", padx=14, pady=(0, 12))
+        res_path_box.grid_columnconfigure(0, weight=1)
+        self.embed_result_path_label = value_label(res_path_box, self.root, "", mono=True)
+        self.embed_result_path_label.grid(row=0, column=0, sticky="ew", padx=(12, 8), pady=8)
+        res_actions = ctk.CTkFrame(res_path_box, fg_color="transparent")
+        res_actions.grid(row=0, column=1, sticky="e", padx=(0, 10), pady=6)
+        self.embed_copy_path_button = link_button(
+            res_actions, self.root, "", self._copy_embed_result_path
+        )
+        self.embed_copy_path_button.pack(side="left", padx=(0, 6))
+        self.embed_reveal_button = quiet_button(
+            res_actions, self.root, "", self._reveal_embed_result
+        )
+        self.embed_reveal_button.pack(side="left")
+        self.binder.bind(self.embed_copy_path_button, "btn_copy_path")
+        self.binder.bind_dynamic(
+            self.embed_reveal_button,
+            "btn_reveal",
+            lambda: {"file_manager": self.file_manager_name()},
+        )
         return frame
 
     # ------------------------------------------------------------------
@@ -874,65 +1034,161 @@ class PhantomApp:
     def _build_extract_tab(self) -> ctk.CTkFrame:
         frame = ctk.CTkFrame(self.frames, fg_color="transparent")
         scroll = ctk.CTkScrollableFrame(frame, fg_color="transparent", corner_radius=0)
-        scroll.pack(fill="both", expand=True, padx=6, pady=(4, 0))
+        scroll.pack(fill="both", expand=True, padx=6, pady=(6, 0))
         scroll.grid_columnconfigure(0, weight=1)
         self._seat_scroll(scroll)
 
+        # Step 1: container selection (PNG / WAV / FLAC) --------------------
         stego_card = card(scroll)
         stego_card.grid(row=0, column=0, sticky="ew", pady=(0, 12))
-        self.stego_card_title = card_title(stego_card, self.root, "")
-        self.stego_card_title.pack(fill="x", padx=18, pady=(14, 6))
-        self.binder.bind(self.stego_card_title, "card_stego")
-
-        stego_row = ctk.CTkFrame(stego_card, fg_color="transparent")
-        stego_row.pack(fill="x", padx=18)
-        self.stego_button = primary_button(
-            stego_row, self.root, "", self._choose_stego, height=36
+        head1, _ex_num_1, self.stego_card_title, stego_meta = step_header(
+            stego_card, self.root, "1"
         )
-        self.stego_button.pack(side="left")
-        self.stego_label = value_label(stego_row, self.root, "")
-        self.stego_label.pack(side="left", padx=(12, 0), fill="x", expand=True)
-        self.dnd_stego_hint = hint_label(stego_card, self.root, "", wrap=620)
-        self.dnd_stego_hint.pack(fill="x", padx=18, pady=(6, 0))
-        self._seat_drop_zone("stego", stego_row)
+        head1.pack(fill="x", padx=18, pady=(14, 10))
+        self.binder.bind(self.stego_card_title, "step_extract_carrier")
+        self.binder.bind(stego_meta, "step_extract_carrier_meta")
 
-        pwd_row = ctk.CTkFrame(stego_card, fg_color="transparent")
-        pwd_row.pack(fill="x", padx=18, pady=(10, 4))
+        self.stego_drop = inset_panel(stego_card, border_width=1)
+        self.stego_drop.pack(fill="x", padx=18, pady=(0, 8))
+        self.stego_drop.grid_columnconfigure(0, weight=1)
+
+        self.drop_stego_title = ctk.CTkLabel(
+            self.stego_drop,
+            text="",
+            font=sans_font(self.root, T.FONT_SIZE_BODY, weight="bold"),
+            text_color=T.CLR_TEXT,
+            anchor="w",
+        )
+        self.drop_stego_title.grid(row=0, column=0, sticky="ew", padx=(14, 10), pady=(10, 0))
+        self.binder.bind(self.drop_stego_title, "drop_stego_title")
+        self.drop_stego_sub = hint_label(self.stego_drop, self.root, "", wrap=520)
+        self.drop_stego_sub.grid(row=1, column=0, sticky="ew", padx=(14, 10), pady=(2, 0))
+        self.binder.bind(self.drop_stego_sub, "drop_stego_sub")
+        self.dnd_stego_hint = hint_label(self.stego_drop, self.root, "", wrap=520)
+        self.dnd_stego_hint.grid(row=2, column=0, sticky="ew", padx=(14, 10), pady=(2, 10))
+
+        self.stego_button = quiet_button(
+            self.stego_drop, self.root, "", self._choose_stego
+        )
+        self.stego_button.grid(row=0, column=1, rowspan=3, padx=(0, 14), pady=10, sticky="e")
+        self._seat_drop_zone("stego", self.stego_drop)
+
+        self.extract_carrier_error = ctk.CTkFrame(
+            stego_card, fg_color=T.CLR_RED_BG, corner_radius=10, border_width=0
+        )
+        self.extract_carrier_error.grid_columnconfigure(0, weight=1)
+        self.extract_carrier_error_label = ctk.CTkLabel(
+            self.extract_carrier_error,
+            text="",
+            font=sans_font(self.root, T.FONT_SIZE_LABEL),
+            text_color=T.CLR_RED,
+            anchor="w",
+            justify="left",
+            wraplength=640,
+        )
+        self.extract_carrier_error_label._phantom_autowrap = 640
+        self.extract_carrier_error_label.grid(row=0, column=0, sticky="ew", padx=(12, 8), pady=8)
+        self.extract_carrier_error_dismiss = secondary_button(
+            self.extract_carrier_error,
+            self.root,
+            "",
+            self._dismiss_extract_carrier_error,
+        )
+        self.extract_carrier_error_dismiss.grid(row=0, column=1, padx=(0, 10), pady=8)
+        self.binder.bind(self.extract_carrier_error_dismiss, "btn_dismiss")
+
+        stego_info = inset_panel(stego_card)
+        stego_info.pack(fill="x", padx=18, pady=(0, 14))
+        self.stego_label = value_label(stego_info, self.root, "")
+        self.stego_label.pack(fill="x", padx=12, pady=(8, 2))
+        self.stego_notice = hint_label(stego_info, self.root, "", wrap=620)
+        self.stego_notice.pack(fill="x", padx=12, pady=(0, 8))
+
+        # Step 2: decryption password ---------------------------------------
+        ex_pwd_card = card(scroll)
+        ex_pwd_card.grid(row=1, column=0, sticky="ew", pady=(0, 12))
+        head2, _ex_num_2, self.extract_pwd_title, ex_pwd_meta = step_header(
+            ex_pwd_card, self.root, "2"
+        )
+        head2.pack(fill="x", padx=18, pady=(14, 10))
+        self.binder.bind(self.extract_pwd_title, "step_extract_password")
+        self.binder.bind(ex_pwd_meta, "step_extract_password_meta")
+
+        ex_pwd_box = inset_panel(ex_pwd_card, border_width=1)
+        ex_pwd_box.pack(fill="x", padx=18, pady=(0, 6))
+        ex_pwd_box.grid_columnconfigure(0, weight=1)
         self.extract_pwd = ctk.CTkEntry(
-            pwd_row,
-            height=40,
+            ex_pwd_box,
+            height=36,
             show="•",
             font=sans_font(self.root, T.FONT_SIZE_BODY),
-            fg_color=T.CLR_FIELD,
-            border_color=T.CLR_BORDER,
-            corner_radius=10,
+            fg_color="transparent",
+            border_width=0,
         )
-        self.extract_pwd.pack(side="left", fill="x", expand=True)
+        self.extract_pwd.grid(row=0, column=0, sticky="ew", padx=(10, 4), pady=8)
+        self.extract_pwd.bind("<KeyRelease>", lambda _e: self._refresh_extract_summary())
         self._paragraph_shortcuts(self.extract_pwd)
         self.show_extract_pwd: ctk.CTkCheckBox = ctk.CTkCheckBox(
-            pwd_row,
+            ex_pwd_box,
             text="",
             command=lambda: self._toggle_password_visibility(
                 self.extract_pwd, self.show_extract_pwd
             ),
         )
-        self.show_extract_pwd.pack(side="left", padx=(10, 0))
+        self.show_extract_pwd.grid(row=0, column=1, padx=(4, 10), pady=8, sticky="e")
         fit_checkbox_on_change(self.show_extract_pwd)
-        extract_actions = self.extract_password_actions = FlowRow(stego_card)
-        extract_actions.pack(fill="x", padx=18, pady=(8, 4))
+
+        extract_actions = self.extract_password_actions = FlowRow(ex_pwd_card)
+        extract_actions.pack(fill="x", padx=18, pady=(2, 12))
         self.paste_extract_button = extract_actions.add(
-            secondary_button(extract_actions, self.root, "", self._paste_password)
+            link_button(extract_actions, self.root, "", self._paste_password)
         )
         self.copy_extract_button = extract_actions.add(
-            secondary_button(extract_actions, self.root, "", self._copy_password)
+            link_button(extract_actions, self.root, "", self._copy_password)
         )
         self.binder.bind(self.paste_extract_button, "btn_paste")
         self.binder.bind(self.copy_extract_button, "btn_copy_pwd")
-        self.stego_notice = hint_label(stego_card, self.root, "", wrap=620)
-        self.stego_notice.pack(fill="x", padx=18, pady=(0, 12))
 
+        # Step 3: extract action & inline failure ---------------------------
+        ex_action_card = card(scroll)
+        ex_action_card.grid(row=2, column=0, sticky="ew", pady=(0, 12))
+        ex_action_top = ctk.CTkFrame(ex_action_card, fg_color="transparent")
+        ex_action_top.pack(fill="x", padx=18, pady=14)
+        ex_action_top.grid_columnconfigure(0, weight=1)
+        self.extract_summary_label = hint_label(ex_action_top, self.root, "", wrap=520)
+        self.extract_summary_label.grid(row=0, column=0, sticky="ew", padx=(0, 14))
+        self.extract_button = primary_button(ex_action_top, self.root, "", self._start_extract)
+        self.extract_button.grid(row=0, column=1, sticky="e")
+
+        self.extract_error_panel = ctk.CTkFrame(
+            ex_action_card, fg_color=T.CLR_RED_BG, corner_radius=10, border_width=0
+        )
+        self.extract_error_panel.grid_columnconfigure(0, weight=1)
+        err_copy = ctk.CTkFrame(self.extract_error_panel, fg_color="transparent")
+        err_copy.grid(row=0, column=0, sticky="ew", padx=(12, 8), pady=10)
+        self.extract_error_heading = ctk.CTkLabel(
+            err_copy,
+            text="",
+            font=sans_font(self.root, T.FONT_SIZE_LABEL, weight="bold"),
+            text_color=T.CLR_RED,
+            anchor="w",
+        )
+        self.extract_error_heading.pack(fill="x")
+        self.binder.bind(self.extract_error_heading, "extract_error_title")
+        self.extract_error_label = hint_label(err_copy, self.root, "", wrap=560)
+        self.extract_error_label.pack(fill="x", pady=(2, 0))
+        self.extract_focus_pwd_button = secondary_button(
+            self.extract_error_panel,
+            self.root,
+            "",
+            self._focus_extract_password,
+        )
+        self.extract_focus_pwd_button.grid(row=0, column=1, padx=(0, 12), pady=10)
+        self.binder.bind(self.extract_focus_pwd_button, "btn_focus_pwd")
+
+        # Result & Audit ----------------------------------------------------
         result_card = card(scroll)
-        result_card.grid(row=1, column=0, sticky="ew", pady=(0, 12))
+        result_card.grid(row=3, column=0, sticky="ew", pady=(0, 12))
         self.result_card_title = card_title(result_card, self.root, "")
         self.result_card_title.pack(fill="x", padx=18, pady=(14, 6))
         self.binder.bind(self.result_card_title, "card_result")
@@ -953,11 +1209,9 @@ class PhantomApp:
         self._result_shortcuts = self._paragraph_shortcuts(self.result_text, readonly=True)
         self.result_file_label = value_label(result_card, self.root, "")
         self.result_file_label.pack(fill="x", padx=18)
-        # Seven buttons: packed side by side they needed ~1150 logical pixels and
-        # the window is 980 wide at its smallest, so the last ones were cut off.
-        # The flow row keeps them in reading order and moves the overflow down.
+        # FlowRow keeps all actions accessible and wraps overflow cleanly.
         buttons_row = self.extract_buttons_row = FlowRow(result_card)
-        buttons_row.pack(fill="x", padx=18, pady=(8, 4))
+        buttons_row.pack(fill="x", padx=18, pady=(8, 12))
         self.select_all_result_button = buttons_row.add(
             secondary_button(buttons_row, self.root, "", self._select_all_result)
         )
@@ -980,13 +1234,13 @@ class PhantomApp:
             secondary_button(buttons_row, self.root, "", self._expand_result)
         )
         self.clear_result_button = buttons_row.add(
-            secondary_button(buttons_row, self.root, "", self._clear_extract)
+            link_button(buttons_row, self.root, "", self._clear_extract)
         )
         self.copy_path_button = buttons_row.add(
             secondary_button(buttons_row, self.root, "", self._copy_result_path)
         )
         self.reveal_button = buttons_row.add(
-            secondary_button(buttons_row, self.root, "", self._reveal_result)
+            quiet_button(buttons_row, self.root, "", self._reveal_result)
         )
         self.binder.bind(self.expand_button, "btn_expand")
         self.binder.bind(self.copy_path_button, "btn_copy_path")
@@ -1003,52 +1257,43 @@ class PhantomApp:
         self.binder.bind(self.clear_result_button, "btn_clear")
 
         audit_card = card(scroll)
-        audit_card.grid(row=2, column=0, sticky="ew", pady=(0, 12))
+        audit_card.grid(row=4, column=0, sticky="ew", pady=(0, 12))
         self.audit_title = card_title(audit_card, self.root, "")
         self.audit_title.pack(fill="x", padx=18, pady=(14, 6))
         self.binder.bind(self.audit_title, "card_audit")
+        audit_box = inset_panel(audit_card)
+        audit_box.pack(fill="x", padx=18, pady=(0, 4))
+        audit_box.grid_columnconfigure(1, weight=1)
         self.audit_rows: dict[str, ctk.CTkLabel] = {}
-        for key in (
+        for idx, key in enumerate((
             "audit_layout",
             "audit_cipher",
             "audit_kdf",
             "audit_integrity",
             "audit_size",
-        ):
-            holder = ctk.CTkFrame(audit_card, fg_color="transparent")
-            holder.pack(fill="x", padx=18, pady=1)
+        )):
             caption = ctk.CTkLabel(
-                holder,
+                audit_box,
                 text="",
                 width=110,
                 anchor="w",
                 font=sans_font(self.root, T.FONT_SIZE_SMALL, weight="bold"),
                 text_color=T.CLR_MUTED,
             )
-            caption.pack(side="left")
+            caption.grid(row=idx, column=0, sticky="w", padx=(12, 8), pady=3)
             self.binder.bind(caption, key)
-            value = value_label(holder, self.root, "", mono=True)
-            value.pack(side="left", fill="x", expand=True)
+            value = value_label(audit_box, self.root, "", mono=True)
+            value.grid(row=idx, column=1, sticky="ew", padx=(0, 12), pady=3)
             self.audit_rows[key] = value
         self.audit_status = hint_label(audit_card, self.root, "", wrap=620)
-        self.audit_status.pack(fill="x", padx=18, pady=(8, 12))
-
-        action_row = ctk.CTkFrame(frame, fg_color="transparent")
-        action_row.pack(fill="x", padx=12, pady=(6, 10))
-        self.extract_button = primary_button(action_row, self.root, "", self._start_extract)
-        self.extract_button.pack(side="left", fill="x", expand=True)
+        self.audit_status.pack(fill="x", padx=18, pady=(6, 12))
         return frame
 
     # ------------------------------------------------------------------
     # metadata tab
     # ------------------------------------------------------------------
     def _build_metadata_tab(self) -> ctk.CTkFrame:
-        """The fourth tab: inspection, selective cleaning, integrity, exports.
-
-        The panel owns its five cards and the state they render; the window only
-        routes jobs to it (``metadata_inspect`` / ``metadata_clean``) and asks it
-        to repaint when the language or the busy state changes.
-        """
+        """The third tab: inspection, selective cleaning, integrity, exports."""
         panel = MetadataPanel(self)
         self.metadata_panel = panel
         return panel.build()
@@ -1059,110 +1304,191 @@ class PhantomApp:
     def _build_settings_tab(self) -> ctk.CTkFrame:
         frame = ctk.CTkFrame(self.frames, fg_color="transparent")
         scroll = ctk.CTkScrollableFrame(frame, fg_color="transparent", corner_radius=0)
-        scroll.pack(fill="both", expand=True, padx=6, pady=(4, 0))
+        scroll.pack(fill="both", expand=True, padx=6, pady=(6, 0))
         scroll.grid_columnconfigure(0, weight=1)
         self._seat_scroll(scroll)
 
-        lang_card = card(scroll)
-        lang_card.grid(row=0, column=0, sticky="ew", pady=(0, 12))
-        self.lang_title = card_title(lang_card, self.root, "")
-        self.lang_title.pack(fill="x", padx=18, pady=(14, 6))
+        # Group 1: Everyday settings (immediately visible) -----------------
+        everyday_card = card(scroll)
+        everyday_card.grid(row=0, column=0, sticky="ew", pady=(0, 12))
+        self.options_title = ctk.CTkLabel(
+            everyday_card,
+            text="",
+            font=sans_font(self.root, T.FONT_SIZE_SMALL, weight="bold"),
+            text_color=T.CLR_MUTED,
+            anchor="w",
+        )
+        self.options_title.pack(fill="x", padx=18, pady=(14, 8))
+        self.binder.bind(self.options_title, "settings_group_everyday")
+
+        grouped = inset_panel(everyday_card)
+        grouped.pack(fill="x", padx=18, pady=(0, 14))
+        grouped.grid_columnconfigure(0, weight=1)
+
+        # Row 1: Language
+        self.lang_title = ctk.CTkLabel(
+            grouped,
+            text="",
+            font=sans_font(self.root, T.FONT_SIZE_BODY, weight="bold"),
+            text_color=T.CLR_TEXT,
+            anchor="w",
+        )
+        self.lang_title.grid(row=0, column=0, sticky="ew", padx=(14, 10), pady=(12, 0))
         self.binder.bind(self.lang_title, "settings_language")
+        self.lang_sub = hint_label(grouped, self.root, "", wrap=460)
+        self.lang_sub.grid(row=1, column=0, sticky="ew", padx=(14, 10), pady=(2, 10))
+        self.binder.bind(self.lang_sub, "settings_language_sub")
         self.lang_bar = ctk.CTkSegmentedButton(
-            lang_card,
+            grouped,
             values=[],
             command=self._on_language_click,
             font=sans_font(self.root, T.FONT_SIZE_LABEL, weight="bold"),
-            height=34,
+            height=32,
+            corner_radius=8,
             selected_color=T.CLR_ACCENT,
             selected_hover_color=T.CLR_ACCENT_HOVER,
-            unselected_color=T.CLR_FIELD,
-            unselected_hover_color=T.CLR_CARD_ALT,
+            unselected_color=T.CLR_CARD_ALT,
+            unselected_hover_color=T.CLR_BORDER,
             text_color=T.CLR_TEXT,
         )
-        self.lang_bar.pack(fill="x", padx=18, pady=(0, 12))
+        self.lang_bar.grid(row=0, column=1, rowspan=2, padx=(0, 14), pady=10, sticky="e")
 
-        theme_card = card(scroll)
-        theme_card.grid(row=1, column=0, sticky="ew", pady=(0, 12))
-        self.theme_title = card_title(theme_card, self.root, "")
-        self.theme_title.pack(fill="x", padx=18, pady=(14, 6))
+        separator(grouped).grid(row=2, column=0, columnspan=2, sticky="ew", padx=14)
+
+        # Row 2: Appearance theme
+        self.theme_title = ctk.CTkLabel(
+            grouped,
+            text="",
+            font=sans_font(self.root, T.FONT_SIZE_BODY, weight="bold"),
+            text_color=T.CLR_TEXT,
+            anchor="w",
+        )
+        self.theme_title.grid(row=3, column=0, sticky="ew", padx=(14, 10), pady=(10, 0))
         self.binder.bind(self.theme_title, "settings_appearance")
+        self.theme_sub = hint_label(grouped, self.root, "", wrap=460)
+        self.theme_sub.grid(row=4, column=0, sticky="ew", padx=(14, 10), pady=(2, 10))
+        self.binder.bind(self.theme_sub, "settings_appearance_sub")
         self.theme_bar = ctk.CTkSegmentedButton(
-            theme_card,
+            grouped,
             values=[],
             command=self._on_theme_click,
             font=sans_font(self.root, T.FONT_SIZE_LABEL, weight="bold"),
-            height=34,
+            height=32,
+            corner_radius=8,
             selected_color=T.CLR_ACCENT,
             selected_hover_color=T.CLR_ACCENT_HOVER,
-            unselected_color=T.CLR_FIELD,
-            unselected_hover_color=T.CLR_CARD_ALT,
+            unselected_color=T.CLR_CARD_ALT,
+            unselected_hover_color=T.CLR_BORDER,
             text_color=T.CLR_TEXT,
         )
-        self.theme_bar.pack(fill="x", padx=18, pady=(0, 12))
+        self.theme_bar.grid(row=3, column=1, rowspan=2, padx=(0, 14), pady=10, sticky="e")
 
-        options_card = card(scroll)
-        options_card.grid(row=2, column=0, sticky="ew", pady=(0, 12))
-        self.options_title = card_title(options_card, self.root, "")
-        self.options_title.pack(fill="x", padx=18, pady=(14, 6))
-        self.binder.bind(self.options_title, "settings_animations")
-        self.animations_switch = ctk.CTkSwitch(
-            options_card,
+        separator(grouped).grid(row=5, column=0, columnspan=2, sticky="ew", padx=14)
+
+        # Row 3: Reduce animations
+        self.anim_title = ctk.CTkLabel(
+            grouped,
             text="",
+            font=sans_font(self.root, T.FONT_SIZE_BODY, weight="bold"),
+            text_color=T.CLR_TEXT,
+            anchor="w",
+        )
+        self.anim_title.grid(row=6, column=0, sticky="ew", padx=(14, 10), pady=(10, 0))
+        self.binder.bind(self.anim_title, "settings_reduce_motion")
+        self.anim_sub = hint_label(grouped, self.root, "", wrap=520)
+        self.anim_sub.grid(row=7, column=0, sticky="ew", padx=(14, 10), pady=(2, 10))
+        self.binder.bind(self.anim_sub, "settings_reduce_motion_sub")
+        self.animations_switch = ctk.CTkSwitch(
+            grouped,
+            text="",
+            width=46,
             command=self._on_animations_toggle,
             font=sans_font(self.root, T.FONT_SIZE_BODY),
             progress_color=T.CLR_ACCENT,
             button_color=T.CLR_ON_ACCENT,
             button_hover_color=T.CLR_ACCENT_DIM,
         )
-        self.animations_switch.pack(fill="x", padx=18, pady=(0, 6))
-        self.binder.bind(self.animations_switch, "settings_reduce_motion")
-        fit_switch_on_change(self.animations_switch)
-        self.verify_switch = ctk.CTkSwitch(
-            options_card,
+        self.animations_switch.grid(row=6, column=1, rowspan=2, padx=(0, 14), pady=10, sticky="e")
+
+        separator(grouped).grid(row=8, column=0, columnspan=2, sticky="ew", padx=14)
+
+        # Row 4: Verify output after embed
+        self.verify_title = ctk.CTkLabel(
+            grouped,
             text="",
+            font=sans_font(self.root, T.FONT_SIZE_BODY, weight="bold"),
+            text_color=T.CLR_TEXT,
+            anchor="w",
+        )
+        self.verify_title.grid(row=9, column=0, sticky="ew", padx=(14, 10), pady=(10, 0))
+        self.binder.bind(self.verify_title, "settings_verify_embed")
+        self.verify_sub = hint_label(grouped, self.root, "", wrap=520)
+        self.verify_sub.grid(row=10, column=0, sticky="ew", padx=(14, 10), pady=(2, 12))
+        self.binder.bind(self.verify_sub, "settings_verify_embed_sub")
+        self.verify_switch = ctk.CTkSwitch(
+            grouped,
+            text="",
+            width=46,
             command=self._on_verify_switch,
             font=sans_font(self.root, T.FONT_SIZE_BODY),
             progress_color=T.CLR_ACCENT,
             button_color=T.CLR_ON_ACCENT,
             button_hover_color=T.CLR_ACCENT_DIM,
         )
-        self.verify_switch.pack(fill="x", padx=18, pady=(0, 6))
-        self.binder.bind(self.verify_switch, "audit_verified", attribute="text")
-        fit_switch_on_change(self.verify_switch)
-        self.reset_button = secondary_button(
-            options_card, self.root, "", self._on_reset_settings
+        self.verify_switch.grid(row=9, column=1, rowspan=2, padx=(0, 14), pady=10, sticky="e")
+
+        # Group 2: About PHANTOM & Reset -----------------------------------
+        about_card = card(scroll)
+        about_card.grid(row=1, column=0, sticky="ew", pady=(0, 12))
+        about_head = ctk.CTkFrame(about_card, fg_color="transparent")
+        about_head.pack(fill="x", padx=18, pady=(14, 8))
+        about_head.grid_columnconfigure(0, weight=1)
+        self.about_title = ctk.CTkLabel(
+            about_head,
+            text="",
+            font=sans_font(self.root, T.FONT_SIZE_SMALL, weight="bold"),
+            text_color=T.CLR_MUTED,
+            anchor="w",
         )
-        self.reset_button.pack(anchor="w", padx=18, pady=(6, 14))
+        self.about_title.grid(row=0, column=0, sticky="w")
+        self.binder.bind(self.about_title, "settings_group_about")
+        self.reset_button = quiet_button(
+            about_head, self.root, "", self._on_reset_settings
+        )
+        self.reset_button.grid(row=0, column=1, sticky="e")
         self.binder.bind(self.reset_button, "settings_reset")
 
-        about_card = card(scroll)
-        about_card.grid(row=3, column=0, sticky="ew", pady=(0, 12))
-        self.about_title = card_title(about_card, self.root, "")
-        self.about_title.pack(fill="x", padx=18, pady=(14, 6))
-        self.binder.bind(self.about_title, "settings_about")
-        self.about_label = value_label(about_card, self.root, "", mono=True)
-        self.about_label.pack(fill="x", padx=18)
+        about_box = inset_panel(about_card)
+        about_box.pack(fill="x", padx=18, pady=(0, 14))
+        self.about_label = value_label(about_box, self.root, "", mono=True)
+        self.about_label.pack(fill="x", padx=12, pady=(10, 6))
         self.binder.bind_map(self.about_label, "settings_about", self._security_params())
-        self.limitations_label = hint_label(about_card, self.root, "", wrap=780)
-        self.limitations_label.pack(fill="x", padx=18, pady=(10, 4))
-        self.binder.bind(self.limitations_label, "about_limitations")
-        self.threat_label = hint_label(about_card, self.root, "", wrap=780)
-        self.threat_label.pack(fill="x", padx=18, pady=(4, 4))
+
+        self.threat_label = hint_label(about_box, self.root, "", wrap=760)
+        self.threat_label.pack(fill="x", padx=12, pady=(4, 4))
         self.binder.bind(self.threat_label, "settings_threat_model")
-        self.wipe_warning_label = hint_label(about_card, self.root, "", wrap=780)
-        self.wipe_warning_label.pack(fill="x", padx=18, pady=(4, 14))
+
+        self.limitations_label = hint_label(about_box, self.root, "", wrap=760)
+        self.limitations_label.pack(fill="x", padx=12, pady=(4, 4))
+        self.binder.bind(self.limitations_label, "about_limitations")
+        self.wipe_warning_label = hint_label(about_box, self.root, "", wrap=760)
+        self.wipe_warning_label.pack(fill="x", padx=12, pady=(2, 10))
         self.binder.bind(self.wipe_warning_label, "settings_wipe_warning")
         return frame
 
     def _build_footer(self) -> None:
-        footer = ctk.CTkFrame(self.root, fg_color="transparent")
-        footer.grid(row=3, column=0, sticky="ew", padx=24, pady=(4, 16))
+        footer_bar = ctk.CTkFrame(self.root, fg_color=T.CLR_LAYER, corner_radius=0)
+        footer_bar.grid(row=3, column=0, sticky="ew")
+        footer_bar.grid_columnconfigure(0, weight=1)
+        separator(footer_bar).grid(row=0, column=0, sticky="ew")
+
+        footer = ctk.CTkFrame(footer_bar, fg_color="transparent")
+        footer.grid(row=1, column=0, sticky="ew", padx=24, pady=(8, 12))
         footer.grid_columnconfigure(0, weight=1)
         self.progress_bar = ctk.CTkProgressBar(
             footer,
-            height=6,
-            corner_radius=3,
+            height=4,
+            corner_radius=2,
             progress_color=T.CLR_ACCENT,
             fg_color=T.CLR_PROGRESS_TROUGH,
         )
@@ -1179,7 +1505,7 @@ class PhantomApp:
         )
         self.binder.bind(self.stage_label, "lbl_progress_idle")
         self.stage_label.grid(row=1, column=0, sticky="w", pady=(4, 0))
-        self.cancel_button = secondary_button(footer, self.root, "", self._cancel_operation)
+        self.cancel_button = quiet_button(footer, self.root, "", self._cancel_operation)
         self.cancel_button.grid(row=0, column=1, rowspan=2, padx=(12, 0))
         self.binder.bind(self.cancel_button, "btn_cancel")
         self.status_label = ctk.CTkLabel(
@@ -1189,7 +1515,7 @@ class PhantomApp:
             text_color=T.CLR_TEXT_DIM,
             anchor="w",
         )
-        self.status_label.grid(row=2, column=0, columnspan=2, sticky="w", pady=(4, 0))
+        self.status_label.grid(row=2, column=0, columnspan=2, sticky="w", pady=(2, 0))
         self._set_status_key("status_ready")
 
     # ------------------------------------------------------------------
@@ -1246,7 +1572,10 @@ class PhantomApp:
         for name in ("dnd_carrier_hint", "dnd_stego_hint", "dnd_secret_hint"):
             hint = getattr(self, name, None)
             if hint is not None:
-                hint.pack_forget()
+                if hint.winfo_manager() == "grid":
+                    hint.grid_forget()
+                else:
+                    hint.pack_forget()
 
     def _render_all_labels(self) -> None:
         self._render_language_labels()
@@ -1386,7 +1715,8 @@ class PhantomApp:
             if not self.text_frame.winfo_ismapped():
                 self.file_frame.pack_forget()
                 self.text_frame.pack(fill="both", expand=True, padx=18, pady=(0, 4))
-                self.counter_row.pack(fill="x", padx=18, pady=(2, 12))
+                self.counter_row.pack(fill="x", padx=18, pady=(2, 4))
+                self.editor_actions.pack(fill="x", padx=18, pady=(0, 12))
             # The field is bypassed in file mode only; in text mode there is always
             # something to clear, an empty field included, so the button stays live.
             set_enabled(self.clear_field_button, not self._busy)
@@ -1395,7 +1725,8 @@ class PhantomApp:
             if not self.file_frame.winfo_ismapped():
                 self.text_frame.pack_forget()
                 self.counter_row.pack_forget()
-                self.file_frame.pack(fill="x", padx=18, pady=(0, 10))
+                self.editor_actions.pack_forget()
+                self.file_frame.pack(fill="x", padx=18, pady=(0, 14))
             self.secret_button.configure(state="normal")
         if vm.secret_path:
             self.secret_label.configure(text=os.path.basename(vm.secret_path))
@@ -1462,9 +1793,62 @@ class PhantomApp:
         if self.verify_checkbox.get() != vm.verify:
             self.verify_checkbox.select() if vm.verify else self.verify_checkbox.deselect()
         self.wipe_checkbox.configure(state="normal" if vm.verify else "disabled")
+        self._refresh_password_meter()
+        self._refresh_embed_summary()
         self._refresh_embed_ready()
         self._refresh_editor_actions()
         self._sync_capacity_status()
+
+    def _refresh_password_meter(self) -> None:
+        pwd = self.embed_pwd.get() if hasattr(self, "embed_pwd") else self.embed_vm.password
+        length = len(pwd)
+        self.pwd_len_label.configure(
+            text=self.i18n.t("pwd_len_counter", count=length, min_len=C.MIN_PASSWORD_LENGTH)
+        )
+        if length == 0:
+            self.pwd_meter_bar.set(0.0)
+            self.pwd_meter_bar.configure(progress_color=T.CLR_PROGRESS_TROUGH)
+            self.pwd_strength_label.configure(
+                text=self.i18n.t("pwd_len_need_min", min_len=C.MIN_PASSWORD_LENGTH),
+                text_color=T.CLR_MUTED,
+            )
+            return
+        frac = min(1.0, length / float(C.MIN_PASSWORD_LENGTH))
+        self.pwd_meter_bar.set(frac)
+        if length < C.MIN_PASSWORD_LENGTH:
+            self.pwd_meter_bar.configure(progress_color=T.CLR_ACCENT)
+            self.pwd_strength_label.configure(
+                text=self.i18n.t("pwd_len_need_min", min_len=C.MIN_PASSWORD_LENGTH),
+                text_color=T.CLR_MUTED,
+            )
+        else:
+            self.pwd_meter_bar.configure(progress_color=T.CLR_GREEN)
+            self.pwd_strength_label.configure(
+                text=self.i18n.t("pwd_len_met"),
+                text_color=T.CLR_GREEN,
+            )
+
+    def _refresh_embed_summary(self) -> None:
+        vm = self.embed_vm
+        carrier = vm.carrier
+        if (
+            carrier is not None
+            and vm.has_payload()
+            and len(vm.password) >= C.MIN_PASSWORD_LENGTH
+        ):
+            carrier_name = os.path.basename(carrier.path) or carrier.description
+            payload_name = vm.payload_name() or self.i18n.t("radio_text")
+            self.embed_summary_label.configure(
+                text=self.i18n.t(
+                    "embed_summary_ready", carrier=carrier_name, payload=payload_name
+                ),
+                text_color=T.CLR_TEXT,
+            )
+        else:
+            self.embed_summary_label.configure(
+                text=self.i18n.t("embed_summary_idle", min_len=C.MIN_PASSWORD_LENGTH),
+                text_color=T.CLR_MUTED,
+            )
 
     def _build_capacity_report(self) -> CapacityReport:
         """One snapshot for the panel, the fill bar and the embed button.
@@ -1780,6 +2164,21 @@ class PhantomApp:
         )
         set_enabled(self.embed_button, not blocked)
 
+    def _refresh_extract_summary(self) -> None:
+        vm = self.extract_vm
+        pwd = self.extract_pwd.get() if hasattr(self, "extract_pwd") else vm.password
+        if vm.carrier is not None and pwd:
+            carrier_name = os.path.basename(vm.carrier.path) or vm.carrier.description
+            self.extract_summary_label.configure(
+                text=self.i18n.t("extract_summary_ready", carrier=carrier_name),
+                text_color=T.CLR_TEXT,
+            )
+        else:
+            self.extract_summary_label.configure(
+                text=self.i18n.t("extract_summary_idle"),
+                text_color=T.CLR_MUTED,
+            )
+
     def _refresh_extract_state(self) -> None:
         vm = self.extract_vm
         self.stego_label.configure(
@@ -1791,6 +2190,7 @@ class PhantomApp:
         )
         notices = [self.i18n.t(key) for key in vm.notices if self.i18n.has(key)]
         self.stego_notice.configure(text="\n".join(notices))
+        self._refresh_extract_summary()
         payload = vm.result
         if payload is None:
             self.result_file_label.configure(text="")
@@ -1857,7 +2257,7 @@ class PhantomApp:
         self.reveal_button.configure(state="normal" if revealable else "disabled")
 
     def _refresh_settings_state(self) -> None:
-        if self.settings.animations:
+        if not self.settings.animations:
             self.animations_switch.select()
         else:
             self.animations_switch.deselect()
@@ -2171,6 +2571,8 @@ class PhantomApp:
 
     def _on_password_changed(self, _event: object | None = None) -> None:
         self.embed_vm.set_password(self.embed_pwd.get())
+        self._refresh_password_meter()
+        self._refresh_embed_summary()
 
     def _on_output_changed(self, _event: object | None = None) -> None:
         self.embed_vm.set_output(self.output_entry.get())
@@ -2185,6 +2587,8 @@ class PhantomApp:
         self._set_entry_text(self.embed_pwd, password)
         self.embed_pwd.configure(show="")
         self.show_embed_pwd.select()
+        self._refresh_password_meter()
+        self._refresh_embed_summary()
         self._copy_to_clipboard(password)
         self._set_status_key(
             "status_pwd_generated",
@@ -2329,11 +2733,14 @@ class PhantomApp:
         self.embed_vm.set_wipe_source(bool(self.wipe_checkbox.get()))
 
     def _on_verify_toggle(self) -> None:
-        self.embed_vm.set_verify(bool(self.verify_checkbox.get()))
+        enabled = bool(self.verify_checkbox.get())
+        self.settings.verify_after_embed = enabled
+        self.embed_vm.set_verify(enabled)
         if not self.embed_vm.verify and self.embed_vm.wipe_source:
             # Secure deletion is only ever offered on a verified output.
             self.embed_vm.set_wipe_source(False)
-        self._refresh_embed_state()
+        self._save_settings()
+        self._refresh_all()
 
     # -- file pickers ---------------------------------------------------
     def _file_types(self) -> list[tuple[str, str]]:
@@ -2392,6 +2799,39 @@ class PhantomApp:
                 return path
         return None
 
+    def _carrier_rejection_message(self, path: str) -> str | None:
+        ext = os.path.splitext(path)[1].lower()
+        allowed = C.IMAGE_EXTENSIONS + C.AUDIO_WAV_EXTENSIONS + C.AUDIO_FLAC_EXTENSIONS
+        if ext in allowed:
+            return None
+        shown = ext.lstrip(".").upper() or "FILE"
+        lossy = set(
+            getattr(
+                C,
+                "LOSSY_AUDIO_EXTENSIONS",
+                (".mp3", ".aac", ".m4a", ".ogg", ".oga", ".opus", ".wma", ".mp2"),
+            )
+        )
+        if ext in lossy:
+            return self.i18n.t("err_lossy_carrier", ext=shown)
+        return self.i18n.t("err_unsupported_carrier_inline", ext=shown)
+
+    def _show_embed_carrier_error(self, message: str) -> None:
+        self.embed_carrier_error_label.configure(text=message)
+        self.embed_carrier_error.pack(fill="x", padx=18, pady=(0, 8))
+
+    def _dismiss_embed_carrier_error(self) -> None:
+        self.embed_carrier_error.pack_forget()
+        self.embed_carrier_error_label.configure(text="")
+
+    def _show_extract_carrier_error(self, message: str) -> None:
+        self.extract_carrier_error_label.configure(text=message)
+        self.extract_carrier_error.pack(fill="x", padx=18, pady=(0, 8))
+
+    def _dismiss_extract_carrier_error(self) -> None:
+        self.extract_carrier_error.pack_forget()
+        self.extract_carrier_error_label.configure(text="")
+
     def _drop_carrier(self, paths: list[str]) -> None:
         path = self._accepted_drop(
             paths, C.IMAGE_EXTENSIONS + C.AUDIO_WAV_EXTENSIONS + C.AUDIO_FLAC_EXTENSIONS
@@ -2399,6 +2839,9 @@ class PhantomApp:
         if path:
             self._set_carrier(path)
         elif paths:
+            msg = self._carrier_rejection_message(paths[0])
+            if msg:
+                self._show_embed_carrier_error(msg)
             self._show_error(UnsupportedCarrier("dropped file is not a supported carrier"))
 
     def _drop_stego(self, paths: list[str]) -> None:
@@ -2407,6 +2850,10 @@ class PhantomApp:
         )
         if path:
             self._set_stego(path)
+        elif paths:
+            msg = self._carrier_rejection_message(paths[0])
+            if msg:
+                self._show_extract_carrier_error(msg)
 
     def _drop_metadata(self, paths: list[str]) -> None:
         path = self._accepted_drop(
@@ -2414,6 +2861,10 @@ class PhantomApp:
         )
         if path and self.metadata_panel is not None:
             self.metadata_panel.load_file(path)
+        elif paths and self.metadata_panel is not None:
+            msg = self._carrier_rejection_message(paths[0])
+            if msg:
+                self.metadata_panel.show_file_error(msg)
 
     def _drop_secret(self, paths: list[str]) -> None:
         for path in paths:
@@ -2423,6 +2874,12 @@ class PhantomApp:
 
     # -- probes ---------------------------------------------------------
     def _set_carrier(self, path: str) -> None:
+        rejection = self._carrier_rejection_message(path)
+        if rejection is not None:
+            self._show_embed_carrier_error(rejection)
+            return
+        self._dismiss_embed_carrier_error()
+        self.embed_result_panel.pack_forget()
         self.embed_vm.set_carrier(path)
         # A different carrier means a different capacity: the old estimate was
         # measured against the old one and cannot stay on screen.
@@ -2432,6 +2889,12 @@ class PhantomApp:
         self._start_job("probe_embed", self.embed_vm.make_probe_job(path), "status_embedding")
 
     def _set_stego(self, path: str) -> None:
+        rejection = self._carrier_rejection_message(path)
+        if rejection is not None:
+            self._show_extract_carrier_error(rejection)
+            return
+        self._dismiss_extract_carrier_error()
+        self._hide_extract_error()
         self.extract_vm.set_stego(path)
         self._refresh_all()
         self._start_job("probe_extract", self.extract_vm.make_probe_job(path), "status_extracting")
@@ -2703,6 +3166,7 @@ class PhantomApp:
             return
         if event.kind is WorkerEventType.ERROR and event.error is not None:
             failed_estimate = self._operation == "estimate"
+            failed_extract = self._operation == "extract"
             self._finish_operation_ui()
             self._reset_progress()
             if failed_estimate:
@@ -2710,6 +3174,8 @@ class PhantomApp:
                 # of the previous payload up as if it described this one.
                 self._estimate_failed = True
                 self._refresh_embed_state()
+            if failed_extract:
+                self._show_extract_error(self._error_message(event.error))
             self._show_error(event.error)
 
     def _on_progress(self, event: WorkerEvent) -> None:
@@ -2799,11 +3265,25 @@ class PhantomApp:
         if outcome.verified:
             self._set_status_key("status_done", severity="ok", path=outcome.output_path)
             self.stage_label.configure(text=self.i18n.t("audit_verified"))
+            self.embed_result_title.configure(
+                text=self.i18n.t("embed_result_done"), text_color=T.CLR_GREEN
+            )
+            self.embed_result_panel.configure(fg_color=T.CLR_GREEN_BG)
         else:
             self._set_status_key(
                 "status_unverified", severity="warn", path=outcome.output_path
             )
             self.stage_label.configure(text=self.i18n.t("audit_unverified"))
+            self.embed_result_title.configure(
+                text=self.i18n.t("embed_result_unverified"), text_color=T.CLR_YELLOW
+            )
+            self.embed_result_panel.configure(fg_color=T.CLR_YELLOW_BG)
+        self._last_embed_output = outcome.output_path
+        self.embed_result_sub.configure(
+            text=f"{outcome.payload_bytes} B · {os.path.basename(outcome.output_path)}"
+        )
+        self.embed_result_path_label.configure(text=outcome.output_path)
+        self.embed_result_panel.pack(fill="x", padx=18, pady=(0, 14))
         self.animator.to("progress", 1.0, duration=0.2, on_update=self.progress_bar.set)
         self._ensure_animation_loop()
         self.settings.last_dir = os.path.dirname(outcome.output_path) or self.settings.last_dir
@@ -2822,7 +3302,37 @@ class PhantomApp:
         if outcome.notices:
             LOGGER.info("embed notices: %s", ", ".join(outcome.notices))
 
+    def _copy_embed_result_path(self) -> None:
+        path = getattr(self, "_last_embed_output", "") or self.embed_vm.output_path
+        if not path:
+            self._set_status_key("status_path_missing", severity="warn")
+            return
+        self._copy_to_clipboard(path)
+        self._set_status_key("status_copied", severity="ok")
+
+    def _reveal_embed_result(self) -> None:
+        path = getattr(self, "_last_embed_output", "") or self.embed_vm.output_path
+        if not path:
+            self._set_status_key("status_path_missing", severity="warn")
+            return
+        if fsutil.reveal_in_file_manager(path):
+            self._set_status_key("status_revealed", severity="ok", path=path)
+        else:
+            self._set_status_key("status_reveal_failed", severity="warn")
+
+    def _show_extract_error(self, message: str) -> None:
+        self.extract_error_label.configure(text=message)
+        self.extract_error_panel.pack(fill="x", padx=18, pady=(0, 14))
+
+    def _hide_extract_error(self) -> None:
+        self.extract_error_panel.pack_forget()
+        self.extract_error_label.configure(text="")
+
+    def _focus_extract_password(self) -> None:
+        self.extract_pwd.focus_set()
+
     def _on_extract_done(self, outcome: ExtractOutcome) -> None:
+        self._hide_extract_error()
         self.extract_vm.apply_result(outcome)
         self._refresh_extract_state()
         payload = outcome.payload
@@ -2982,6 +3492,8 @@ class PhantomApp:
         entry.focus_set()
         if entry is self.embed_pwd:
             self._on_password_changed()
+        elif entry is self.extract_pwd:
+            self._refresh_extract_summary()
         self._set_status_key("status_pasted", severity="ok")
 
     def _copy_password(self) -> None:
@@ -3250,6 +3762,7 @@ class PhantomApp:
         self._save_settings()
 
     def _clear_extract_result_only(self) -> None:
+        self._hide_extract_error()
         self.extract_vm.result = None
         self.extract_vm.outcome = None
         self._result_decode_notified = False
@@ -3258,6 +3771,7 @@ class PhantomApp:
         self._refresh_extract_state()
 
     def _clear_extract(self) -> None:
+        self._dismiss_extract_carrier_error()
         self._clear_extract_result_only()
         self.extract_vm.clear()
         self.extract_pwd.delete(0, "end")
@@ -3268,6 +3782,9 @@ class PhantomApp:
         # The full reset really is a reset: text, password, carrier, output path and
         # the estimate history go, so a later estimate cannot be measured against a
         # carrier that is no longer loaded.
+        self._dismiss_embed_carrier_error()
+        self.embed_result_panel.pack_forget()
+        self._last_embed_output = ""
         self.debouncer.abort()
         self._invalidate_estimate()
         self.embed_vm.clear()
@@ -3350,17 +3867,21 @@ class PhantomApp:
         self._schedule_theme_poll()
 
     def _on_animations_toggle(self) -> None:
-        enabled = bool(self.animations_switch.get())
+        reduce_motion = bool(self.animations_switch.get())
+        enabled = not reduce_motion
         self.settings.animations = enabled
         self.animator.set_enabled(enabled)
         self._save_settings()
         self._set_status_key("status_settings_saved", severity="info")
 
     def _on_verify_switch(self) -> None:
-        self.settings.verify_after_embed = bool(self.verify_switch.get())
-        self.embed_vm.set_verify(self.settings.verify_after_embed)
+        enabled = bool(self.verify_switch.get())
+        self.settings.verify_after_embed = enabled
+        self.embed_vm.set_verify(enabled)
+        if not enabled and self.embed_vm.wipe_source:
+            self.embed_vm.set_wipe_source(False)
         self._save_settings()
-        self._refresh_extract_state()
+        self._refresh_all()
 
     def _on_reset_settings(self) -> None:
         self.settings = self.store.reset()
