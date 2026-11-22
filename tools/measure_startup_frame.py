@@ -294,6 +294,7 @@ def run(label: str, watch: float) -> dict[str, Any]:
     worst_gap_ms = [0.0]
     worst_gap_at_ms = [0.0]
     beats = [0]
+    _heartbeat_armed = [False]
     stalls: list[str] = []
     done_flag = [False]
 
@@ -393,6 +394,13 @@ def run(label: str, watch: float) -> dict[str, Any]:
 
     def on_idle() -> None:
         mark("idle")
+        # Arm the heartbeat once the first after_idle callback has fired — that
+        # means Tk has processed its initial events (Aqua window-server
+        # round-trips etc.) and the loop is genuinely idle.  Gaps measured from
+        # this point on are real stalls, not Tk settling in.
+        if not _heartbeat_armed[0]:
+            _heartbeat_armed[0] = True
+            last_beat[0] = time.perf_counter()
 
     def on_loop() -> None:
         mark("loop")
@@ -400,12 +408,14 @@ def run(label: str, watch: float) -> dict[str, Any]:
     def beat() -> None:
         now = time.perf_counter()
         # On Tk 9.1 Aqua the event loop can be blocked for well over a second
-        # while it does its initial window-server round-trips (_update_dimensions_event
-        # -> winfo_height etc.).  Those gaps are Tk settling in, not a stalled
-        # loop, so skip gap measurement until the loop has had a few seconds to
-        # settle.  Genuine stalls after settling are still measured.
-        settled = (now - started) >= 2.0
-        if beats[0] > 0 and settled:
+        # while it does its initial window-server round-trips
+        # (_update_dimensions_event -> winfo_height etc.).  Those gaps are Tk
+        # settling in, not a stalled loop.  Only start measuring gaps once the
+        # first after_idle callback has fired — that means the loop has processed
+        # its initial events and is genuinely idle.  Genuine stalls after that
+        # point are still measured, and the 2-second worst_gap_ms threshold is
+        # unchanged.
+        if beats[0] > 0 and _heartbeat_armed[0]:
             gap_ms = (now - last_beat[0]) * 1000.0
             if gap_ms > worst_gap_ms[0]:
                 worst_gap_ms[0] = gap_ms
@@ -512,9 +522,8 @@ def run(label: str, watch: float) -> dict[str, Any]:
     # any pause happens inside mainloop() itself (Aqua initialization on Tk 9.1,
     # for example) rather than in the Python setup before it.
     mark("pre_mainloop")
-    # Arm the heartbeat right before entering mainloop, so the first gap
-    # measurement starts from the moment the event loop takes over.
-    last_beat[0] = time.perf_counter()
+    # The heartbeat is armed inside on_idle (first after_idle callback), once Tk
+    # has processed its initial events and the loop is genuinely idle.
 
     phase[0] = "mainloop"
     try:
