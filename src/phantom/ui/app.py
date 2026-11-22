@@ -630,28 +630,35 @@ class PhantomApp:
 
         # How the carrier is obtained: an offline example, a built-in image, or
         # the user's own file (a JPEG is turned into a temporary PNG copy).
-        carrier_source_row = self.carrier_source_row = FlowRow(carrier_card)
+        # DIAGNOSTIC: replaced FlowRow with a plain CTkFrame using fixed grid
+        # to test whether FlowRow's reflow passes contribute to the Tk 9.1
+        # startup frame worst_gap_ms increase. All four buttons, their
+        # attributes, texts and handlers are unchanged.
+        carrier_source_row = self.carrier_source_row = ctk.CTkFrame(
+            carrier_card, fg_color="transparent"
+        )
         carrier_source_row.pack(fill="x", padx=18, pady=(0, 8))
+        carrier_source_row.grid_columnconfigure(3, weight=1)
 
         self.try_example_button = primary_button(
             carrier_source_row, self.root, "", self._on_try_example
         )
-        carrier_source_row.add(self.try_example_button)
+        self.try_example_button.grid(row=0, column=0, sticky="w", padx=(0, 8))
 
         self.builtin_carrier_button = quiet_button(
             carrier_source_row, self.root, "", self._on_builtin_carrier
         )
-        carrier_source_row.add(self.builtin_carrier_button)
+        self.builtin_carrier_button.grid(row=0, column=1, sticky="w", padx=(0, 8))
 
         self.return_to_files_button = quiet_button(
             carrier_source_row, self.root, "", self._on_return_to_files
         )
-        carrier_source_row.add(self.return_to_files_button)
+        self.return_to_files_button.grid(row=0, column=2, sticky="w", padx=(0, 8))
 
         self.carrier_button = quiet_button(
             carrier_source_row, self.root, "", self._choose_carrier
         )
-        carrier_source_row.add(self.carrier_button)
+        self.carrier_button.grid(row=0, column=3, sticky="e")
 
         self.carrier_drop = inset_panel(carrier_card, border_width=1)
         self.carrier_drop.pack(fill="x", padx=18, pady=(0, 6))
