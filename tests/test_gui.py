@@ -1095,8 +1095,8 @@ def test_demo_return_to_files_full_cycle(
     assert app.worker.busy is False, "return to files must finish"
     assert app.embed_vm.carrier_source != app.embed_vm.SOURCE_EXAMPLE, "must leave example mode"
     # The user's form is restored: JPG carrier (as temp PNG) and PDF attachment.
-    assert app._temp_carrier == jpg_temp_png, "temp PNG must be restored"
-    assert Path(app._temp_carrier).exists(), "temp PNG file must be restored"
+    assert app._temp_carrier == jpg_temp_png, "temp PNG tracking must be restored"
+    assert app.embed_vm.carrier_path == jpg_temp_png, "carrier path must be restored to temp PNG"
     assert app.embed_vm.secret_path == str(pdf_path), "secret path must be restored"
     assert app.embed_vm.carrier_source == app.embed_vm.SOURCE_FILE, "carrier source must be file"
 
