@@ -653,6 +653,16 @@ class PhantomApp:
         )
         carrier_source_row.add(self.carrier_button)
 
+        # One forced layout pass now; Tk 9.1 Aqua sends many <Configure> events
+        # while the window is sizing up during startup, and each one triggers a
+        # FlowRow reflow that measures every child and re-grids them.  Suspend
+        # those passes until the loop is idle, then do a single redraw.
+        carrier_source_row.redraw_now(force=True)
+        carrier_source_row.suspended = True
+        self.root.after_idle(
+            lambda: setattr(carrier_source_row, "suspended", False)
+        )
+
         self.carrier_drop = inset_panel(carrier_card, border_width=1)
         self.carrier_drop.pack(fill="x", padx=18, pady=(0, 6))
         self.carrier_drop.grid_columnconfigure(0, weight=1)
