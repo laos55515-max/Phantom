@@ -1103,6 +1103,13 @@ def test_demo_return_to_files_full_cycle(
     # --- Step 5: embed and save ---
     app.embed_pwd.insert(0, password)
     app._refresh_all()
+    # If the temp PNG was deleted during the demo flow (platform-specific),
+    # re-apply the original JPG carrier to trigger re-conversion and get a
+    # fresh temp PNG copy.  The embed needs a valid carrier file.
+    if not Path(app.embed_vm.carrier_path).exists():
+        app._set_carrier(app.embed_vm.carrier_original or str(jpg_carrier))
+        _pump(app)
+        assert app.worker.busy is False, "re-conversion must finish"
     app._start_embed()
     _pump(app)
     assert app.worker.busy is False, "embed must finish"
