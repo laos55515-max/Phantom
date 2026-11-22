@@ -1067,9 +1067,9 @@ def test_demo_return_to_files_full_cycle(
     # --- Step 1: select a JPEG carrier ---
     app._drop_carrier([str(jpg_carrier)])
     _pump(app)
-    assert app.worker.busy is False
-    assert app._temp_carrier is not None
-    assert Path(app._temp_carrier).exists()
+    assert app.worker.busy is False, "carrier conversion must finish"
+    assert app._temp_carrier is not None, "temp PNG must exist after JPG drop"
+    assert Path(app._temp_carrier).exists(), "temp PNG file must exist"
     jpg_temp_png = app._temp_carrier
 
     # --- Step 2: select a PDF attachment ---
@@ -1077,54 +1077,54 @@ def test_demo_return_to_files_full_cycle(
     pdf_path.write_bytes(b"%PDF-1.4\nsecret payload\n%%EOF\n")
     app._set_secret(str(pdf_path))
     _pump(app)
-    assert app.worker.busy is False
-    assert app.embed_vm.secret_path == str(pdf_path)
+    assert app.worker.busy is False, "secret selection must finish"
+    assert app.embed_vm.secret_path == str(pdf_path), "secret path must be set"
 
     # --- Step 3: open the demo ---
     app._on_try_example()
     _pump(app)
-    assert app.worker.busy is False
-    assert app.embed_vm.carrier_source == app.embed_vm.SOURCE_EXAMPLE
+    assert app.worker.busy is False, "demo open must finish"
+    assert app.embed_vm.carrier_source == app.embed_vm.SOURCE_EXAMPLE, "carrier source must be example"
     # The JPG's temp PNG survives the demo.
-    assert app._temp_carrier == jpg_temp_png
-    assert Path(app._temp_carrier).exists()
+    assert app._temp_carrier == jpg_temp_png, "temp PNG must survive demo"
+    assert Path(app._temp_carrier).exists(), "temp PNG file must survive demo"
 
     # --- Step 4: return to my files ---
     app._on_return_to_files()
     _pump(app)
-    assert app.worker.busy is False
-    assert app.embed_vm.carrier_source != app.embed_vm.SOURCE_EXAMPLE
+    assert app.worker.busy is False, "return to files must finish"
+    assert app.embed_vm.carrier_source != app.embed_vm.SOURCE_EXAMPLE, "must leave example mode"
     # The user's form is restored: JPG carrier (as temp PNG) and PDF attachment.
-    assert app._temp_carrier == jpg_temp_png
-    assert Path(app._temp_carrier).exists()
-    assert app.embed_vm.secret_path == str(pdf_path)
-    assert app.embed_vm.carrier_source == app.embed_vm.SOURCE_FILE
+    assert app._temp_carrier == jpg_temp_png, "temp PNG must be restored"
+    assert Path(app._temp_carrier).exists(), "temp PNG file must be restored"
+    assert app.embed_vm.secret_path == str(pdf_path), "secret path must be restored"
+    assert app.embed_vm.carrier_source == app.embed_vm.SOURCE_FILE, "carrier source must be file"
 
     # --- Step 5: embed and save ---
     app.embed_pwd.insert(0, password)
     app._refresh_all()
     app._start_embed()
     _pump(app)
-    assert app.worker.busy is False
+    assert app.worker.busy is False, "embed must finish"
     output = Path(app.embed_vm.output_path)
     assert output.exists(), "embed must write the stego file"
 
     # --- Step 6: open in extract and extract ---
     app._open_in_extract()
     _pump(app)
-    assert app.current_tab == "extract"
+    assert app.current_tab == "extract", "must be on extract tab"
     app.extract_pwd.insert(0, password)
     app._start_extract()
     _pump(app)
-    assert app.worker.busy is False
+    assert app.worker.busy is False, "extract must finish"
     result = app.extract_vm.result
     assert result is not None and result.integrity_ok, "extraction must verify"
     # The extracted bytes must match the original PDF.
-    assert result.data == pdf_path.read_bytes()
+    assert result.data == pdf_path.read_bytes(), "extracted PDF bytes must match original"
 
     # --- Step 7: clean up ---
     app._clear_embed()
-    assert app._temp_carrier is None
+    assert app._temp_carrier is None, "temp PNG must be cleaned up"
 
 
 def _extracted(version: int):

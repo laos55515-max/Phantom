@@ -3510,8 +3510,9 @@ class PhantomApp:
             self._on_done(event)
             return
         if event.kind is WorkerEventType.CANCELLED:
+            operation = self._operation
             self._finish_operation_ui()
-            if self._operation == "prepare_carrier":
+            if operation == "prepare_carrier":
                 # A cancelled JPEG conversion leaves the previous carrier intact.
                 self._pending_carrier = None
             # The bar used to keep whatever fraction the cancelled job reached,
