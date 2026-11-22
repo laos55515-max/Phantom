@@ -14,6 +14,7 @@
   "btn_choose_stego": "SELECT STEGO FILE",
   "btn_try_example": "Try with example",
   "btn_builtin_carrier": "Use built-in image",
+  "btn_return_to_files": "Return to my files",
   "btn_clear": "RESET",
   "btn_clear_field": "CLEAR FIELD",
   "btn_close": "CLOSE",

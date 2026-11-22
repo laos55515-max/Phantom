@@ -30,6 +30,7 @@ from PIL import Image, ImageOps, UnidentifiedImageError
 from phantom.core import constants as C
 from phantom.core import files as fsutil
 from phantom.core.errors import (
+    OperationCancelled,
     PhantomIOError,
     UnsupportedCarrier,
     WrongPasswordOrNoData,
@@ -259,6 +260,14 @@ def _jpg_to_png(
         try:
             converted.save(tmp_path, **save_kwargs)
         except Exception:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp_path)
+            raise
+        # A cancel that lands after the save completed must not leave the temp
+        # PNG on disk: clean it up before re-raising.
+        try:
+            check_cancel(cancel)
+        except OperationCancelled:
             with contextlib.suppress(OSError):
                 os.unlink(tmp_path)
             raise

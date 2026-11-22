@@ -643,6 +643,11 @@ class PhantomApp:
         )
         carrier_source_row.add(self.builtin_carrier_button)
 
+        self.return_to_files_button = quiet_button(
+            carrier_source_row, self.root, "", self._on_return_to_files
+        )
+        carrier_source_row.add(self.return_to_files_button)
+
         self.carrier_button = quiet_button(
             carrier_source_row, self.root, "", self._choose_carrier
         )
@@ -1585,6 +1590,7 @@ class PhantomApp:
         self.binder.bind(self.carrier_button, "btn_choose_carrier")
         self.binder.bind(self.try_example_button, "btn_try_example")
         self.binder.bind(self.builtin_carrier_button, "btn_builtin_carrier")
+        self.binder.bind(self.return_to_files_button, "btn_return_to_files")
         self.binder.bind(self.stego_button, "btn_choose_stego")
         self.binder.bind(self.secret_button, "btn_choose_file")
         self.binder.bind(self.output_button, "btn_browse_output")
@@ -1854,6 +1860,13 @@ class PhantomApp:
         self._refresh_embed_ready()
         self._refresh_editor_actions()
         self._sync_capacity_status()
+        # The "Return to my files" button is only meaningful while the demo
+        # example is active; disable it otherwise so the carrier source row stays
+        # uncluttered.
+        set_enabled(
+            self.return_to_files_button,
+            self.embed_vm.carrier_source == self.embed_vm.SOURCE_EXAMPLE,
+        )
 
     def _refresh_carrier_size_status(self) -> None:
         """\"Проверяем размер\" / \"Помещается\" / \"Нужна картинка побольше\".
@@ -2357,6 +2370,7 @@ class PhantomApp:
             self.secret_button if self.embed_vm.mode is PayloadMode.FILE else None,
             self.try_example_button,
             self.builtin_carrier_button,
+            self.return_to_files_button,
             self.embed_open_extract_button,
             self.generate_button,
             self.embed_clear_button,
@@ -3144,6 +3158,37 @@ class PhantomApp:
             self.secret_label.configure(text=os.path.basename(self.embed_vm.secret_path))
         else:
             self.secret_label.configure(text=self.i18n.t("lbl_no_secret_file"))
+        self._refresh_all()
+
+    def _on_return_to_files(self) -> None:
+        """Leave the demo example and restore the user's form.
+
+        The user's attachment, image (including a JPEG's temp PNG copy),
+        password and save path come back exactly as they were before the
+        example was entered.  The temp PNG stays on disk and keeps being owned
+        by this window.
+        """
+        if self.worker.busy:
+            self._show_warning("warn_operation_t", "warn_operation_m")
+            return
+        if self.embed_vm.carrier_source != self.embed_vm.SOURCE_EXAMPLE:
+            return
+        self._restore_example_state()
+        # If the restored carrier is a JPEG, its temp PNG was preserved during
+        # the demo and is still tracked; re-apply it so the probe runs against
+        # the copy, not the original.
+        if (
+            self.embed_vm.carrier_source == self.embed_vm.SOURCE_FILE
+            and self.embed_vm.temp_carrier
+            and os.path.splitext(self.embed_vm.carrier_path or "")[1].lower()
+            in C.JPEG_EXTENSIONS
+        ):
+            self._apply_carrier(
+                self.embed_vm.temp_carrier,
+                self.embed_vm.carrier_original,
+                self.embed_vm.temp_carrier,
+                self.embed_vm.output_path or "",
+            )
         self._refresh_all()
 
     def _suggest_example_output(self) -> None:
