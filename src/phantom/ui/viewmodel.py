@@ -230,6 +230,10 @@ class EmbedViewModel:
         The output path is intentionally left untouched so the caller can
         suggest a user-writable folder instead of the read-only resources dir.
         Wipe-source is disabled for the demo: nothing the user owns is deleted.
+
+        The temporary PNG of a user's JPEG carrier is intentionally preserved:
+        it stays on disk and tracked so the carrier can be restored unchanged
+        when the user leaves the demo.
         """
         had_output = bool(self.output_path)
         self.set_mode(PayloadMode.FILE)
@@ -243,7 +247,6 @@ class EmbedViewModel:
         self.wipe_source = False
         self.carrier_source = self.SOURCE_EXAMPLE
         self.carrier_original = None
-        self.temp_carrier = None
         self.builtin_index = 0
         self.reset_estimate()
 
@@ -340,8 +343,9 @@ class EmbedViewModel:
         example overwrites carrier, attachment, password and output path, and
         the user's choices must come back when they exit example mode.
 
-        ``temp_carrier`` is deliberately omitted: entering the example drops any
-        temporary PNG, so a restored temp path would point at a deleted file.
+        ``temp_carrier`` is included because the temporary PNG of a user's JPEG
+        carrier is preserved during the demo (see set_carrier_example), so a
+        restored temp path still points at an existing file.
         """
         return {
             "mode": self.mode,
@@ -357,6 +361,7 @@ class EmbedViewModel:
             "notices": self.notices,
             "carrier_source": self.carrier_source,
             "carrier_original": self.carrier_original,
+            "temp_carrier": self.temp_carrier,
             "builtin_index": self.builtin_index,
         }
 
@@ -364,8 +369,9 @@ class EmbedViewModel:
         """Restore the form state saved by :meth:`embed_form_snapshot`.
 
         The temporary carrier, if any, stays owned by the view model: restoring
-        does not touch the filesystem.  ``temp_carrier`` is always cleared here
-        because entering the example drops any temporary PNG.
+        does not touch the filesystem.  ``temp_carrier`` is restored from the
+        snapshot because the temporary PNG of a user's JPEG carrier is preserved
+        during the demo.
         """
         self._release_temp_carrier()
         self.mode = state["mode"]  # type: ignore[assignment]
@@ -381,7 +387,7 @@ class EmbedViewModel:
         self.notices = state["notices"]  # type: ignore[assignment]
         self.carrier_source = state["carrier_source"]  # type: ignore[assignment]
         self.carrier_original = state["carrier_original"]  # type: ignore[assignment]
-        self.temp_carrier = None
+        self.temp_carrier = state.get("temp_carrier")  # type: ignore[assignment]
         self.builtin_index = state["builtin_index"]  # type: ignore[assignment]
 
     # -- derived state -----------------------------------------------------

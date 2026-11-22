@@ -3107,7 +3107,8 @@ class PhantomApp:
         if self._example_saved_state is None:
             self._example_saved_state = self.embed_vm.embed_form_snapshot()
         self.embed_result_panel.pack_forget()
-        self._drop_temp_carrier()
+        # The temporary PNG of a user's JPEG carrier is kept on disk during the
+        # demo so the carrier can be restored unchanged when the user leaves.
         self.embed_vm.set_carrier_example(str(EXAMPLE_CARRIER), str(EXAMPLE_SECRET))
         # The example comes with a test password so the full cycle works
         # without the user typing anything.  Fill the visible field too.
@@ -3131,6 +3132,11 @@ class PhantomApp:
         if state is None:
             return
         self.embed_vm.restore_embed_form(state)
+        # Sync the window's own temp-carrier tracking with the restored view
+        # model so the temporary PNG of a user's JPEG carrier stays owned and
+        # cleaned up on the next carrier change or window close.
+        self._temp_carrier = self.embed_vm.temp_carrier
+        self._carrier_original = self.embed_vm.carrier_original
         # Reflect the restored state in the widgets.
         self._set_entry_text(self.output_entry, self.embed_vm.output_path or "")
         self._set_entry_text(self.embed_pwd, self.embed_vm.password)

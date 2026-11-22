@@ -861,30 +861,97 @@ def test_example_restores_non_empty_form(app, rgb_carrier: Path, password: str) 
 
 
 def test_example_after_jpg_carrier(app, jpg_carrier: Path) -> None:
-    """Entering the example after a JPG carrier: temp PNG is dropped, form saved,
-    and restoring does not resurrect a deleted temp path."""
+    """Entering the example after a JPG carrier: temp PNG is preserved during
+    the demo, and the carrier is fully restored on exit so the attachment can
+    be saved without re-selecting the JPG."""
+    from phantom.ui.app import EXAMPLE_SECRET
     # Select a JPEG: it gets converted to a temp PNG copy.
     app._drop_carrier([str(jpg_carrier)])
+    _pump(app)
+    assert app.worker.busy is False
+    temp_before_demo = app._temp_carrier
+    assert temp_before_demo is not None
+    assert Path(temp_before_demo).exists()
+
+    # Enter the example: snapshot includes temp_carrier, temp PNG kept on disk.
+    app._on_try_example()
+    _pump(app)
+    assert app.worker.busy is False
+    # The temp PNG from the JPG conversion survives the demo.
+    assert app._temp_carrier == temp_before_demo
+    assert Path(app._temp_carrier).exists()
+    assert app._example_saved_state is not None
+    assert "temp_carrier" in app._example_saved_state
+    assert app._example_saved_state["temp_carrier"] == temp_before_demo
+
+    # Leave example mode by re-selecting the same JPG: carrier is restored
+    # from the snapshot (temp PNG still valid), no re-selection needed.
+    app._set_carrier(str(jpg_carrier))
+    _pump(app)
+    assert app.worker.busy is False
+    assert app._example_saved_state is None
+    # The carrier is the restored temp PNG, same as before the demo.
+    assert app._temp_carrier == temp_before_demo
+    assert Path(app._temp_carrier).exists()
+    # The user's attachment (the example secret) is restored: can embed without
+    # choosing a file again.
+    assert app.embed_vm.secret_path == str(EXAMPLE_SECRET)
+    assert app.embed_vm.carrier_source == app.embed_vm.SOURCE_FILE
+
+
+def test_example_can_save_attachment_after_exit(app, jpg_carrier: Path, password: str) -> None:
+    """After exiting the demo, the restored JPG carrier can embed and save
+    without the user re-selecting the image."""
+    # Select a JPEG: converted to temp PNG.
+    app._drop_carrier([str(jpg_carrier)])
+    _pump(app)
+    assert app.worker.busy is False
+    assert app._temp_carrier is not None
+
+    # Enter and leave the demo.
+    app._on_try_example()
+    _pump(app)
+    app._set_carrier(str(jpg_carrier))
     _pump(app)
     assert app.worker.busy is False
     assert app._temp_carrier is not None
     assert Path(app._temp_carrier).exists()
 
-    # Enter the example: snapshot is taken (without temp_carrier), temp dropped.
-    app._on_try_example()
+    # Embed and save using the restored carrier — no re-selection needed.
+    app.embed_pwd.insert(0, password)
+    app._set_textbox(app.embed_text, "payload after demo exit")
+    app._refresh_all()
+    app._start_embed()
     _pump(app)
     assert app.worker.busy is False
-    # The temp PNG from the JPG conversion is gone.
+    output = Path(app.embed_vm.output_path)
+    assert output.exists(), "embed must write the stego file"
+    # The temp PNG is cleaned up after embed.
+    app._clear_embed()
     assert app._temp_carrier is None
-    assert app._example_saved_state is not None
-    # The saved snapshot must not carry a temp path.
-    assert "temp_carrier" not in app._example_saved_state
+    assert not Path(app._temp_carrier).exists() if app._temp_carrier else True
 
-    # Leave example mode: restore does not resurrect a temp carrier.
+
+def test_jpg_conversion_cancel_no_leftover_temp(
+    app, jpg_carrier: Path, monkeypatch
+) -> None:
+    """A cancelled JPEG conversion leaves no temporary PNG behind."""
+    import phantom.ui.app as app_module
+    from phantom.core.errors import OperationCancelled
+
+    # Make prepare_carrier_copy raise OperationCancelled mid-conversion.
+    def cancelling_copy(path, *, cancel=None, progress=None):
+        cancel.set()
+        raise OperationCancelled("conversion cancelled")
+
+    monkeypatch.setattr(app_module, "prepare_carrier_copy", cancelling_copy)
+
     app._set_carrier(str(jpg_carrier))
     _pump(app)
     assert app.worker.busy is False
-    assert app._example_saved_state is None
+    # No temp carrier was created or left behind.
+    assert app._temp_carrier is None
+    assert app._pending_carrier is None
 
 
 def test_temp_png_deleted_by_saved_path(app, jpg_carrier: Path, password: str) -> None:

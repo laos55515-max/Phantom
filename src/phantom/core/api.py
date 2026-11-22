@@ -235,25 +235,25 @@ def embed_payload(
         raise PhantomIOError("carrier not found", detail=carrier_path)
 
     # Built-in resources are read-only: never write into them and never delete
-    # them.  They may still be *read* as a carrier, so only output/secret/wipe
-    # paths are refused here.
+    # them.  They may still be *read* as a carrier or as a source attachment, so
+    # only the *output* path and *wipe_source* are refused here — a user may
+    # embed the built-in example_secret.txt, but may not save next to it or wipe it.
     try:
         resources = RESOURCES_DIR.resolve()
     except (OSError, ValueError):
         resources = None
-    if resources is not None:
-        for label, path in (("output", output_path), ("secret", secret_path)):
-            if path is None:
-                continue
-            try:
-                resolved = Path(path).resolve()
-            except (OSError, ValueError):
-                continue
-            if resources in resolved.parents or resolved == resources:
-                raise InvalidInput(
-                    f"built-in resource is read-only: {label}",
-                    detail=str(resolved),
-                )
+    if resources is not None and output_path is not None:
+        try:
+            resolved = Path(output_path).resolve()
+        except (OSError, ValueError):
+            resolved = None
+        if resolved is not None and (
+            resources in resolved.parents or resolved == resources
+        ):
+            raise InvalidInput(
+                "built-in resource is read-only: output",
+                detail=str(resolved),
+            )
     if wipe_source and secret_path is not None:
         try:
             resolved_secret = Path(secret_path).resolve()
