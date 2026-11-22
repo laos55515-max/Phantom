@@ -7,6 +7,7 @@ layer only renders state and forwards user intent.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import threading
 from collections.abc import Callable
@@ -189,6 +190,20 @@ class EmbedViewModel:
     verify: bool = True
     estimate: SizeEstimate | None = None
     notices: tuple[str, ...] = ()
+    #: Where the carrier came from: ``""`` (none yet), ``"example"``, ``"builtin"``
+    #: or ``"file"`` (the user's own file, possibly a JPEG turned into a temp PNG).
+    carrier_source: str = ""
+    #: The user's original file before a JPEG was converted to a temp PNG copy.
+    carrier_original: str | None = None
+    #: Temporary PNG copy of a user's JPEG; this window owns it and removes it.
+    temp_carrier: str | None = None
+    #: Index of the built-in PNG behind ``"builtin"`` (0 or 1).
+    builtin_index: int = 0
+
+    # carrier sources
+    SOURCE_EXAMPLE = "example"
+    SOURCE_BUILTIN = "builtin"
+    SOURCE_FILE = "file"
 
     # -- state mutation (main thread only) ---------------------------------
     def set_carrier(self, path: str) -> None:
@@ -197,6 +212,56 @@ class EmbedViewModel:
         self.estimate = None
         self.notices = ()
         self.output_path = "" if not path else suggest_output_path(path, CarrierKind.IMAGE)
+
+    def _release_temp_carrier(self) -> None:
+        """Drop the temporary PNG copy of a user's JPEG; the original stays intact."""
+        temp = self.temp_carrier
+        self.temp_carrier = None
+        if temp and os.path.isfile(temp):
+            with contextlib.suppress(OSError):
+                os.unlink(temp)
+
+    def set_carrier_example(self, carrier_path: str, secret_path: str) -> None:
+        """Built-in example: carrier plus a test attachment, keeping what the user typed."""
+        had_output = bool(self.output_path)
+        self.set_mode(PayloadMode.FILE)
+        self.set_secret_file(secret_path)
+        self.set_carrier(carrier_path)
+        if not had_output:
+            directory, _name = os.path.split(carrier_path)
+            self.output_path = os.path.join(directory or os.getcwd(), "phantom-example.stego.png")
+        self.carrier_source = self.SOURCE_EXAMPLE
+        self.carrier_original = None
+        self.temp_carrier = None
+        self.builtin_index = 0
+        self.reset_estimate()
+
+    def set_carrier_builtin(self, carrier_path: str, index: int) -> None:
+        """One of the built-in PNGs as the carrier; the payload the user chose stays."""
+        had_output = bool(self.output_path)
+        self._release_temp_carrier()
+        self.set_carrier(carrier_path)
+        if not had_output:
+            directory, _name = os.path.split(carrier_path)
+            self.output_path = os.path.join(directory or os.getcwd(), "phantom-ready.stego.png")
+        self.carrier_source = self.SOURCE_BUILTIN
+        self.carrier_original = None
+        self.temp_carrier = None
+        self.builtin_index = index
+        self.reset_estimate()
+
+    def set_carrier_file(self, carrier_path: str, original: str | None, temp: str | None) -> None:
+        """The user's own carrier: a JPEG already converted to a temp PNG copy.
+
+        ``original`` is the file the user chose (untouched); ``temp`` is the PNG
+        copy the engine actually embeds from, or both are ``None`` for a PNG.
+        """
+        self._release_temp_carrier()
+        self.set_carrier(carrier_path)
+        self.carrier_source = self.SOURCE_FILE
+        self.carrier_original = original
+        self.temp_carrier = temp
+        self.reset_estimate()
 
     def apply_probe(self, probe: CarrierProbe) -> None:
         self.carrier = probe
@@ -243,6 +308,7 @@ class EmbedViewModel:
         self.estimate = None
 
     def clear(self) -> None:
+        self._release_temp_carrier()
         self.carrier_path = ""
         self.carrier = None
         self.text = ""
@@ -252,6 +318,9 @@ class EmbedViewModel:
         self.wipe_source = False
         self.estimate = None
         self.notices = ()
+        self.carrier_source = ""
+        self.carrier_original = None
+        self.builtin_index = 0
 
     # -- derived state -----------------------------------------------------
     @property

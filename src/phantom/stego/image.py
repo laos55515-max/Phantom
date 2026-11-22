@@ -15,15 +15,17 @@ ICC profile preserved and no EXIF added.
 
 from __future__ import annotations
 
+import contextlib
 import io
 import os
 import struct
+import tempfile
 import threading
 from dataclasses import dataclass, field
 from typing import Any, Final
 
 import numpy as np
-from PIL import Image, UnidentifiedImageError
+from PIL import Image, ImageOps, UnidentifiedImageError
 
 from phantom.core import constants as C
 from phantom.core import files as fsutil
@@ -206,6 +208,63 @@ def prepare_image(
         notices=info.notices,
         source_format=source_format,
     )
+
+
+def prepare_carrier_copy(
+    path: str,
+    *,
+    cancel: threading.Event | None = None,
+    progress: ProgressFn = noop_progress,
+) -> tuple[str, str | None]:
+    """Resolve the carrier path PHANTOM embeds from.
+
+    PNG carriers are used as-is.  A JPG/JPEG photo is converted to a temporary
+    PNG copy: the original file is never touched, EXIF orientation is applied so
+    the photo lands the right way up, and the embedded ICC colour profile is
+    carried into the copy.  Returns ``(carrier path, original path)`` where the
+    original path is ``None`` unless a copy was made.  The caller owns the
+    temporary copy and removes it when the carrier changes.
+    """
+    extension = os.path.splitext(path)[1].lower()
+    if extension not in (".jpg", ".jpeg"):
+        return path, None
+    return _jpg_to_png(path, cancel=cancel, progress=progress), path
+
+
+def _jpg_to_png(
+    path: str,
+    *,
+    cancel: threading.Event | None = None,
+    progress: ProgressFn = noop_progress,
+) -> str:
+    """Convert a JPEG photo to a lossless PNG sibling, preserving orientation and colour profile.
+
+    Returns the temporary PNG path; the caller owns it.
+    """
+    check_cancel(cancel)
+    progress(Stage.READING, 0, 1)
+    with Image.open(path) as img:
+        transposed = ImageOps.exif_transpose(img)
+        icc = transposed.info.get("icc_profile")
+        target_mode = "RGBA" if transposed.mode in ("RGBA", "LA", "P") else "RGB"
+        converted = transposed.convert(target_mode)
+        fd, tmp_path = tempfile.mkstemp(prefix="phantom-carrier-", suffix=".png")
+        os.close(fd)
+        save_kwargs: dict[str, Any] = {
+            "format": "PNG",
+            "compress_level": C.PNG_COMPRESS_LEVEL,
+        }
+        if isinstance(icc, bytes):
+            save_kwargs["icc_profile"] = icc
+        try:
+            converted.save(tmp_path, **save_kwargs)
+        except Exception:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp_path)
+            raise
+    check_cancel(cancel)
+    progress(Stage.READING, 1, 1)
+    return tmp_path
 
 
 def enforce_png_extension(path: str) -> str:
