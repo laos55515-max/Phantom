@@ -3076,9 +3076,12 @@ class PhantomApp:
         finished converting them.  Any previous temporary PNG is removed first,
         so a failed conversion earlier never leaves the user without a carrier.
         """
-        # Drop the previous temporary PNG (if any) before taking ownership of
-        # the new one — the old one is no longer needed.
-        self._drop_temp_carrier()
+        # Drop the previous temporary PNG before taking ownership of the new
+        # one — unless we are re-applying the same temp PNG (for example after
+        # returning from demo mode).  In that case the temp PNG must be
+        # preserved: the user continues working with their JPEG carrier copy.
+        if temp is None or temp != self._temp_carrier:
+            self._drop_temp_carrier()
         # For a JPEG conversion, carrier_path is the temp PNG and temp == carrier_path.
         # For a direct PNG, temp is None and nothing is owned by this window.
         self._temp_carrier = carrier_path if temp is not None else None
@@ -3154,6 +3157,13 @@ class PhantomApp:
         # Reflect the restored state in the widgets.
         self._set_entry_text(self.output_entry, self.embed_vm.output_path or "")
         self._set_entry_text(self.embed_pwd, self.embed_vm.password)
+        self._suppress_events = True
+        try:
+            self.embed_text.delete("1.0", "end")
+            if self.embed_vm.text:
+                self.embed_text.insert("1.0", self.embed_vm.text)
+        finally:
+            self._suppress_events = False
         if self.embed_vm.secret_path:
             self.secret_label.configure(text=os.path.basename(self.embed_vm.secret_path))
         else:

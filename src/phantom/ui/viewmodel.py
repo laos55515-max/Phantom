@@ -371,9 +371,10 @@ class EmbedViewModel:
         The temporary carrier, if any, stays owned by the view model: restoring
         does not touch the filesystem.  ``temp_carrier`` is restored from the
         snapshot because the temporary PNG of a user's JPEG carrier is preserved
-        during the demo.
+        during the demo.  The temp PNG is intentionally *not* deleted here —
+        deleting it would leave ``temp_carrier`` pointing at a missing file
+        when the user leaves the demo and continues with their JPEG carrier.
         """
-        self._release_temp_carrier()
         self.mode = state["mode"]  # type: ignore[assignment]
         self.text = state["text"]  # type: ignore[assignment]
         self.secret_path = state["secret_path"]  # type: ignore[assignment]
