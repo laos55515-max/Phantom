@@ -225,14 +225,22 @@ class EmbedViewModel:
                 os.unlink(temp)
 
     def set_carrier_example(self, carrier_path: str, secret_path: str) -> None:
-        """Built-in example: carrier plus a test attachment, keeping what the user typed."""
+        """Built-in example: carrier plus a test attachment, keeping what the user typed.
+
+        The output path is intentionally left untouched so the caller can
+        suggest a user-writable folder instead of the read-only resources dir.
+        Wipe-source is disabled for the demo: nothing the user owns is deleted.
+        """
         had_output = bool(self.output_path)
         self.set_mode(PayloadMode.FILE)
         self.set_secret_file(secret_path)
         self.set_carrier(carrier_path)
+        # The carrier path lives in the read-only resources dir; never offer to
+        # save next to it.  Leave output_path as-is so the UI can point it at a
+        # user folder.
         if not had_output:
-            directory, _name = os.path.split(carrier_path)
-            self.output_path = os.path.join(directory or os.getcwd(), "phantom-example.stego.png")
+            self.output_path = ""
+        self.wipe_source = False
         self.carrier_source = self.SOURCE_EXAMPLE
         self.carrier_original = None
         self.temp_carrier = None
@@ -331,6 +339,9 @@ class EmbedViewModel:
         Used to restore the form after the built-in example is left: the
         example overwrites carrier, attachment, password and output path, and
         the user's choices must come back when they exit example mode.
+
+        ``temp_carrier`` is deliberately omitted: entering the example drops any
+        temporary PNG, so a restored temp path would point at a deleted file.
         """
         return {
             "mode": self.mode,
@@ -346,7 +357,6 @@ class EmbedViewModel:
             "notices": self.notices,
             "carrier_source": self.carrier_source,
             "carrier_original": self.carrier_original,
-            "temp_carrier": self.temp_carrier,
             "builtin_index": self.builtin_index,
         }
 
@@ -354,7 +364,8 @@ class EmbedViewModel:
         """Restore the form state saved by :meth:`embed_form_snapshot`.
 
         The temporary carrier, if any, stays owned by the view model: restoring
-        does not touch the filesystem.
+        does not touch the filesystem.  ``temp_carrier`` is always cleared here
+        because entering the example drops any temporary PNG.
         """
         self._release_temp_carrier()
         self.mode = state["mode"]  # type: ignore[assignment]
@@ -370,7 +381,7 @@ class EmbedViewModel:
         self.notices = state["notices"]  # type: ignore[assignment]
         self.carrier_source = state["carrier_source"]  # type: ignore[assignment]
         self.carrier_original = state["carrier_original"]  # type: ignore[assignment]
-        self.temp_carrier = state["temp_carrier"]  # type: ignore[assignment]
+        self.temp_carrier = None
         self.builtin_index = state["builtin_index"]  # type: ignore[assignment]
 
     # -- derived state -----------------------------------------------------

@@ -12,6 +12,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from enum import Enum, unique
+from pathlib import Path
 from typing import Final
 
 from phantom.audio import (
@@ -42,6 +43,10 @@ from phantom.stego.image import (
     extract_from_image,
     probe_image,
 )
+
+#: Built-in resources shipped with the app.  They are read-only examples and
+#: must never be overwritten or deleted by any PHANTOM operation.
+RESOURCES_DIR: Final = Path(__file__).resolve().parent.parent / "resources"
 
 
 @unique
@@ -228,6 +233,42 @@ def embed_payload(
         raise InvalidInput("provide exactly one of payload or secret_path")
     if not os.path.isfile(carrier_path):
         raise PhantomIOError("carrier not found", detail=carrier_path)
+
+    # Built-in resources are read-only: never write into them and never delete
+    # them.  They may still be *read* as a carrier, so only output/secret/wipe
+    # paths are refused here.
+    try:
+        resources = RESOURCES_DIR.resolve()
+    except (OSError, ValueError):
+        resources = None
+    if resources is not None:
+        for label, path in (("output", output_path), ("secret", secret_path)):
+            if path is None:
+                continue
+            try:
+                resolved = Path(path).resolve()
+            except (OSError, ValueError):
+                continue
+            if resources in resolved.parents or resolved == resources:
+                raise InvalidInput(
+                    f"built-in resource is read-only: {label}",
+                    detail=str(resolved),
+                )
+    if wipe_source and secret_path is not None:
+        try:
+            resolved_secret = Path(secret_path).resolve()
+        except (OSError, ValueError):
+            resolved_secret = None
+        if (
+            resources is not None
+            and resolved_secret is not None
+            and (resources in resolved_secret.parents or resolved_secret == resources)
+        ):
+            raise InvalidInput(
+                "refusing to wipe a built-in resource",
+                detail=str(resolved_secret),
+            )
+
     kind = detect_carrier_kind(carrier_path)
     variants = output_path_variants(output_path, kind)
     # The writers below are handed a staged temp name, so they can only prove the

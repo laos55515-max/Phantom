@@ -30,6 +30,7 @@ import sys
 import threading
 from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
+from pathlib import Path
 from typing import Final
 
 from phantom.core import constants as C
@@ -61,6 +62,20 @@ _RESERVED_NAMES: Final = frozenset(
 
 #: Stand-in when a container stores an unusable name (or none at all).
 FALLBACK_FILE_NAME: Final = "extracted.bin"
+
+#: Built-in resources shipped with the app.  They are read-only examples and
+#: must never be overwritten or deleted by any PHANTOM operation.
+RESOURCES_DIR: Final = Path(__file__).resolve().parent.parent / "resources"
+
+
+def _is_builtin_resource(path: str) -> bool:
+    """True if ``path`` lives inside the read-only resources directory."""
+    try:
+        resolved = Path(path).resolve()
+        resources = RESOURCES_DIR.resolve()
+        return resources in resolved.parents or resolved == resources
+    except (OSError, ValueError):
+        return False
 
 
 def absolute(path: str) -> str:
@@ -414,6 +429,10 @@ def secure_wipe(
     devices and FIFOs, and on any I/O error: silently swallowing a failed wipe
     would leave the user believing a file is gone when it is not (D12).
     """
+    if _is_builtin_resource(path):
+        raise PhantomIOError(
+            "refusing to wipe a built-in resource", detail=path
+        )
     info = _lstat_regular(path)
     size = int(info.st_size)
     flags = os.O_WRONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
