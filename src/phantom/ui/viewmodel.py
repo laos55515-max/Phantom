@@ -13,7 +13,7 @@ import threading
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from enum import Enum, unique
-from typing import Literal, Protocol
+from typing import Final, Literal, Protocol
 
 from phantom.core import api as core_api
 from phantom.core import constants as C
@@ -205,6 +205,9 @@ class EmbedViewModel:
     SOURCE_BUILTIN = "builtin"
     SOURCE_FILE = "file"
 
+    #: Password pre-filled for the built-in example carrier (a test value, not a secret).
+    EXAMPLE_PASSWORD: Final = "phantom-example"  # noqa: S105 - test password for the example carrier
+
     # -- state mutation (main thread only) ---------------------------------
     def set_carrier(self, path: str) -> None:
         self.carrier_path = path
@@ -321,6 +324,54 @@ class EmbedViewModel:
         self.carrier_source = ""
         self.carrier_original = None
         self.builtin_index = 0
+
+    def embed_form_snapshot(self) -> dict[str, object]:
+        """Return a copy of the user-editable form state.
+
+        Used to restore the form after the built-in example is left: the
+        example overwrites carrier, attachment, password and output path, and
+        the user's choices must come back when they exit example mode.
+        """
+        return {
+            "mode": self.mode,
+            "text": self.text,
+            "secret_path": self.secret_path,
+            "output_path": self.output_path,
+            "password": self.password,
+            "wipe_source": self.wipe_source,
+            "verify": self.verify,
+            "carrier_path": self.carrier_path,
+            "carrier": self.carrier,
+            "estimate": self.estimate,
+            "notices": self.notices,
+            "carrier_source": self.carrier_source,
+            "carrier_original": self.carrier_original,
+            "temp_carrier": self.temp_carrier,
+            "builtin_index": self.builtin_index,
+        }
+
+    def restore_embed_form(self, state: dict[str, object]) -> None:
+        """Restore the form state saved by :meth:`embed_form_snapshot`.
+
+        The temporary carrier, if any, stays owned by the view model: restoring
+        does not touch the filesystem.
+        """
+        self._release_temp_carrier()
+        self.mode = state["mode"]  # type: ignore[assignment]
+        self.text = state["text"]  # type: ignore[assignment]
+        self.secret_path = state["secret_path"]  # type: ignore[assignment]
+        self.output_path = state["output_path"]  # type: ignore[assignment]
+        self.password = state["password"]  # type: ignore[assignment]
+        self.wipe_source = state["wipe_source"]  # type: ignore[assignment]
+        self.verify = state["verify"]  # type: ignore[assignment]
+        self.carrier_path = state["carrier_path"]  # type: ignore[assignment]
+        self.carrier = state["carrier"]  # type: ignore[assignment]
+        self.estimate = state["estimate"]  # type: ignore[assignment]
+        self.notices = state["notices"]  # type: ignore[assignment]
+        self.carrier_source = state["carrier_source"]  # type: ignore[assignment]
+        self.carrier_original = state["carrier_original"]  # type: ignore[assignment]
+        self.temp_carrier = state["temp_carrier"]  # type: ignore[assignment]
+        self.builtin_index = state["builtin_index"]  # type: ignore[assignment]
 
     # -- derived state -----------------------------------------------------
     @property

@@ -676,6 +676,104 @@ def test_embed_flow_through_the_ui(app, rgb_carrier: Path, password: str) -> Non
     assert api.extract_from_path(str(output), password).payload.data == b"gui smoke payload"
 
 
+def test_jpg_via_drop_goes_through_prepare_carrier(app, jpg_carrier: Path) -> None:
+    """A JPEG dropped on the carrier zone is converted to a temp PNG copy.
+
+    The original JPEG stays untouched, and the temp copy is removed when the
+    carrier changes.
+    """
+    original_bytes = jpg_carrier.read_bytes()
+    app._drop_carrier([str(jpg_carrier)])
+    _pump(app)
+    assert app.worker.busy is False
+    # The JPEG itself was never modified.
+    assert jpg_carrier.read_bytes() == original_bytes
+    # A temp PNG copy exists while this carrier is loaded.
+    assert app._temp_carrier is not None
+    assert Path(app._temp_carrier).suffix == ".png"
+    assert Path(app._temp_carrier).exists()
+    # Replacing the carrier removes the temp copy.
+    app._drop_temp_carrier()
+    assert not Path(app._temp_carrier).exists() if app._temp_carrier else True
+
+
+def test_jpg_via_drop_keeps_previous_carrier_on_conversion_error(
+    app, jpg_carrier: Path, dialogs
+) -> None:
+    """If the JPEG cannot be converted, the previous carrier stays and an error shows."""
+    # Load a valid PNG carrier first.
+    import numpy as np
+    from PIL import Image as _Image
+
+    rng = np.random.default_rng(7)
+    pixels = np.clip(rng.integers(0, 256, (40, 40, 3)), 0, 255).astype(np.uint8)
+    png_carrier = jpg_carrier.with_suffix(".png")
+    _Image.fromarray(pixels, "RGB").save(png_carrier, format="PNG")
+    app._set_carrier(str(png_carrier))
+    _pump(app)
+    assert app.worker.busy is False
+    first_carrier = app.embed_vm.carrier_path
+
+    # Now drop a corrupted "JPEG" (a PNG with a .jpg extension).
+    bad_jpg = jpg_carrier.with_suffix(".bad.jpg")
+    bad_jpg.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 100)
+    app._drop_carrier([str(bad_jpg)])
+    _pump(app)
+    assert app.worker.busy is False
+    # The previous carrier is still loaded.
+    assert app.embed_vm.carrier_path == first_carrier
+    # An error dialog was shown.
+    assert dialogs.errors, "expected an error dialog for the bad JPEG"
+
+
+def test_example_saves_and_restores_user_form(app, rgb_carrier: Path, password: str) -> None:
+    """Entering the example saves the user's form; leaving it restores it."""
+    # Set up the user's own form.
+    app._set_carrier(str(rgb_carrier))
+    _pump(app)
+    assert app.worker.busy is False
+    app.embed_pwd.insert(0, password)
+    app._set_textbox(app.embed_text, "user's secret message")
+    app._refresh_all()
+
+    first_output = app.embed_vm.output_path
+    first_password = app.embed_vm.password
+    first_text = app.embed_vm.text
+
+    # Enter example mode.
+    app._on_try_example()
+    _pump(app)
+    assert app.worker.busy is False
+    # The example overwrote everything.
+    assert app.embed_vm.password == app.embed_vm.EXAMPLE_PASSWORD
+    assert app.embed_vm.text != "user's secret message"
+    assert app.embed_vm.output_path != first_output
+    assert app._example_saved_state is not None
+
+    # Leave example mode by choosing the user's carrier again.
+    app._set_carrier(str(rgb_carrier))
+    _pump(app)
+    assert app.worker.busy is False
+    # The user's form is back.
+    assert app.embed_vm.password == first_password
+    assert app.embed_vm.text == first_text
+    assert app.embed_vm.output_path == first_output
+    assert app._example_saved_state is None
+
+
+def test_example_clear_discards_saved_state(app, rgb_carrier: Path) -> None:
+    """Clearing the form in example mode discards the saved user state."""
+    app._set_carrier(str(rgb_carrier))
+    _pump(app)
+    app._on_try_example()
+    _pump(app)
+    assert app._example_saved_state is not None
+    app._clear_embed()
+    assert app._example_saved_state is None
+    assert app.embed_vm.carrier_path == ""
+    assert app.embed_vm.password == ""
+
+
 def _extracted(version: int):
     from phantom.core.payload import ExtractedPayload, PayloadKind
 

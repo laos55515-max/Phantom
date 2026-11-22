@@ -55,6 +55,14 @@ def rgba_carrier(tmp_path: Path) -> Path:
     return path
 
 
+@pytest.fixture
+def jpg_carrier(tmp_path: Path) -> Path:
+    """A baseline-JPEG photo (not progressive) that the embed path converts to PNG."""
+    path = tmp_path / "photo.jpg"
+    Image.fromarray(_texture(160, 120), "RGB").save(path, format="JPEG", quality=90)
+    return path
+
+
 @pytest.fixture(scope="session")
 def legacy_dir() -> Path:
     return FIXTURES / "legacy_v1"
