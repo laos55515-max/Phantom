@@ -476,13 +476,14 @@ jobs:
           import subprocess
           import sys
 
-          # Alternate main → PR → main → PR → main → PR on the same runner so
-          # runner noise cancels out when comparing worst_gap_ms and first_paint_ms.
+          # Alternate within pairs: main → PR, PR → main, main → PR.  Reversing
+          # the order inside pair 2 cancels out runner noise between the two
+          # trees when comparing worst_gap_ms and first_paint_ms.
           runs = [
               ("main", "/tmp/frame-base/src"),
               ("pr", "src"),
-              ("main", "/tmp/frame-base/src"),
               ("pr", "src"),
+              ("main", "/tmp/frame-base/src"),
               ("main", "/tmp/frame-base/src"),
               ("pr", "src"),
           ]
