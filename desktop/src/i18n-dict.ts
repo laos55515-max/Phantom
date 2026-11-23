@@ -107,6 +107,9 @@ export const uk: Dictionary = {
     "Надсилайте файл як документ, не як «фото» — месенджери пережимають зображення.",
   "hide.text_placeholder": "Впишіть або вставте текст…",
   "hide.text_count": "{chars} знаків · {bytes}",
+  "text.expand": "Розгорнути",
+  "text.collapse": "Згорнути",
+  "extract.text_omitted": "Текст витягнуто. Збережіть його як TXT, щоб прочитати повністю.",
   "hide.example_pdf": "example-payload.pdf",
 
   "extract.title": "Витягти",
@@ -265,6 +268,9 @@ export const en: Dictionary = {
     "Send the file as a document, not as a “photo” — messengers re-encode images.",
   "hide.text_placeholder": "Type or paste your text…",
   "hide.text_count": "{chars} characters · {bytes}",
+  "text.expand": "Expand",
+  "text.collapse": "Collapse",
+  "extract.text_omitted": "Text extracted. Save it as TXT to read it in full.",
   "hide.example_pdf": "example-payload.pdf",
 
   "extract.title": "Extract",
@@ -416,6 +422,10 @@ export const ru: Dictionary = {
     "Отправляйте файл как документ, а не как «фото» — мессенджеры пережимают изображения.",
   "hide.text_placeholder": "Впишите или вставьте текст…",
   "hide.text_count": "{chars} знаков · {bytes}",
+  "text.expand": "Развернуть",
+  "text.collapse": "Свернуть",
+  "extract.text_omitted": "Текст извлечён. Сохраните его как TXT, чтобы прочитать полностью",
+
   "hide.example_pdf": "example-payload.pdf",
 
   "extract.title": "Извлечь",

@@ -1,5 +1,7 @@
 import { useState, type FormEvent } from "react";
-import { bridge, type BridgeError, type FilePick } from "../bridge";
+import { bridge, isDemoMode, type BridgeError, type FilePick } from "../bridge";
+import { writeText } from "@tauri-apps/plugin-clipboard-manager";
+import { TextWorkspace } from "../TextWorkspace";
 import { formatBytes } from "../format";
 import { DropZone } from "../DropZone";
 import { useI18n } from "../i18n";
@@ -26,7 +28,7 @@ interface AuditInfo {
 }
 
 type ExtractOutcome =
-  | { kind: "text"; text: string; audit: AuditInfo }
+  | { kind: "text"; text: string; textOmitted: boolean; audit: AuditInfo }
   | { kind: "file"; suggestedName: string; audit: AuditInfo };
 
 export function ExtractScreen() {
@@ -42,8 +44,10 @@ export function ExtractScreen() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<BridgeError | null>(null);
   const [copied, setCopied] = useState(false);
+  const [textExpanded, setTextExpanded] = useState(false);
 
   const reset = () => {
+    setTextExpanded(false);
     setCarrier(null);
     setPassword("");
     setOutcome(null);
@@ -86,7 +90,7 @@ export function ExtractScreen() {
       originalSize: res.originalSize,
     };
     if (res.kind === "text") {
-      setOutcome({ kind: "text", text: res.text ?? "", audit });
+      setOutcome({ kind: "text", text: res.text ?? "", textOmitted: res.textOmitted === true, audit });
     } else {
       setOutcome({ kind: "file", suggestedName: res.suggestedName, audit });
     }
@@ -124,25 +128,16 @@ export function ExtractScreen() {
     if (outcome?.kind !== "text" || !carrier) return;
     setBusy(true);
     setError(null);
-    const outputPath = await bridge.saveFile("phantom-extracted.txt", "text");
-    if (outputPath) {
-      const textBlob = new Blob([outcome.text], { type: "text/plain;charset=utf-8" });
-      // Browser demo cannot write files; in Tauri we go through the bridge so
-      // the bytes never round-trip through the webview more than needed.
-      if ("__TAURI_INTERNALS__" in window) {
-        const res = await bridge.extract({
-          carrierPath: carrier.path,
-          password,
-          mode: "save_file",
-          outputPath,
-        });
-        if (res.ok) {
-          setSavedPath(outputPath);
-          setPassword("");
-        } else {
-          setError(res.error);
-        }
-      } else {
+    try {
+      const outputPath = await bridge.saveFile("phantom-extracted.txt", "text");
+      if (!outputPath) return;
+      if (!isDemoMode()) {
+        // The bridge re-decrypts and writes all bytes, including omitted previews.
+        const res = await bridge.extract({ carrierPath: carrier.path, password, mode: "save_file", outputPath });
+        if (res.ok) setSavedPath(outputPath);
+        else setError(res.error);
+      } else if (!outcome.textOmitted) {
+        const textBlob = new Blob([outcome.text], { type: "text/plain;charset=utf-8" });
         const url = URL.createObjectURL(textBlob);
         const a = document.createElement("a");
         a.href = url;
@@ -150,13 +145,44 @@ export function ExtractScreen() {
         a.click();
         URL.revokeObjectURL(url);
         setSavedPath(outputPath);
+      } else {
+        setError({ code: "io", message: "Text preview unavailable in demo", detail: null });
       }
+    } catch {
+      setError({ code: "io", message: "Save failed", detail: null });
+    } finally {
+      setBusy(false);
     }
-    setBusy(false);
   }
+
+  async function copyText(text: string) {
+    try {
+      if (isDemoMode()) await navigator.clipboard.writeText(text);
+      else await writeText(text);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1500);
+    } catch {
+      setError({ code: "io", message: "Clipboard write failed", detail: null });
+    }
+  }
+
+  const textActions = outcome?.kind === "text" ? (
+    <>
+      {!outcome.textOmitted ? <button type="button" className="btn btn-ghost" onClick={() => void copyText(outcome.text)}>
+        {copied ? <IconCheckCircle size={16} /> : <IconCopy size={16} />}
+        {copied ? t("common.copied") : t("common.copy")}
+      </button> : null}
+      <button type="button" className="btn btn-ghost" onClick={saveTextPayload} disabled={busy}>
+        {busy ? <IconSpinner size={15} className="spin" /> : null}{t("extract.save_as")}
+      </button>
+    </>
+  ) : null;
 
   return (
     <form className="screen" onSubmit={runExtract} aria-busy={phase === "busy" || busy}>
+      {textExpanded && outcome?.kind === "text" && !outcome.textOmitted ? <TextWorkspace
+        label={t("extract.text_label")} value={outcome.text} onClose={() => setTextExpanded(false)}
+        actions={<>{textActions}{error ? <ErrorBanner error={error} /> : null}{savedPath ? <span className="file-meta">{t("extract.saved_as")} {savedPath}</span> : null}</>} /> : null}
       <h1 className="screen-title">{t("extract.title")}</h1>
       <p className="screen-sub">{t("extract.sub")}</p>
 
@@ -235,29 +261,12 @@ export function ExtractScreen() {
 
           {outcome.kind === "text" ? (
             <>
-              <textarea className="textarea mono" style={{ minHeight: 120 }} readOnly value={outcome.text} aria-label={t("extract.text_label")} />
-              <div className="row">
-                <button
-                  type="button"
-                  className="btn btn-ghost"
-                  onClick={() => {
-                    try {
-                      void navigator.clipboard?.writeText(outcome.text);
-                    } catch {
-                      /* keep readonly textarea as the copy surface */
-                    }
-                    setCopied(true);
-                    window.setTimeout(() => setCopied(false), 1500);
-                  }}
-                >
-                  {copied ? <IconCheckCircle size={16} /> : <IconCopy size={16} />}
-                  {copied ? t("common.copied") : t("common.copy")}
-                </button>
-                <button type="button" className="btn btn-ghost" onClick={saveTextPayload} disabled={busy}>
-                  {busy ? <IconSpinner size={15} className="spin" /> : null}
-                  {t("extract.save_as")}
-                </button>
-              </div>
+              {outcome.textOmitted ? <p role="status">{t("extract.text_omitted")}</p> : <>
+                <textarea className="textarea mono" style={{ minHeight: 120, width: "100%" }} readOnly value={outcome.text} aria-label={t("extract.text_label")} />
+                <button type="button" className="btn btn-subtle" onClick={() => setTextExpanded(true)}>{t("text.expand")}</button>
+              </>}
+              <div className="row">{textActions}</div>
+              {savedPath ? <div className="file-meta">{t("extract.saved_as")} {savedPath}</div> : null}
             </>
           ) : (
             <>

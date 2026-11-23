@@ -100,6 +100,27 @@ async function scenario(name, { mode, theme, language, fillText }) {
       });
     }
   }
+  if (mode === "text") {
+    const editor = page.getByPlaceholder(/Впишите или вставьте текст/);
+    const dimensions = await editor.evaluate((el) => ({
+      width: el.getBoundingClientRect().width,
+      available: el.parentElement.getBoundingClientRect().width,
+      height: el.getBoundingClientRect().height,
+    }));
+    if (Math.abs(dimensions.width - dimensions.available) > 2 || dimensions.height < 140)
+      fail(`text editor size: ${JSON.stringify(dimensions)}`);
+    await page.getByRole("button", { name: "Развернуть" }).click();
+    const dialog = page.getByRole("dialog");
+    const fullEditor = dialog.getByRole("textbox");
+    const longText = Array.from({ length: 10000 }, (_, i) => i % 25 === 24 ? "кириллица\n\n" : "слово ").join("");
+    await fullEditor.fill(longText);
+    if (await fullEditor.inputValue() !== longText) fail("expanded text was truncated");
+    const collapse = await dialog.getByRole("button", { name: "Свернуть" }).boundingBox();
+    if (!collapse || collapse.y < 0 || collapse.y + collapse.height > VIEWPORT.height)
+      fail("expanded editor collapse button is outside viewport");
+    await fullEditor.press("Escape");
+    if (await editor.inputValue() !== longText) fail("draft changed after Escape");
+  }
   await page.screenshot({ path: `${arg("out", "screenshots")}/layout-${name}.png` });
   await context.close();
 }
