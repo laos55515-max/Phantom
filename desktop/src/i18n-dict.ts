@@ -161,7 +161,7 @@ export const uk: Dictionary = {
   "err.io": "Не вдалося прочитати або записати файл. Перевірте права доступу.",
   "err.integrity": "Цілісність не підтвердилася — файл пошкоджено або підмінено.",
   "err.output_is_carrier":
-    "Вихідний файл збігається з носієм — так не можна: оригінал буде втрачено.",
+    "Оберіть інше місце: цей файл — вихідний носій.",
   "err.source_overwrite":
     "Вихідний файл збігається з файлом, який ховаємо — відмовлено.",
   "err.unsafe_path": "Небезпечна назва або шлях файлу.",
@@ -315,7 +315,7 @@ export const en: Dictionary = {
   "err.invalid_unicode": "The text contains characters with no UTF-8 form.",
   "err.io": "The file could not be read or written. Check permissions.",
   "err.integrity": "Integrity check failed — the file was damaged or tampered with.",
-  "err.output_is_carrier": "The output file would overwrite the carrier itself — refused.",
+  "err.output_is_carrier": "Choose another location: this file is the original carrier.",
   "err.source_overwrite": "The output file matches the file being hidden — refused.",
   "err.unsafe_path": "Unsafe file name or path.",
   "err.audio_lossy": "Lossy formats (MP3, AAC, OGG, WMA) destroy the hidden payload. WAV and FLAC only.",
@@ -468,7 +468,7 @@ export const ru: Dictionary = {
   "err.io": "Не удалось прочитать или записать файл. Проверьте права доступа.",
   "err.integrity": "Целостность не подтвердилась — файл повреждён или подменён.",
   "err.output_is_carrier":
-    "Выходной файл совпадает с контейнером — так нельзя: оригинал будет потерян.",
+    "Выберите другое место: этот файл — исходный контейнер",
   "err.source_overwrite": "Выходной файл совпадает с файлом, который прячем, — отказано.",
   "err.unsafe_path": "Небезопасное имя или путь файла.",
   "err.audio_lossy":

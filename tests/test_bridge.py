@@ -110,6 +110,36 @@ def test_hide_and_extract_roundtrip_example_pdf_bytes(tmp_path: Path) -> None:
     assert info["kind"] == "file"
     assert info["suggested_name"] == "example_payload.pdf"
 
+    original_carrier = hidden.read_bytes()
+    same = _call(
+        {
+            "cmd": "extract",
+            "carrier_path": str(hidden),
+            "password": PASSWORD,
+            "mode": "save_file",
+            "output_path": str(hidden),
+        }
+    )
+    assert same["ok"] is False
+    assert same["error"]["code"] == "output_is_carrier"
+    assert hidden.read_bytes() == original_carrier
+
+    # A different pathname for the same inode is also the original carrier.
+    alias = tmp_path / "carrier-hardlink.png"
+    os.link(hidden, alias)
+    same_alias = _call(
+        {
+            "cmd": "extract",
+            "carrier_path": str(hidden),
+            "password": PASSWORD,
+            "mode": "save_file",
+            "output_path": str(alias),
+        }
+    )
+    assert same_alias["ok"] is False
+    assert same_alias["error"]["code"] == "output_is_carrier"
+    assert hidden.read_bytes() == original_carrier
+
     save = _call(
         {
             "cmd": "extract",
@@ -120,6 +150,7 @@ def test_hide_and_extract_roundtrip_example_pdf_bytes(tmp_path: Path) -> None:
         }
     )
     assert save["ok"] is True
+    assert hidden.read_bytes() == original_carrier
     import hashlib
 
     assert hashlib.sha256(target.read_bytes()).hexdigest() == hashlib.sha256(

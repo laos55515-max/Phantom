@@ -279,6 +279,7 @@ jobs:
           DMG="PHANTOM-aarch64.dmg"
           hdiutil create -volname PHANTOM -srcfolder "$STAGING" -ov -format UDZO "$DMG"
           shasum -a 256 "$DMG" | tee "$DMG.sha256" | tee -a verification-report.txt
+          echo "::notice title=DMG SHA-256::$(cat "$DMG.sha256")"
       - name: Mounted-DMG verification gate (mandatory)
         run: |
           set -euo pipefail

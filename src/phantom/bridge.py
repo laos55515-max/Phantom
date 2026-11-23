@@ -65,7 +65,7 @@ from phantom.core.errors import (
     InvalidPassword,
     PhantomError,
 )
-from phantom.core.files import sanitise_filename, write_bytes_verified
+from phantom.core.files import ensure_distinct, sanitise_filename, write_bytes_verified
 from phantom.core.kdf import KdfProfile
 from phantom.core.payload import ExtractedPayload, Payload, PayloadKind
 
@@ -241,6 +241,7 @@ def cmd_extract(request: dict[str, Any]) -> dict[str, Any]:
 
     if mode == "save_file":
         output = _require_str(request, "output_path")
+        ensure_distinct(path, output)
         outcome = _extract_verified(path, password)
         write_bytes_verified(
             output, outcome.payload.data, expected_sha256=outcome.payload.sha256_actual

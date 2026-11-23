@@ -6,6 +6,11 @@ All notable changes to PHANTOM are recorded here. The format follows
 
 ## [Unreleased]
 
+### Fixed — protect the carrier during extraction
+
+- Refuse to save extracted content over the original carrier, including aliases
+  to the same file, and explain how to choose another location.
+
 ### Fixed — verified extraction and password copy
 
 - Extracted files now use the core's owner-only atomic verified writer with the
