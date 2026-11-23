@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { bridge, isDemoMode, type BridgeError, type FilePick, type ProbeInfo } from "../bridge";
 import { DropZone } from "../DropZone";
+import { TextWorkspace } from "../TextWorkspace";
 import { formatBytes, estimatePackedBytes, utf8Bytes } from "../format";
 import { useI18n } from "../i18n";
 import {
@@ -41,6 +42,7 @@ export function HideScreen({ onGoExtract }: { onGoExtract: () => void }) {
   const fmt = (bytes: number) => formatBytes(bytes, units);
 
   const [content, setContent] = useState<ContentSel>({ kind: "none" });
+  const [textExpanded, setTextExpanded] = useState(false);
   const [exampleSecretBytes, setExampleSecretBytes] = useState<number>(809);
   const [exampleSecretName, setExampleSecretName] = useState("example-payload.pdf");
 
@@ -149,6 +151,7 @@ export function HideScreen({ onGoExtract }: { onGoExtract: () => void }) {
 
   function resetAll(keepCarrier: boolean) {
     setContent({ kind: "none" });
+    setTextExpanded(false);
     if (!keepCarrier) setCarrier(null);
     setPassword("");
     setDone(null);
@@ -416,7 +419,8 @@ export function HideScreen({ onGoExtract }: { onGoExtract: () => void }) {
         </label>
         <textarea
           id="payload-text"
-          className="textarea"
+          className="textarea text-editor"
+          rows={8}
           value={content.kind === "text" ? content.text : ""}
           placeholder={t("hide.text_placeholder")}
           onChange={(event) => setContent({ kind: "text", text: event.target.value })}
@@ -429,8 +433,8 @@ export function HideScreen({ onGoExtract }: { onGoExtract: () => void }) {
               bytes: fmt(userBytes ?? 0),
             })}
           </span>
-          <button type="button" className="btn btn-subtle" onClick={() => setContent({ kind: "text", text: "" })}>
-            {t("common.cancel")}
+          <button type="button" className="btn btn-subtle" onClick={() => setTextExpanded(true)}>
+            {t("text.expand")}
           </button>
         </div>
       </>
@@ -443,6 +447,9 @@ export function HideScreen({ onGoExtract }: { onGoExtract: () => void }) {
       aria-busy={busy}
       onDragOver={(event) => event.preventDefault()}
     >
+      {textExpanded && content.kind === "text" ? <TextWorkspace
+        label={t("hide.card_text")} value={content.text}
+        onChange={(text) => setContent({ kind: "text", text })} onClose={() => setTextExpanded(false)} /> : null}
       <div className="back-row" style={{ marginBottom: 4 }}>
         <button type="button" className="btn btn-subtle" onClick={() => resetAll(true)}>
           <IconChevronLeft size={15} />

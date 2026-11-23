@@ -100,6 +100,27 @@ async function scenario(name, { mode, theme, language, fillText }) {
       });
     }
   }
+  if (mode === "text") {
+    const editor = page.getByPlaceholder(/Впишите или вставьте текст/);
+    const dimensions = await editor.evaluate((el) => ({
+      width: el.getBoundingClientRect().width,
+      available: el.parentElement.getBoundingClientRect().width,
+      height: el.getBoundingClientRect().height,
+    }));
+    if (Math.abs(dimensions.width - dimensions.available) > 2 || dimensions.height < 140)
+      fail(`text editor size: ${JSON.stringify(dimensions)}`);
+    await page.getByRole("button", { name: "Развернуть" }).click();
+    const dialog = page.getByRole("dialog");
+    const fullEditor = dialog.getByRole("textbox");
+    const longText = Array.from({ length: 10000 }, (_, i) => i % 25 === 24 ? "кириллица\n\n" : "слово ").join("");
+    await fullEditor.fill(longText);
+    if (await fullEditor.inputValue() !== longText) fail("expanded text was truncated");
+    const collapse = await dialog.getByRole("button", { name: "Свернуть" }).boundingBox();
+    if (!collapse || collapse.y < 0 || collapse.y + collapse.height > VIEWPORT.height)
+      fail("expanded editor collapse button is outside viewport");
+    await fullEditor.press("Escape");
+    if (await editor.inputValue() !== longText) fail("draft changed after Escape");
+  }
   await page.screenshot({ path: `${arg("out", "screenshots")}/layout-${name}.png` });
   await context.close();
 }
@@ -109,6 +130,38 @@ const TEXT = "Quarterly figures\ndemo, no real data\nthird line keeps the editor
 for (const theme of ["dark", "light"]) {
   await scenario(`file-${theme}`, { mode: "file", theme, language: "ru" });
   await scenario(`text-${theme}`, { mode: "text", theme, language: "ru", fillText: TEXT });
+}
+
+// Extract reader: expand, select, copy/save controls remain in the 980×720 window.
+{
+  const context = await browser.newContext({ viewport: VIEWPORT });
+  await context.addInitScript(() => window.localStorage.setItem("phantom.settings.draft", JSON.stringify({ language: "ru", theme: "dark" })));
+  const page = await context.newPage();
+  await page.goto(base, { waitUntil: "networkidle" });
+  await page.getByRole("button", { name: "Извлечь" }).first().click();
+  const [chooser] = await Promise.all([
+    page.waitForEvent("filechooser"),
+    page.getByRole("button", { name: /Выбрать файл/ }).click(),
+  ]);
+  await chooser.setFiles(EXAMPLE_CARRIER);
+  await page.locator("#extract-password").fill("layout check password 123");
+  await page.getByRole("button", { name: "Извлечь" }).last().click();
+  await page.getByRole("button", { name: "Развернуть" }).click();
+  const dialog = page.getByRole("dialog");
+  const reader = dialog.getByRole("textbox");
+  const contents = await reader.inputValue();
+  await reader.evaluate((el) => { el.select(); el.scrollTop = el.scrollHeight; });
+  const selection = await reader.evaluate((el) => el.selectionEnd - el.selectionStart);
+  if (selection !== contents.length) results.push({ name: "reader-selection", ok: false, detail: "cannot select whole text" });
+  for (const label of ["Свернуть", "Копировать", "Сохранить как…"]) {
+    const box = await dialog.getByRole("button", { name: label }).boundingBox();
+    if (!box || box.y < 0 || box.y + box.height > VIEWPORT.height || box.x < 0 || box.x + box.width > VIEWPORT.width)
+      results.push({ name: "reader-controls", ok: false, detail: `${label} clipped` });
+  }
+  await reader.press("Escape");
+  if (await page.getByRole("dialog").count()) results.push({ name: "reader-escape", ok: false, detail: "dialog still visible" });
+  else results.push({ name: "reader-980x720", ok: true, detail: "selection, controls and Escape" });
+  await context.close();
 }
 
 await browser.close();

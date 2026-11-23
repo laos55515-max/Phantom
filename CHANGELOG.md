@@ -6,6 +6,13 @@ All notable changes to PHANTOM are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added — long text editing and reading
+
+- Expand the text editor or extracted text into the application workspace,
+  collapse with the button or Escape, keeping paragraphs and draft in memory.
+- Oversized extracted text is identified as unavailable for preview and can
+  still be saved as TXT through the verified bridge writer.
+
 ### Fixed — protect the carrier during extraction
 
 - Refuse to save extracted content over the original carrier, including aliases
