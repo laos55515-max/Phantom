@@ -1,10 +1,13 @@
-import { useId, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
+import { writeText } from "@tauri-apps/plugin-clipboard-manager";
+import { isDemoMode } from "./bridge";
 import { useI18n } from "./i18n";
 import type { BridgeError } from "./bridge";
 import { generatePassword, passwordStrength } from "./format";
 import {
   IconAlert,
   IconDice,
+  IconCopy,
   IconEye,
   IconEyeOff,
 } from "./icons";
@@ -58,6 +61,23 @@ export function PasswordField({
   const generatedId = useId();
   const inputId = id ?? generatedId;
   const [visible, setVisible] = useState(false);
+  const [copyStatus, setCopyStatus] = useState<"success" | "error" | null>(null);
+  const copyGeneration = useRef(0);
+  useEffect(() => {
+    copyGeneration.current += 1;
+    setCopyStatus(null);
+  }, [value]);
+  async function copyPassword() {
+    const generation = ++copyGeneration.current;
+    setCopyStatus(null);
+    try {
+      if (isDemoMode()) await navigator.clipboard.writeText(value);
+      else await writeText(value);
+      if (copyGeneration.current === generation) setCopyStatus("success");
+    } catch {
+      if (copyGeneration.current === generation) setCopyStatus("error");
+    }
+  }
   const strength = passwordStrength(value);
   const segments = strength === "weak" ? (value.length === 0 ? 0 : 1) : strength === "fair" ? 2 : 3;
   const strengthKey = `hide.strength_${strength}`;
@@ -109,7 +129,18 @@ export function PasswordField({
         >
           <IconDice size={18} />
         </button>
+        <button
+          type="button"
+          className="btn-icon"
+          onClick={() => void copyPassword()}
+          disabled={!value}
+          aria-label={t("hide.password_copy")}
+          title={t("hide.password_copy")}
+        >
+          <IconCopy size={18} />
+        </button>
       </div>
+      {copyStatus ? <p className="hint" role="status">{t(copyStatus === "success" ? "hide.password_copied" : "hide.password_copy_error")}</p> : null}
       <div className="strength" id={`${inputId}-strength`}>
         <div className="strength-segments" aria-hidden="true">
           {[1, 2, 3].map((index) => (

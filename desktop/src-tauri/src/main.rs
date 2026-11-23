@@ -244,6 +244,7 @@ fn app_info() -> HashMap<&'static str, String> {
 
 fn main() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_clipboard_manager::init())
         .invoke_handler(tauri::generate_handler![bridge_call, pick_file, save_file, reveal_path, app_info])
         .run(tauri::generate_context!())
         .expect("error while running the PHANTOM desktop shell");

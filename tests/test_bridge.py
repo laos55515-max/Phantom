@@ -14,6 +14,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SRC = REPO_ROOT / "src"
 EXAMPLE_CARRIER = SRC / "phantom" / "resources" / "example_carrier.png"
@@ -192,3 +194,61 @@ def test_argv_is_ignored_and_stdin_is_the_channel(tmp_path: Path) -> None:
     assert lines[0]["ok"] is True
     assert PASSWORD not in proc.stderr
     assert PASSWORD not in proc.stdout
+
+
+def test_extract_save_verifies_before_replace_and_creates_private_temp(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import builtins
+    import hashlib
+    import stat
+
+    from phantom import bridge
+    from phantom.core import api
+    from phantom.core.errors import IntegrityError
+    from phantom.core.payload import ExtractedPayload, PayloadKind
+
+    data = b"sensitive recovered pdf"
+    digest = hashlib.sha256(data).hexdigest()
+    payload = ExtractedPayload(
+        kind=PayloadKind.FILE, name="report.pdf", data=data,
+        sha256_expected=digest, sha256_actual=digest, integrity_ok=True,
+        original_size=len(data), compressed_size=len(data),
+    )
+    outcome = api.ExtractOutcome(payload=payload, carrier_kind=api.CarrierKind.IMAGE, duration_seconds=0)
+    monkeypatch.setattr(bridge, "_extract_verified", lambda *_: outcome)
+    target = tmp_path / "report.pdf"
+    target.write_bytes(b"existing file")
+    request = {"carrier_path": "carrier.png", "password": PASSWORD, "mode": "save_file", "output_path": str(target)}
+
+    # Observe the temp at the instant it is opened for writing, before any bytes.
+    original_open = builtins.open
+    observed: list[int] = []
+
+    def checked_open(path, mode="r", *args, **kwargs):
+        if mode == "wb" and str(path) != str(target):
+            observed.append(stat.S_IMODE(os.stat(path).st_mode))
+            assert os.stat(path).st_size == 0
+        return original_open(path, mode, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "open", checked_open)
+    assert bridge.cmd_extract(request)["sha256"] == digest
+    assert target.read_bytes() == data
+    if os.name == "posix":
+        assert observed == [0o600]
+        assert stat.S_IMODE(target.stat().st_mode) == 0o600
+
+    # A wrong extracted digest must fail in the actual verified writer, leaving
+    # the pre-existing destination intact and removing the staged file.
+    from dataclasses import replace
+
+    target.write_bytes(b"existing file")
+    bad_outcome = api.ExtractOutcome(
+        payload=replace(payload, sha256_actual="0" * 64),
+        carrier_kind=api.CarrierKind.IMAGE, duration_seconds=0,
+    )
+    monkeypatch.setattr(bridge, "_extract_verified", lambda *_: bad_outcome)
+    with pytest.raises(IntegrityError):
+        bridge.cmd_extract(request)
+    assert target.read_bytes() == b"existing file"
+    assert [p.name for p in tmp_path.iterdir()] == ["report.pdf"]

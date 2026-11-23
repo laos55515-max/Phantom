@@ -48,7 +48,6 @@ Requests
 
 from __future__ import annotations
 
-import contextlib
 import json
 import os
 import sys
@@ -66,7 +65,7 @@ from phantom.core.errors import (
     InvalidPassword,
     PhantomError,
 )
-from phantom.core.files import sanitise_filename
+from phantom.core.files import sanitise_filename, write_bytes_verified
 from phantom.core.kdf import KdfProfile
 from phantom.core.payload import ExtractedPayload, Payload, PayloadKind
 
@@ -168,21 +167,6 @@ def _carrier_fields(probe: api.CarrierProbe) -> dict[str, Any]:
     return out
 
 
-def _write_private(path: str, data: bytes) -> None:
-    """Write ``data`` to ``path`` with 0600 permissions, replacing atomically."""
-    target = Path(path)
-    temp = target.with_name(target.name + ".phantom-part")
-    try:
-        with open(temp, "wb") as handle:
-            handle.write(data)
-        os.chmod(temp, 0o600)
-        os.replace(temp, target)
-    except OSError:
-        with contextlib.suppress(OSError):
-            temp.unlink(missing_ok=True)
-        raise
-
-
 # --------------------------------------------------------------------------- commands
 
 def cmd_version(_: dict[str, Any]) -> dict[str, Any]:
@@ -258,7 +242,9 @@ def cmd_extract(request: dict[str, Any]) -> dict[str, Any]:
     if mode == "save_file":
         output = _require_str(request, "output_path")
         outcome = _extract_verified(path, password)
-        _write_private(output, outcome.payload.data)
+        write_bytes_verified(
+            output, outcome.payload.data, expected_sha256=outcome.payload.sha256_actual
+        )
         payload = outcome.payload
         return _ok(
             kind=payload.kind.value,

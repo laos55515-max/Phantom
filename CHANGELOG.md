@@ -6,6 +6,13 @@ All notable changes to PHANTOM are recorded here. The format follows
 
 ## [Unreleased]
 
+### Fixed — verified extraction and password copy
+
+- Extracted files now use the core's owner-only atomic verified writer with the
+  extracted SHA-256, preserving any existing destination on verification failure.
+- The password field has an explicit copy button; confirmation appears only
+  after a successful clipboard write. The clipboard is not cleared by a timer.
+
 ### Fixed — native file picker payload size
 
 - Map Rust's `size_bytes` to React's `sizeBytes` and reject invalid or missing
