@@ -155,8 +155,6 @@ export function ExtractScreen() {
     setBusy(false);
   }
 
-  const digestShort = outcome ? `${outcome.audit.sha256.slice(0, 16)}…` : "";
-
   return (
     <form className="screen" onSubmit={runExtract} aria-busy={phase === "busy" || busy}>
       <h1 className="screen-title">{t("extract.title")}</h1>
@@ -303,14 +301,13 @@ export function ExtractScreen() {
             </>
           )}
 
-          <div className="success-meta">
+          <div className="success-meta" title={outcome.audit.sha256}>
             {t("extract.audit", {
               version: String(outcome.audit.containerVersion),
               kdf: outcome.audit.kdf,
             })}
             {" · "}
             {outcome.audit.sha256.slice(0, 12)}…
-            <span className="sr-only">{digestShort}</span>
           </div>
           <div className="row">
             <button type="button" className="btn btn-subtle" onClick={reset}>
