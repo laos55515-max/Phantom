@@ -135,7 +135,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y ./desktop/src-tauri/target/release/bundle/deb/*.deb
-          BRIDGE="$(dpkg -L phantom | grep -E 'phantom-bridge$' | head -n1)"
+          BRIDGE="$(find /usr/bin /usr/lib /usr/opt -name 'phantom-bridge*' -type f 2>/dev/null | head -n1)"
           echo "installed bridge: $BRIDGE"
           test -n "$BRIDGE"
           python desktop/e2e/full_cycle.py --bridge "$BRIDGE" --out cycle-linux-deb.json
@@ -144,7 +144,9 @@ jobs:
         run: |
           sudo apt-get install -y --no-install-recommends xvfb imagemagick
           xvfb-run -a -s "-screen 0 1120x800x24" bash -c '
-            phantom & APP_PID=$!
+            APP_BIN="$(find /usr/bin -name 'phantom*' -type f ! -name 'phantom-bridge*' | head -n1)"
+            echo "launching: $APP_BIN"
+            "$APP_BIN" & APP_PID=$!
             sleep 12
             import -window root phantom-installed.png || true
             kill "$APP_PID" 2>/dev/null || true
