@@ -320,28 +320,20 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
-          REPO: ${{ github.repository }}
         run: |
-          set -e
           {
             echo "### macOS (Apple silicon) — подпись и проверка (${GITHUB_SHA:0:7})"
             echo
-            echo "- Образ: \`PHANTOM-aarch64.dmg\`"
+            echo "- Образ: \`PHANTOM-aarch64.dmg\` (артефакт \`macos-arm64-packages\`)"
             echo "- SHA-256 образа: \`$(cut -d' ' -f1 PHANTOM-aarch64.dmg.sha256 2>/dev/null || echo 'нет (сборка упала до создания образа)')\`"
             echo "- Подпись: **ad-hoc**. Developer ID **не** использовался; нотаризация **не** выполнялась — подтверждений нет. Gatekeeper будет блокировать/предупреждать запуск."
-            echo "- Каноничная проверка из смонтированного итогового образа и вывод \`codesign --verify --deep --strict\`:"
+            echo "- Каноничная проверка из смонтированного итогового образа:"
             echo '```'
             cat verification-report.txt 2>/dev/null || echo 'отчёт не сформировался — сборка упала раньше'
             echo '```'
           } > comment.md
-          jq -n --rawfile body comment.md '{body: $body}' > comment.json
-          curl -fsSL -X POST \
-            -H "Authorization: Bearer $GH_TOKEN" \
-            -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/${REPO}/issues/${PR_NUMBER}/comments" \
-            --data @comment.json > /dev/null \
-            || echo "::warning::could not post the verification comment (the report is in the artifact)"
-          echo "report step done"
+          gh pr comment "$PR_NUMBER" --repo "${{ github.repository }}" --body-file comment.md
+          echo "comment posted to PR #${PR_NUMBER}"
       - name: Upload artifacts
         if: always()
         uses: actions/upload-artifact@v4
