@@ -6,6 +6,20 @@ All notable changes to PHANTOM are recorded here. The format follows
 
 ## [Unreleased]
 
+### Fixed — macOS packaging: nested code signed before the .app, dmg packed last
+
+The bundle shipped by the previous pipeline could not be verified
+(`code has no resources but signature indicates they must be present` when
+checked on a stock MacBook).  The `build-macos` job now: (1) builds the
+`.app` only, (2) records the pre-fix signature state for the report,
+(3) ad-hoc signs the nested `phantom-bridge`, then the whole `.app`
+(`codesign --force --deep --sign -`), (4) gates on
+`codesign --verify --deep --strict --verbose=2` for both the built bundle
+and the same bundle re-checked from the mounted `.dmg` — CI fails if the
+check fails, before any artifact is uploaded, (5) creates the `.dmg` last,
+(6) prints the image SHA-256 and posts the full verification output as a PR
+comment.  Ad-hoc only: no Developer ID, no notarization.
+
 ### Fixed — desktop prototype (Tauri 2 + React/TypeScript), review round 2
 
 - Carrier gate: while no carrier is chosen the Hide screen shows the hint

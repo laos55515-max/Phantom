@@ -127,7 +127,11 @@ build — screenshots are capture, this one is a gate.
   the shell does not expose it yet).
 - The Extract screen shows text payloads inline; file payloads require a save
   location chosen in the native dialog.
-- macOS builds are not code-signed (Gatekeeper will warn on first launch);
-  Windows builds are not Authenticode-signed.
+- macOS builds are **ad-hoc signed only** (nested `phantom-bridge` first,
+  then the `.app`, then the `.dmg` is packed); `codesign --verify --deep
+  --strict` is enforced in CI.  There is no Developer ID signature and no
+  notarization — Gatekeeper will warn or block; Developer ID + notarization
+  are explicitly out of scope until a certificate exists.
+- Windows builds are not Authenticode-signed.
 - The demo carrier for "Попробовать на примере" is 300×300 RGB — plenty for
   the bundled 809-byte example PDF, not for large attachments.

@@ -15,6 +15,7 @@ on:
 
 permissions:
   contents: read
+  issues: write  # the macOS job posts its verification report as a PR comment
 
 concurrency:
   group: desktop-${{ github.ref }}
@@ -199,21 +200,105 @@ jobs:
           node-version: 22
           cache: npm
           cache-dependency-path: desktop/package-lock.json
-      - name: Build the app
+      - name: Build the app (.app only — the dmg is packed after signing)
         working-directory: desktop
         run: |
           npm ci
-          npx tauri build --bundles app,dmg
-      - name: Full PDF cycle (bridge shipped in the .dmg)
+          npx tauri build --bundles app
+
+      # The bundle tauri hands us has no usable signature for the shipped
+      # content: nested code is sealed (or not) before externalBin lands, so
+      # the outer seal and the files disagree — "code has no resources but
+      # signature indicates they must be present".  Reproduce and record the
+      # broken state first, then sign nested code, then the outer .app, and
+      # only then create the .dmg.
+      - name: Diagnose current signature state (before fix)
         run: |
-          DMG="$(ls desktop/src-tauri/target/release/bundle/dmg/*.dmg | head -n1)"
-          echo "dmg: $DMG"
-          MOUNT_DIR="$(hdiutil attach "$DMG" | awk '/\/Volumes\// {print $NF}' | tail -n1)"
-          echo "mounted at: $MOUNT_DIR"
-          BRIDGE="$MOUNT_DIR/PHANTOM.app/Contents/MacOS/phantom-bridge"
-          echo "bridge inside the package: $BRIDGE"
-          python desktop/e2e/full_cycle.py --bridge "$BRIDGE" --out cycle-macos-dmg.json
-          hdiutil detach "$MOUNT_DIR" || true
+          set +e
+          APP="$(ls -d desktop/src-tauri/target/release/bundle/macos/PHANTOM.app)"
+          {
+            echo "== diagnosis of the tauri-built bundle (before our signing) =="
+            echo
+            echo '$ codesign -dv --verbose=4 PHANTOM.app'
+            codesign -dv --verbose=4 "$APP" 2>&1
+            echo
+            echo '$ codesign --verify --deep --strict --verbose=2 PHANTOM.app'
+            codesign --verify --deep --strict --verbose=2 "$APP" 2>&1
+            echo "verify exit=$?"
+            echo
+            echo '$ ls -la PHANTOM.app/Contents/MacOS'
+            ls -la "$APP/Contents/MacOS" 2>&1
+            echo
+            echo '$ ls -la PHANTOM.app/Contents/_CodeSignature'
+            ls -la "$APP/Contents/_CodeSignature" 2>&1
+            echo
+            echo '$ cat PHANTOM.app/Contents/_CodeSignature/CodeResources'
+            cat "$APP/Contents/_CodeSignature/CodeResources" 2>&1
+            echo
+            echo '$ codesign -dv --verbose=4 Contents/MacOS/phantom-bridge'
+            codesign -dv --verbose=4 "$APP/Contents/MacOS/phantom-bridge" 2>&1
+            echo
+            echo '$ spctl -a -vvv -t execute PHANTOM.app'
+            spctl -a -vvv -t execute "$APP" 2>&1
+            echo "spctl exit=$?"
+          } | tee verification-report.txt
+          echo "diagnosis recorded (job continues)"
+      - name: Sign nested code, then the final .app (ad-hoc)
+        run: |
+          set -euo pipefail
+          APP="$(ls -d desktop/src-tauri/target/release/bundle/macos/PHANTOM.app)"
+          echo '== sign nested code: phantom-bridge =='
+          codesign --force --sign - --timestamp=none --verbose=2 "$APP/Contents/MacOS/phantom-bridge"
+          echo '== sign the outer bundle (deep) =='
+          codesign --force --deep --sign - --timestamp=none --verbose=2 "$APP"
+          {
+            echo
+            echo "== after signing =="
+            echo '$ codesign -dv --verbose=4 PHANTOM.app'
+            codesign -dv --verbose=4 "$APP" 2>&1
+            echo
+            echo '$ codesign -dv --verbose=4 Contents/MacOS/phantom-bridge'
+            codesign -dv --verbose=4 "$APP/Contents/MacOS/phantom-bridge" 2>&1
+          } | tee -a verification-report.txt
+      - name: Mandatory gate — codesign --verify --deep --strict on the built .app
+        run: |
+          set -euo pipefail
+          APP="$(ls -d desktop/src-tauri/target/release/bundle/macos/PHANTOM.app)"
+          echo '$ codesign --verify --verbose=2 Contents/MacOS/phantom-bridge' | tee -a verification-report.txt
+          codesign --verify --verbose=2 "$APP/Contents/MacOS/phantom-bridge" 2>&1 | tee -a verification-report.txt
+          echo '$ codesign --verify --deep --strict --verbose=2 PHANTOM.app' | tee -a verification-report.txt
+          codesign --verify --deep --strict --verbose=2 "$APP" 2>&1 | tee -a verification-report.txt
+          echo "gate passed" | tee -a verification-report.txt
+      - name: Create the DMG
+        run: |
+          set -euo pipefail
+          APP="$(ls -d desktop/src-tauri/target/release/bundle/macos/PHANTOM.app)"
+          STAGING="$(mktemp -d)/PHANTOM"
+          mkdir -p "$STAGING"
+          cp -R "$APP" "$STAGING/"
+          ln -s /Applications "$STAGING/Applications"
+          DMG="PHANTOM-aarch64.dmg"
+          hdiutil create -volname PHANTOM -srcfolder "$STAGING" -ov -format UDZO "$DMG"
+          shasum -a 256 "$DMG" | tee "$DMG.sha256" | tee -a verification-report.txt
+      - name: Mounted-DMG verification gate (mandatory)
+        run: |
+          set -euo pipefail
+          DMG="PHANTOM-aarch64.dmg"
+          MOUNT_POINT="$(mktemp -d)/mnt"
+          mkdir -p "$MOUNT_POINT"
+          hdiutil attach "$DMG" -mountpoint "$MOUNT_POINT" -nobrowse -readonly
+          {
+            echo
+            echo "== post-mount verification (this is the gate the release depends on) =="
+          } | tee -a verification-report.txt
+          echo "$ codesign --verify --deep --strict --verbose=2 $MOUNT_POINT/PHANTOM.app" | tee -a verification-report.txt
+          codesign --verify --deep --strict --verbose=2 "$MOUNT_POINT/PHANTOM.app" 2>&1 | tee -a verification-report.txt
+          echo "$ codesign --verify --verbose=2 $MOUNT_POINT/PHANTOM.app/Contents/MacOS/phantom-bridge" | tee -a verification-report.txt
+          codesign --verify --verbose=2 "$MOUNT_POINT/PHANTOM.app/Contents/MacOS/phantom-bridge" 2>&1 | tee -a verification-report.txt
+          echo "$ spctl -a -vvv -t execute (informational; ad-hoc is expected to be rejected)" | tee -a verification-report.txt
+          spctl -a -vvv -t execute "$MOUNT_POINT/PHANTOM.app" 2>&1 | tee -a verification-report.txt || true
+          python desktop/e2e/full_cycle.py --bridge "$MOUNT_POINT/PHANTOM.app/Contents/MacOS/phantom-bridge" --out cycle-macos-dmg.json 2>&1 | tee -a verification-report.txt
+          hdiutil detach "$MOUNT_POINT"
       - name: Screenshot the app (best effort)
         continue-on-error: true
         run: |
@@ -226,9 +311,37 @@ jobs:
         if: always()
         run: |
           mkdir -p artifacts
-          cp desktop/src-tauri/target/release/bundle/dmg/*.dmg artifacts/ 2>/dev/null || true
+          cp PHANTOM-aarch64.dmg PHANTOM-aarch64.dmg.sha256 artifacts/ 2>/dev/null || true
           cp cycle-macos-bridge.json cycle-macos-dmg.json artifacts/ 2>/dev/null || true
+          cp verification-report.txt artifacts/ 2>/dev/null || true
           cp phantom-macos.png artifacts/ 2>/dev/null || true
+      - name: Report verification to the PR
+        if: always() && github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -e
+          {
+            echo "### macOS (Apple silicon) — подпись и проверка (${GITHUB_SHA:0:7})"
+            echo
+            echo "- Образ: \`PHANTOM-aarch64.dmg\`"
+            echo "- SHA-256 образа: \`$(cut -d' ' -f1 PHANTOM-aarch64.dmg.sha256 2>/dev/null || echo 'нет (сборка упала до создания образа)')\`"
+            echo "- Подпись: **ad-hoc**. Developer ID **не** использовался; нотаризация **не** выполнялась — подтверждений нет. Gatekeeper будет блокировать/предупреждать запуск."
+            echo "- Каноничная проверка из смонтированного итогового образа и вывод \`codesign --verify --deep --strict\`:"
+            echo '```'
+            cat verification-report.txt 2>/dev/null || echo 'отчёт не сформировался — сборка упала раньше'
+            echo '```'
+          } > comment.md
+          jq -n --rawfile body comment.md '{body: $body}' > comment.json
+          curl -fsSL -X POST \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${REPO}/issues/${PR_NUMBER}/comments" \
+            --data @comment.json > /dev/null \
+            || echo "::warning::could not post the verification comment (the report is in the artifact)"
+          echo "report step done"
       - name: Upload artifacts
         if: always()
         uses: actions/upload-artifact@v4
