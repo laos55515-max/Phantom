@@ -87,10 +87,15 @@ def measure(ctk: Any, counters: Counters, *, stages: bool) -> dict[str, float]:
 
     counters.reset()
     root = ctk.CTk()
+    root.deiconify()  # the window must be viewable before any display pass
     try:
         started = time.perf_counter()
         app = PhantomApp(root)
-        root.update_idletasks()
+        # The window's own _flush_layout knows about Tk 9.1 on Aqua: a direct
+        # ``update_idletasks()`` here segfaults on that platform (the owner's
+        # MacBook and the macOS CI runner both reproduce it).  Use the safe pass
+        # instead.
+        app._flush_layout()
         build_ms = (time.perf_counter() - started) * 1000.0
 
         painted = time.perf_counter()

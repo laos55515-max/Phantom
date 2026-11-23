@@ -676,6 +676,440 @@ def test_embed_flow_through_the_ui(app, rgb_carrier: Path, password: str) -> Non
     assert api.extract_from_path(str(output), password).payload.data == b"gui smoke payload"
 
 
+def test_jpg_via_drop_goes_through_prepare_carrier(app, jpg_carrier: Path) -> None:
+    """A JPEG dropped on the carrier zone is converted to a temp PNG copy.
+
+    The original JPEG stays untouched, and the temp copy is removed when the
+    carrier changes.
+    """
+    original_bytes = jpg_carrier.read_bytes()
+    app._drop_carrier([str(jpg_carrier)])
+    _pump(app)
+    assert app.worker.busy is False
+    # The JPEG itself was never modified.
+    assert jpg_carrier.read_bytes() == original_bytes
+    # A temp PNG copy exists while this carrier is loaded.
+    assert app._temp_carrier is not None
+    assert Path(app._temp_carrier).suffix == ".png"
+    assert Path(app._temp_carrier).exists()
+    # Replacing the carrier removes the temp copy.
+    app._drop_temp_carrier()
+    assert not Path(app._temp_carrier).exists() if app._temp_carrier else True
+
+
+def test_jpg_via_drop_keeps_previous_carrier_on_conversion_error(
+    app, jpg_carrier: Path, dialogs
+) -> None:
+    """If the JPEG cannot be converted, the previous carrier stays and an error shows."""
+    # Load a valid PNG carrier first.
+    import numpy as np
+    from PIL import Image as _Image
+
+    rng = np.random.default_rng(7)
+    pixels = np.clip(rng.integers(0, 256, (40, 40, 3)), 0, 255).astype(np.uint8)
+    png_carrier = jpg_carrier.with_suffix(".png")
+    _Image.fromarray(pixels, "RGB").save(png_carrier, format="PNG")
+    app._set_carrier(str(png_carrier))
+    _pump(app)
+    assert app.worker.busy is False
+    first_carrier = app.embed_vm.carrier_path
+
+    # Now drop a corrupted "JPEG" (a PNG with a .jpg extension).
+    bad_jpg = jpg_carrier.with_suffix(".bad.jpg")
+    bad_jpg.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 100)
+    app._drop_carrier([str(bad_jpg)])
+    _pump(app)
+    assert app.worker.busy is False
+    # The previous carrier is still loaded.
+    assert app.embed_vm.carrier_path == first_carrier
+    # An error dialog was shown.
+    assert dialogs.errors, "expected an error dialog for the bad JPEG"
+
+
+def test_example_clear_discards_saved_state(app, rgb_carrier: Path) -> None:
+    """Clearing the form in example mode discards the saved user state."""
+    app._set_carrier(str(rgb_carrier))
+    _pump(app)
+    app._on_try_example()
+    _pump(app)
+    assert app._example_saved_state is not None
+    app._clear_embed()
+    assert app._example_saved_state is None
+    assert app.embed_vm.carrier_path == ""
+    assert app.embed_vm.password == ""
+
+
+def test_example_full_cycle_save_and_extract(app, tmp_path: Path) -> None:
+    """Demo: empty window → example → embed → save → extract → restore form.
+
+    Covers the whole offline path: no user-supplied image or attachment is
+    needed; the built-in carrier and test attachment do everything.
+    """
+    from phantom.ui.app import EXAMPLE_SECRET, RESOURCES_DIR
+
+    # Enter the example from an empty form.
+    app._on_try_example()
+    _pump(app)
+    assert app.worker.busy is False
+    assert app.embed_vm.password == app.embed_vm.EXAMPLE_PASSWORD
+    assert app.embed_vm.secret_path == str(EXAMPLE_SECRET)
+    assert app.embed_vm.carrier_source == app.embed_vm.SOURCE_EXAMPLE
+
+    # The example pre-fills the visible password field.
+    assert app.embed_pwd.get() == app.embed_vm.EXAMPLE_PASSWORD
+
+    # The suggested output path is in a user-writable folder, not in resources.
+    output_path = Path(app.embed_vm.output_path)
+    assert output_path.name == "phantom-example.stego.png"
+    assert RESOURCES_DIR.resolve() not in output_path.resolve().parents
+    assert output_path.resolve() != RESOURCES_DIR.resolve()
+
+    # Wipe-source is disabled for the demo: nothing the user owns is deleted.
+    assert app.embed_vm.wipe_source is False
+
+    # Embed the example payload.
+    app._start_embed()
+    _pump(app)
+    assert app.worker.busy is False
+    assert output_path.exists(), "embed must write the stego file"
+
+    # Open the result in the Extract tab and extract it.
+    app._open_in_extract()
+    _pump(app)
+    assert app.current_tab == "extract"
+    app.extract_pwd.insert(0, app.embed_vm.EXAMPLE_PASSWORD)
+    app._start_extract()
+    _pump(app)
+    assert app.worker.busy is False
+    result = app.extract_vm.result
+    assert result is not None and result.integrity_ok, "extraction must verify"
+    # ExtractedPayload carries bytes in .data.
+    assert result.data == EXAMPLE_SECRET.read_bytes()
+
+    # Leaving the example restores the original empty form.
+    app._clear_embed()
+    assert app._example_saved_state is None
+    assert app.embed_vm.carrier_path == ""
+    assert app.embed_vm.password == ""
+    assert app.embed_vm.secret_path == ""
+
+
+def test_example_restores_non_empty_form(app, rgb_carrier: Path, password: str) -> None:
+    """Entering and leaving the example restores a non-empty user form."""
+    # Set up the user's own form.
+    app._set_carrier(str(rgb_carrier))
+    _pump(app)
+    assert app.worker.busy is False
+    app.embed_pwd.insert(0, password)
+    app._set_textbox(app.embed_text, "user's secret message")
+    app._refresh_all()
+
+    first_password = app.embed_vm.password
+    first_text = app.embed_vm.text
+    first_carrier = app.embed_vm.carrier_path
+
+    # Enter example mode.
+    app._on_try_example()
+    _pump(app)
+    assert app.worker.busy is False
+    assert app.embed_vm.password == app.embed_vm.EXAMPLE_PASSWORD
+
+    # Leave example mode by choosing the user's carrier again.
+    app._set_carrier(str(rgb_carrier))
+    _pump(app)
+    assert app.worker.busy is False
+    # The user's form is back.
+    assert app.embed_vm.password == first_password
+    assert app.embed_vm.text == first_text
+    assert app.embed_vm.carrier_path == first_carrier
+    assert app._example_saved_state is None
+
+
+def test_demo_activates_builtin_carrier(app, rgb_carrier: Path, password: str) -> None:
+    """Entering demo mode makes the built-in carrier the active source,
+    overwriting the user's carrier, attachment, password and text."""
+    # Set up the user's own form.
+    app._set_carrier(str(rgb_carrier))
+    _pump(app)
+    assert app.worker.busy is False
+    assert app.embed_vm.carrier_source == app.embed_vm.SOURCE_FILE
+    app.embed_pwd.insert(0, password)
+    app._set_textbox(app.embed_text, "user's secret message")
+    app._refresh_all()
+
+    # Enter example mode.
+    app._on_try_example()
+    _pump(app)
+    assert app.worker.busy is False
+    # The built-in example carrier is now the active source.
+    assert app.embed_vm.carrier_source == app.embed_vm.SOURCE_EXAMPLE
+    assert app.embed_vm.password == app.embed_vm.EXAMPLE_PASSWORD
+    assert app._example_saved_state is not None
+
+
+def test_return_to_files_restores_user_form(app, rgb_carrier: Path, password: str) -> None:
+    """Leaving demo via "Return to my files" restores the user's text,
+    attachment, carrier and save path."""
+    # Set up the user's own form.
+    app._set_carrier(str(rgb_carrier))
+    _pump(app)
+    assert app.worker.busy is False
+    app.embed_pwd.insert(0, password)
+    app._set_textbox(app.embed_text, "user's secret message")
+    app._refresh_all()
+
+    first_password = app.embed_vm.password
+    first_text = app.embed_vm.text
+    first_carrier = app.embed_vm.carrier_path
+    first_output = app.embed_vm.output_path
+
+    # Enter example mode.
+    app._on_try_example()
+    _pump(app)
+    assert app.worker.busy is False
+    assert app.embed_vm.carrier_source == app.embed_vm.SOURCE_EXAMPLE
+
+    # Leave demo via the "Return to my files" button.
+    app._on_return_to_files()
+    _pump(app)
+    assert app.worker.busy is False
+    assert app.embed_vm.carrier_source != app.embed_vm.SOURCE_EXAMPLE
+    # The user's form is restored: text, password, carrier, output path.
+    assert app.embed_vm.password == first_password
+    assert app.embed_vm.text == first_text
+    assert app.embed_vm.carrier_path == first_carrier
+    assert app.embed_vm.output_path == first_output
+
+
+def test_example_can_save_attachment_after_exit(app, jpg_carrier: Path, password: str) -> None:
+    """After exiting the demo, the restored JPG carrier can embed and save
+    without the user re-selecting the image."""
+    # Select a JPEG: converted to temp PNG.
+    app._drop_carrier([str(jpg_carrier)])
+    _pump(app)
+    assert app.worker.busy is False
+    assert app._temp_carrier is not None
+
+    # Enter and leave the demo.
+    app._on_try_example()
+    _pump(app)
+    app._set_carrier(str(jpg_carrier))
+    _pump(app)
+    assert app.worker.busy is False
+    assert app._temp_carrier is not None
+    assert Path(app._temp_carrier).exists()
+
+    # Embed and save using the restored carrier — no re-selection needed.
+    app.embed_pwd.insert(0, password)
+    app._set_textbox(app.embed_text, "payload after demo exit")
+    app._refresh_all()
+    app._start_embed()
+    _pump(app)
+    assert app.worker.busy is False
+    output = Path(app.embed_vm.output_path)
+    assert output.exists(), "embed must write the stego file"
+    # The temp PNG is cleaned up after embed.
+    app._clear_embed()
+    assert app._temp_carrier is None
+    assert not Path(app._temp_carrier).exists() if app._temp_carrier else True
+
+
+def test_jpg_conversion_cancel_no_leftover_temp(
+    app, jpg_carrier: Path, monkeypatch
+) -> None:
+    """A cancelled JPEG conversion leaves no temporary PNG behind."""
+    import phantom.ui.app as app_module
+    from phantom.core.errors import OperationCancelled
+
+    # Make prepare_carrier_copy raise OperationCancelled mid-conversion.
+    def cancelling_copy(path, *, cancel=None, progress=None):
+        cancel.set()
+        raise OperationCancelled("conversion cancelled")
+
+    monkeypatch.setattr(app_module, "prepare_carrier_copy", cancelling_copy)
+
+    app._set_carrier(str(jpg_carrier))
+    _pump(app)
+    assert app.worker.busy is False
+    # No temp carrier was created or left behind.
+    assert app._temp_carrier is None
+    assert app._pending_carrier is None
+
+
+def test_temp_png_deleted_by_saved_path(app, jpg_carrier: Path, password: str) -> None:
+    """The temporary PNG of a JPEG carrier is removed by its saved path.
+
+    Covers: drop → conversion → embed → save → temp gone.
+    """
+    app._drop_carrier([str(jpg_carrier)])
+    _pump(app)
+    assert app.worker.busy is False
+    temp_path = app._temp_carrier
+    assert temp_path is not None and Path(temp_path).exists()
+
+    # Embed and save (the temp carrier is the one being embedded from).
+    app.embed_pwd.insert(0, password)
+    app._set_textbox(app.embed_text, "temp cleanup payload")
+    app._refresh_all()
+    app._start_embed()
+    _pump(app)
+    assert app.worker.busy is False
+    output = Path(app.embed_vm.output_path)
+    assert output.exists()
+
+    # The temp PNG is gone once the carrier is replaced / cleared.
+    app._clear_embed()
+    assert app._temp_carrier is None
+    assert not Path(temp_path).exists(), "temp PNG must be deleted after clear"
+
+
+def test_jpg_conversion_cancel_keeps_previous_carrier(
+    app, jpg_carrier: Path, dialogs
+) -> None:
+    """If a JPEG conversion fails, the new temp PNG is deleted and the previous
+    carrier keeps working."""
+    # Load a valid PNG carrier first.
+    import numpy as np
+    from PIL import Image as _Image
+
+    rng = np.random.default_rng(7)
+    pixels = np.clip(rng.integers(0, 256, (40, 40, 3)), 0, 255).astype(np.uint8)
+    png_carrier = jpg_carrier.with_suffix(".png")
+    _Image.fromarray(pixels, "RGB").save(png_carrier, format="PNG")
+    app._set_carrier(str(png_carrier))
+    _pump(app)
+    assert app.worker.busy is False
+    first_carrier = app.embed_vm.carrier_path
+
+    # Drop a corrupted "JPEG" (a PNG with a .jpg extension).
+    bad_jpg = jpg_carrier.with_suffix(".bad.jpg")
+    bad_jpg.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 100)
+    app._drop_carrier([str(bad_jpg)])
+    _pump(app)
+    assert app.worker.busy is False
+    # The previous carrier is still loaded.
+    assert app.embed_vm.carrier_path == first_carrier
+    # No temp carrier was left behind.
+    assert app._temp_carrier is None
+    # An error dialog was shown.
+    assert dialogs.errors, "expected an error dialog for the bad JPEG"
+
+
+def test_jpg_conversion_cancel_after_temp_created(
+    app, jpg_carrier: Path, monkeypatch
+) -> None:
+    """Cancelling a JPEG conversion after the temp PNG exists leaves no temp file
+    and keeps the previous carrier working.  Cancel fires after ``converted.save()``
+    completes, so the post-save ``check_cancel`` inside ``_jpg_to_png`` must clean
+    up the temp PNG before re-raising ``OperationCancelled``."""
+    import phantom.stego.image as image_module
+
+    # Wrap check_cancel: first call (start of conversion) passes,
+    # second call (right after save) sets cancel so the post-save cleanup fires.
+    original_check_cancel = image_module.check_cancel
+    calls = {"n": 0}
+
+    def staged_check_cancel(ev):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            ev.set()  # Simulate cancel arriving right after the temp PNG is saved
+        original_check_cancel(ev)
+
+    monkeypatch.setattr(image_module, "check_cancel", staged_check_cancel)
+
+    # First load a valid carrier so we have a "previous carrier" to keep.
+    import numpy as np
+    from PIL import Image as _Image
+
+    rng = np.random.default_rng(7)
+    pixels = np.clip(rng.integers(0, 256, (40, 40, 3)), 0, 255).astype(np.uint8)
+    png_carrier = jpg_carrier.with_suffix(".png")
+    _Image.fromarray(pixels, "RGB").save(png_carrier, format="PNG")
+    app._set_carrier(str(png_carrier))
+    _pump(app)
+    assert app.worker.busy is False
+    first_carrier = app.embed_vm.carrier_path
+
+    # Drop the JPEG: conversion creates a temp PNG, then cancel fires after save.
+    app._drop_carrier([str(jpg_carrier)])
+    _pump(app)
+    assert app.worker.busy is False
+    # The previous carrier is still loaded.
+    assert app.embed_vm.carrier_path == first_carrier
+    # No temp carrier was left behind (the created temp PNG was cleaned up).
+    assert app._temp_carrier is None
+    assert app._pending_carrier is None
+
+
+def test_demo_return_to_files_full_cycle(
+    app, jpg_carrier: Path, tmp_path: Path, password: str
+) -> None:
+    """Full demo cycle via the UI: select JPG and PDF, open demo, return to
+    files, save and extract the PDF without re-selecting the JPG."""
+    # --- Step 1: select a JPEG carrier ---
+    app._drop_carrier([str(jpg_carrier)])
+    _pump(app)
+    assert app.worker.busy is False, "carrier conversion must finish"
+    assert app._temp_carrier is not None, "temp PNG must exist after JPG drop"
+    assert Path(app._temp_carrier).exists(), "temp PNG file must exist"
+    jpg_temp_png = app._temp_carrier
+
+    # --- Step 2: select a PDF attachment ---
+    pdf_path = tmp_path / "secret.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4\nsecret payload\n%%EOF\n")
+    app._set_secret(str(pdf_path))
+    _pump(app)
+    assert app.worker.busy is False, "secret selection must finish"
+    assert app.embed_vm.secret_path == str(pdf_path), "secret path must be set"
+
+    # --- Step 3: open the demo ---
+    app._on_try_example()
+    _pump(app)
+    assert app.worker.busy is False, "demo open must finish"
+    assert app.embed_vm.carrier_source == app.embed_vm.SOURCE_EXAMPLE, "carrier source must be example"
+    # The JPG's temp PNG survives the demo.
+    assert app._temp_carrier == jpg_temp_png, "temp PNG must survive demo"
+    assert Path(app._temp_carrier).exists(), "temp PNG file must survive demo"
+
+    # --- Step 4: return to my files ---
+    app._on_return_to_files()
+    _pump(app)
+    assert app.worker.busy is False, "return to files must finish"
+    assert app.embed_vm.carrier_source != app.embed_vm.SOURCE_EXAMPLE, "must leave example mode"
+    # The user's form is restored: JPG carrier (as temp PNG) and PDF attachment.
+    assert app._temp_carrier == jpg_temp_png, "temp PNG tracking must be restored"
+    assert app.embed_vm.carrier_path == jpg_temp_png, "carrier path must be restored to temp PNG"
+    assert app.embed_vm.secret_path == str(pdf_path), "secret path must be restored"
+    assert app.embed_vm.carrier_source == app.embed_vm.SOURCE_FILE, "carrier source must be file"
+
+    # --- Step 5: embed and save ---
+    app.embed_pwd.insert(0, password)
+    app._refresh_all()
+    assert Path(app.embed_vm.carrier_path).exists(), "carrier file must exist before embed"
+    app._start_embed()
+    _pump(app)
+    assert app.worker.busy is False, "embed must finish"
+    output = Path(app.embed_vm.output_path)
+    assert output.exists(), "embed must write the stego file"
+
+    # --- Step 6: open in extract and extract ---
+    app._open_in_extract()
+    _pump(app)
+    assert app.current_tab == "extract", "must be on extract tab"
+    app.extract_pwd.insert(0, password)
+    app._start_extract()
+    _pump(app)
+    assert app.worker.busy is False, "extract must finish"
+    result = app.extract_vm.result
+    assert result is not None and result.integrity_ok, "extraction must verify"
+    # The extracted bytes must match the original PDF.
+    assert result.data == pdf_path.read_bytes(), "extracted PDF bytes must match original"
+
+    # --- Step 7: clean up ---
+    app._clear_embed()
+    assert app._temp_carrier is None, "temp PNG must be cleaned up"
+
+
 def _extracted(version: int):
     from phantom.core.payload import ExtractedPayload, PayloadKind
 

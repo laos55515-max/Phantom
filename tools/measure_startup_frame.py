@@ -416,7 +416,6 @@ def run(label: str, watch: float) -> dict[str, Any]:
     root.bind_all("<Expose>", on_expose_any, add="+")
     root.after_idle(on_idle)
     root.after(0, on_loop)
-    last_beat[0] = time.perf_counter()
     root.after(10, beat)
 
     # ``main`` paints once before the loop; on this platform the guard refuses it and
@@ -502,6 +501,14 @@ def run(label: str, watch: float) -> dict[str, Any]:
     root.after(int((watch - 1.0) * 1000), close)
     root.after(int((watch + 0.5) * 1000), failsafe_exit)
 
+    # Mark the moment just before entering Tk's mainloop, so we can tell whether
+    # any pause happens inside mainloop() itself (Aqua initialization on Tk 9.1,
+    # for example) rather than in the Python setup before it.
+    mark("pre_mainloop")
+    # Arm the heartbeat right before entering mainloop, so the first gap
+    # measurement starts from the moment the event loop takes over.
+    last_beat[0] = time.perf_counter()
+
     phase[0] = "mainloop"
     try:
         root.mainloop()
@@ -516,6 +523,7 @@ def run(label: str, watch: float) -> dict[str, Any]:
     ]
     result.update(
         {
+            "pre_mainloop_ms": round(marks.get("pre_mainloop", -1), 1),
             "loop_ms": round(marks.get("loop", -1), 1),
             "mapped_ms": round(marks.get("mapped", -1), 1),
             "expose_any_ms": round(marks.get("expose_any", -1), 1),
@@ -574,8 +582,9 @@ def run(label: str, watch: float) -> dict[str, Any]:
 def report(result: dict[str, Any]) -> None:
     say(f"label={result['label']} tk={result['tk']}")
     say(
-        "build_ms={build_ms} refresh_ms={refresh_ms} loop_ms={loop_ms} "
-        "mapped_ms={mapped_ms} expose_any_ms={expose_any_ms} idle_ms={idle_ms}".format(**result)
+        "pre_mainloop_ms={pre_mainloop_ms} build_ms={build_ms} refresh_ms={refresh_ms} "
+        "loop_ms={loop_ms} mapped_ms={mapped_ms} expose_any_ms={expose_any_ms} "
+        "idle_ms={idle_ms}".format(**result)
     )
     say(
         "visibility_ms={visibility_ms} focus_in_ms={focus_in_ms} activate_ms={activate_ms} "

@@ -16,6 +16,7 @@ import sys
 import time
 import tkinter
 from collections.abc import Callable
+from pathlib import Path
 from tkinter import TclError, filedialog, messagebox
 from typing import Any, Final
 
@@ -36,6 +37,7 @@ from phantom.core.text import TextMetrics, measure_text
 from phantom.i18n import I18n
 from phantom.metadata.cleaner import CleaningOutcome
 from phantom.metadata.models import MetadataReport
+from phantom.stego.image import prepare_carrier_copy
 from phantom.ui import clipboard as clip
 from phantom.ui import format as ui_format
 from phantom.ui import theme as T
@@ -128,6 +130,15 @@ MIN_SIZE: Final = (980, 720)
 CARRIER_PATTERNS: Final = ("*.png", "*.wav", "*.flac")
 IMAGE_PATTERNS: Final = (".png",)
 AUDIO_PATTERNS: Final = (".wav", ".flac")
+JPEG_FILETYPES: Final = (("JPEG images", "*.jpg *.jpeg"),)
+#: Built-in carriers and the example attachment, shipped with the app so the
+#: example works offline and without a suitable image at hand.
+RESOURCES_DIR: Final = Path(__file__).resolve().parent.parent / "resources"
+EXAMPLE_CARRIER: Final = RESOURCES_DIR / "example_carrier.png"
+READY_CARRIER: Final = RESOURCES_DIR / "ready_carrier.png"
+EXAMPLE_SECRET: Final = RESOURCES_DIR / "example_secret.txt"
+EXAMPLE_OUTPUT_NAME: Final = "phantom-example.stego.png"
+READY_OUTPUT_NAME: Final = "phantom-ready.stego.png"
 
 
 class PhantomApp:
@@ -176,6 +187,19 @@ class PhantomApp:
         self._status_key = "status_ready"
         self._status_params: dict[str, object] = {}
         self._busy = False
+        #: Temporary PNG copy of a user's JPEG carrier (the original stays intact).
+        #: This window owns it and removes it when the carrier changes or the
+        #: window closes.
+        self._temp_carrier: str | None = None
+        #: The file the user chose before a JPEG was converted to the temp copy.
+        self._carrier_original: str | None = None
+        #: The user's form state saved before the built-in example took over, so
+        #: it can be restored when the user leaves example mode (attachment,
+        #: image, password, output path).
+        self._example_saved_state: dict[str, object] | None = None
+        #: Carrier path and previous output saved while a JPEG is being converted
+        #: in the worker, so the DONE handler can apply the result.
+        self._pending_carrier: dict[str, str] | None = None
         self._progress_indeterminate = False
         #: What the footer is showing right now, as ``(locale key, params)`` — kept
         #: so the elapsed-time tick and a language switch can repaint it.
@@ -604,6 +628,42 @@ class PhantomApp:
         self.binder.bind(self.carrier_card_title, "step_embed_carrier")
         self.binder.bind(carrier_meta, "step_embed_carrier_meta")
 
+        # How the carrier is obtained: an offline example, a built-in image, or
+        # the user's own file (a JPEG is turned into a temporary PNG copy).
+        # Carrier source row uses a plain CTkFrame with fixed grid instead of
+        # FlowRow: FlowRow's per-configure reflow passes (child measurement +
+        # re-grid) stall the Tk 9.1 Aqua event loop during startup, pushing
+        # worst_gap_ms over the 2000 ms threshold.  CTkFrame+grid does a single
+        # layout pass and is stable on Tk 9.1.  Buttons stay in one row; measured
+        # widths (~860 px max in ru/uk) fit within the ~908 px available at
+        # 980x720, so no overflow is expected in en, ru or uk.  If a future
+        # locale needs more width, switch to a static 2x2 grid here.
+        carrier_source_row = self.carrier_source_row = ctk.CTkFrame(
+            carrier_card, fg_color="transparent"
+        )
+        carrier_source_row.pack(fill="x", padx=18, pady=(0, 8))
+        carrier_source_row.grid_columnconfigure(3, weight=1)
+
+        self.try_example_button = primary_button(
+            carrier_source_row, self.root, "", self._on_try_example
+        )
+        self.try_example_button.grid(row=0, column=0, sticky="w", padx=(0, 8))
+
+        self.builtin_carrier_button = quiet_button(
+            carrier_source_row, self.root, "", self._on_builtin_carrier
+        )
+        self.builtin_carrier_button.grid(row=0, column=1, sticky="w", padx=(0, 8))
+
+        self.return_to_files_button = quiet_button(
+            carrier_source_row, self.root, "", self._on_return_to_files
+        )
+        self.return_to_files_button.grid(row=0, column=2, sticky="w", padx=(0, 8))
+
+        self.carrier_button = quiet_button(
+            carrier_source_row, self.root, "", self._choose_carrier
+        )
+        self.carrier_button.grid(row=0, column=3, sticky="e")
+
         self.carrier_drop = inset_panel(carrier_card, border_width=1)
         self.carrier_drop.pack(fill="x", padx=18, pady=(0, 6))
         self.carrier_drop.grid_columnconfigure(0, weight=1)
@@ -622,11 +682,6 @@ class PhantomApp:
         self.binder.bind(self.drop_carrier_sub, "drop_carrier_sub")
         self.dnd_carrier_hint = hint_label(self.carrier_drop, self.root, "", wrap=520)
         self.dnd_carrier_hint.grid(row=2, column=0, sticky="ew", padx=(14, 10), pady=(1, 8))
-
-        self.carrier_button = quiet_button(
-            self.carrier_drop, self.root, "", self._choose_carrier
-        )
-        self.carrier_button.grid(row=0, column=1, rowspan=3, sticky="e", padx=(0, 14), pady=8)
         self._seat_drop_zone("carrier", self.carrier_drop)
 
         self.embed_carrier_error = ctk.CTkFrame(
@@ -655,6 +710,9 @@ class PhantomApp:
 
         self.carrier_label = value_label(carrier_card, self.root, "")
         self.carrier_label.pack(fill="x", padx=18, pady=(0, 6))
+
+        self.carrier_size_label = hint_label(carrier_card, self.root, "", wrap=620)
+        self.carrier_size_label.pack(fill="x", padx=18, pady=(0, 4))
 
         output_row = ctk.CTkFrame(carrier_card, fg_color="transparent")
         output_row.pack(fill="x", padx=18, pady=(0, 12))
@@ -1019,12 +1077,22 @@ class PhantomApp:
         self.embed_reveal_button = quiet_button(
             res_actions, self.root, "", self._reveal_embed_result
         )
-        self.embed_reveal_button.pack(side="left")
+        self.embed_reveal_button.pack(side="left", padx=(0, 6))
+        self.embed_open_extract_button = link_button(
+            res_actions, self.root, "", self._open_in_extract
+        )
+        self.embed_open_extract_button.pack(side="left")
         self.binder.bind(self.embed_copy_path_button, "btn_copy_path")
+        self.binder.bind(self.embed_open_extract_button, "btn_open_in_extract")
         self.binder.bind_dynamic(
             self.embed_reveal_button,
             "btn_reveal",
             lambda: {"file_manager": self.file_manager_name()},
+        )
+
+        self.embed_send_hint = hint_label(res_path_box, self.root, "", wrap=520)
+        self.embed_send_hint.grid(
+            row=1, column=0, columnspan=2, sticky="w", padx=(12, 8), pady=(0, 8)
         )
         return frame
 
@@ -1531,9 +1599,13 @@ class PhantomApp:
         self.binder.bind(self.embed_clear_button, "btn_clear")
         self.binder.bind(self.extract_button, "btn_extract")
         self.binder.bind(self.carrier_button, "btn_choose_carrier")
+        self.binder.bind(self.try_example_button, "btn_try_example")
+        self.binder.bind(self.builtin_carrier_button, "btn_builtin_carrier")
+        self.binder.bind(self.return_to_files_button, "btn_return_to_files")
         self.binder.bind(self.stego_button, "btn_choose_stego")
         self.binder.bind(self.secret_button, "btn_choose_file")
         self.binder.bind(self.output_button, "btn_browse_output")
+        self.binder.bind(self.embed_open_extract_button, "btn_open_in_extract")
         self.binder.bind(self.wipe_checkbox, "chk_secure_delete")
         self.binder.bind(self.verify_checkbox, "chk_verify")
         # A checkbox draws its caption inside its own width: measure it, in the
@@ -1786,6 +1858,7 @@ class PhantomApp:
             audio = vm.carrier.audio
             notices.append(self.i18n.t("lbl_silence", pct=f"{audio.silence_ratio * 100:.0f}"))
         self.notice_label.configure(text="\n".join(notices))
+        self._refresh_carrier_size_status()
         if not self.output_entry.get():
             self._set_entry_text(self.output_entry, vm.output_path)
         if self.wipe_checkbox.get() != vm.wipe_source:
@@ -1798,6 +1871,38 @@ class PhantomApp:
         self._refresh_embed_ready()
         self._refresh_editor_actions()
         self._sync_capacity_status()
+        # The "Return to my files" button is only meaningful while the demo
+        # example is active; disable it otherwise so the carrier source row stays
+        # uncluttered.
+        set_enabled(
+            self.return_to_files_button,
+            self.embed_vm.carrier_source == self.embed_vm.SOURCE_EXAMPLE,
+        )
+
+    def _refresh_carrier_size_status(self) -> None:
+        """\"Проверяем размер\" / \"Помещается\" / \"Нужна картинка побольше\".
+
+        Drawn from the same capacity report that colours the fill bar, so the
+        short line and the detailed panel never disagree.
+        """
+        report = self.capacity_report
+        if report is None or report.state in (
+            CapacityState.NO_CARRIER,
+            CapacityState.NO_PAYLOAD,
+            CapacityState.ERROR,
+        ):
+            self.carrier_size_label.configure(text="")
+            return
+        if report.state is CapacityState.CALCULATING:
+            text = self.i18n.t("size_checking")
+            color = T.CLR_MUTED
+        elif report.state is CapacityState.FITS:
+            text = self.i18n.t("size_fits", pct=f"{report.percent:.0f}")
+            color = T.CLR_GREEN
+        else:  # CapacityState.OVERFLOW
+            text = self.i18n.t("size_needs_bigger", pct=f"{report.percent:.0f}")
+            color = T.CLR_RED
+        self.carrier_size_label.configure(text=text, text_color=color)
 
     def _refresh_password_meter(self) -> None:
         pwd = self.embed_pwd.get() if hasattr(self, "embed_pwd") else self.embed_vm.password
@@ -2274,6 +2379,10 @@ class PhantomApp:
             self.carrier_button,
             self.stego_button,
             self.secret_button if self.embed_vm.mode is PayloadMode.FILE else None,
+            self.try_example_button,
+            self.builtin_carrier_button,
+            self.return_to_files_button,
+            self.embed_open_extract_button,
             self.generate_button,
             self.embed_clear_button,
             self.clear_field_button,
@@ -2371,11 +2480,18 @@ class PhantomApp:
             "secret": self._drop_secret,
             "metadata": self._drop_metadata,
         }
-        extensions = (
-            C.IMAGE_EXTENSIONS + C.AUDIO_WAV_EXTENSIONS + C.AUDIO_FLAC_EXTENSIONS
-            if zone != "secret"
-            else (".bin", ".txt", ".pdf", ".zip", ".png", ".jpg", ".json", ".csv", ".dat")
-        )
+        if zone == "carrier":
+            # A user's JPEG becomes a temporary PNG copy; the original stays intact.
+            extensions = (
+                C.IMAGE_EXTENSIONS
+                + C.JPEG_EXTENSIONS
+                + C.AUDIO_WAV_EXTENSIONS
+                + C.AUDIO_FLAC_EXTENSIONS
+            )
+        elif zone != "secret":
+            extensions = C.IMAGE_EXTENSIONS + C.AUDIO_WAV_EXTENSIONS + C.AUDIO_FLAC_EXTENSIONS
+        else:
+            extensions = (".bin", ".txt", ".pdf", ".zip", ".png", ".jpg", ".json", ".csv", ".dat")
 
         def _enter(_widget: Any = widget) -> None:
             self._highlight_zone(_widget, True)
@@ -2745,8 +2861,9 @@ class PhantomApp:
     # -- file pickers ---------------------------------------------------
     def _file_types(self) -> list[tuple[str, str]]:
         return [
-            (self.i18n.t("ft_media"), "*.png *.wav *.flac"),
+            (self.i18n.t("ft_media"), "*.png *.jpg *.jpeg *.wav *.flac"),
             (self.i18n.t("ft_png"), "*.png"),
+            (self.i18n.t("ft_jpeg"), "*.jpg *.jpeg"),
             (self.i18n.t("ft_audio"), "*.wav *.flac"),
             (self.i18n.t("ft_all"), "*.*"),
         ]
@@ -2801,7 +2918,12 @@ class PhantomApp:
 
     def _carrier_rejection_message(self, path: str) -> str | None:
         ext = os.path.splitext(path)[1].lower()
-        allowed = C.IMAGE_EXTENSIONS + C.AUDIO_WAV_EXTENSIONS + C.AUDIO_FLAC_EXTENSIONS
+        allowed = (
+            C.IMAGE_EXTENSIONS
+            + C.JPEG_EXTENSIONS
+            + C.AUDIO_WAV_EXTENSIONS
+            + C.AUDIO_FLAC_EXTENSIONS
+        )
         if ext in allowed:
             return None
         shown = ext.lstrip(".").upper() or "FILE"
@@ -2833,8 +2955,14 @@ class PhantomApp:
         self.extract_carrier_error_label.configure(text="")
 
     def _drop_carrier(self, paths: list[str]) -> None:
+        # JPEG goes through the same path as a dialog-chosen file: the worker
+        # converts it to a temp PNG copy, the original stays intact.
         path = self._accepted_drop(
-            paths, C.IMAGE_EXTENSIONS + C.AUDIO_WAV_EXTENSIONS + C.AUDIO_FLAC_EXTENSIONS
+            paths,
+            C.IMAGE_EXTENSIONS
+            + C.JPEG_EXTENSIONS
+            + C.AUDIO_WAV_EXTENSIONS
+            + C.AUDIO_FLAC_EXTENSIONS,
         )
         if path:
             self._set_carrier(path)
@@ -2873,20 +3001,265 @@ class PhantomApp:
                 return
 
     # -- probes ---------------------------------------------------------
+    def _drop_temp_carrier(self) -> None:
+        """Remove the temporary PNG copy of a previous JPEG carrier.
+
+        The original photo is never modified or deleted by PHANTOM.
+        """
+        temp, self._temp_carrier = self._temp_carrier, None
+        self._carrier_original = None
+        if temp and os.path.isfile(temp):
+            with contextlib.suppress(OSError):
+                os.unlink(temp)
+
+    def _is_builtin_resource(self, path: str) -> bool:
+        """True if ``path`` is one of the built-in resources shipped with the app.
+
+        Built-in carriers and the example attachment are read-only: they must
+        never be overwritten or deleted, and they are not offered as user
+        carriers.
+        """
+        try:
+            resolved = Path(path).resolve()
+            resources = RESOURCES_DIR.resolve()
+            return resources in resolved.parents or resolved == resources
+        except (OSError, ValueError):
+            return False
+
     def _set_carrier(self, path: str) -> None:
+        # Built-in resources are read-only examples: never treat them as a
+        # user-chosen carrier.
+        if self._is_builtin_resource(path):
+            self._show_embed_carrier_error(
+                self.i18n.t("err_builtin_resource", path=path)
+            )
+            return
+
+        # Leaving the built-in example: restore the user's attachment, image,
+        # password and save path before anything else.
+        if self.embed_vm.carrier_source == self.embed_vm.SOURCE_EXAMPLE:
+            self._restore_example_state()
+
         rejection = self._carrier_rejection_message(path)
         if rejection is not None:
             self._show_embed_carrier_error(rejection)
             return
         self._dismiss_embed_carrier_error()
         self.embed_result_panel.pack_forget()
-        self.embed_vm.set_carrier(path)
+        # The previous carrier (temp PNG or original) stays in place until the
+        # new one is successfully resolved — a failed conversion must not leave
+        # the user without a carrier.
+        previous_output = self.embed_vm.output_path
+        extension = os.path.splitext(path)[1].lower()
+        if extension in C.JPEG_EXTENSIONS:
+            # Convert outside the UI thread: a large photo must not freeze the
+            # window.  The DONE handler drops the old temp and applies the copy.
+            self._pending_carrier = {"path": path, "previous_output": previous_output}
+            self._start_job(
+                "prepare_carrier",
+                self._make_prepare_carrier_job(path),
+                "status_embedding",
+            )
+            return
+        # PNG or any non-JPEG carrier: apply directly (drops any old temp first).
+        self._apply_carrier(path, None, None, previous_output)
+
+    def _make_prepare_carrier_job(
+        self, path: str
+    ) -> Callable[[Any, Any], tuple[str, str | None]]:
+        """Build a worker job that converts a JPEG to a temp PNG copy."""
+
+        def job(report: Any, cancel: Any) -> tuple[str, str | None]:
+            return prepare_carrier_copy(path, cancel=cancel, progress=report)
+
+        return job
+
+    def _apply_carrier(
+        self,
+        carrier_path: str,
+        original: str | None,
+        temp: str | None,
+        previous_output: str,
+    ) -> None:
+        """Apply a resolved carrier path to the view model and start its probe.
+
+        Called both for PNGs (no conversion) and for JPEGs once the worker has
+        finished converting them.  Any previous temporary PNG is removed first,
+        so a failed conversion earlier never leaves the user without a carrier.
+        """
+        # Drop the previous temporary PNG before taking ownership of the new
+        # one — unless we are re-applying the same temp PNG (for example after
+        # returning from demo mode).  In that case the temp PNG must be
+        # preserved: the user continues working with their JPEG carrier copy.
+        if temp is None or temp != self._temp_carrier:
+            self._drop_temp_carrier()
+        # For a JPEG conversion, carrier_path is the temp PNG and temp == carrier_path.
+        # For a direct PNG, temp is None and nothing is owned by this window.
+        self._temp_carrier = carrier_path if temp is not None else None
+        self._carrier_original = original
+        if temp is not None:
+            self.embed_vm.set_carrier_file(carrier_path, original, carrier_path)
+        else:
+            self.embed_vm.set_carrier_file(carrier_path, None, None)
+        # Keep an output path the user typed: a new carrier must not throw it away.
+        if previous_output:
+            self.embed_vm.set_output(previous_output)
         # A different carrier means a different capacity: the old estimate was
         # measured against the old one and cannot stay on screen.
         self._invalidate_estimate()
         self._set_entry_text(self.output_entry, self.embed_vm.output_path)
         self._refresh_all()
-        self._start_job("probe_embed", self.embed_vm.make_probe_job(path), "status_embedding")
+        self._start_job(
+            "probe_embed",
+            self.embed_vm.make_probe_job(carrier_path),
+            "status_embedding",
+        )
+
+    def _on_try_example(self) -> None:
+        """Built-in example: carrier plus a test attachment, offline.
+
+        The user's form (attachment, image, password, output path) is saved
+        first and restored when they leave example mode.  Repeated presses keep
+        the original form — the snapshot is taken only once, the first time.
+        """
+        if self.worker.busy:
+            self._show_warning("warn_operation_t", "warn_operation_m")
+            return
+        if not EXAMPLE_CARRIER.is_file() or not EXAMPLE_SECRET.is_file():
+            self._show_error(
+                PhantomError("built-in example is missing", detail=str(RESOURCES_DIR))
+            )
+            return
+        # Save the user's form only the first time: a second press must not
+        # overwrite the snapshot taken when the example was first entered.
+        if self._example_saved_state is None:
+            self._example_saved_state = self.embed_vm.embed_form_snapshot()
+        self.embed_result_panel.pack_forget()
+        # The temporary PNG of a user's JPEG carrier is kept on disk during the
+        # demo so the carrier can be restored unchanged when the user leaves.
+        self.embed_vm.set_carrier_example(str(EXAMPLE_CARRIER), str(EXAMPLE_SECRET))
+        # The example comes with a test password so the full cycle works
+        # without the user typing anything.  Fill the visible field too.
+        self.embed_vm.set_password(self.embed_vm.EXAMPLE_PASSWORD)
+        self._set_entry_text(self.embed_pwd, self.embed_vm.EXAMPLE_PASSWORD)
+        # Offer saving in a folder the user can actually reach.
+        self._suggest_example_output()
+        self._invalidate_estimate()
+        self._set_entry_text(self.output_entry, self.embed_vm.output_path)
+        self._refresh_all()
+        self._start_job(
+            "probe_embed",
+            self.embed_vm.make_probe_job(str(EXAMPLE_CARRIER)),
+            "status_embedding",
+        )
+
+    def _restore_example_state(self) -> None:
+        """Put the user's attachment, image, password and save path back."""
+        state = self._example_saved_state
+        self._example_saved_state = None
+        if state is None:
+            return
+        self.embed_vm.restore_embed_form(state)
+        # Sync the window's own temp-carrier tracking with the restored view
+        # model so the temporary PNG of a user's JPEG carrier stays owned and
+        # cleaned up on the next carrier change or window close.
+        self._temp_carrier = self.embed_vm.temp_carrier
+        self._carrier_original = self.embed_vm.carrier_original
+        # Reflect the restored state in the widgets.
+        self._set_entry_text(self.output_entry, self.embed_vm.output_path or "")
+        self._set_entry_text(self.embed_pwd, self.embed_vm.password)
+        self._suppress_events = True
+        try:
+            self.embed_text.delete("1.0", "end")
+            if self.embed_vm.text:
+                self.embed_text.insert("1.0", self.embed_vm.text)
+        finally:
+            self._suppress_events = False
+        if self.embed_vm.secret_path:
+            self.secret_label.configure(text=os.path.basename(self.embed_vm.secret_path))
+        else:
+            self.secret_label.configure(text=self.i18n.t("lbl_no_secret_file"))
+        self._refresh_all()
+
+    def _on_return_to_files(self) -> None:
+        """Leave the demo example and restore the user's form.
+
+        The user's attachment, image (including a JPEG's temp PNG copy),
+        password and save path come back exactly as they were before the
+        example was entered.  The temp PNG stays on disk and keeps being owned
+        by this window.
+        """
+        if self.worker.busy:
+            self._show_warning("warn_operation_t", "warn_operation_m")
+            return
+        if self.embed_vm.carrier_source != self.embed_vm.SOURCE_EXAMPLE:
+            return
+        self._restore_example_state()
+        # If the restored carrier is a JPEG, its temp PNG was preserved during
+        # the demo and is still tracked; re-apply it so the probe runs against
+        # the copy, not the original.
+        if (
+            self.embed_vm.carrier_source == self.embed_vm.SOURCE_FILE
+            and self.embed_vm.temp_carrier
+            and os.path.splitext(self.embed_vm.carrier_path or "")[1].lower()
+            in C.JPEG_EXTENSIONS
+        ):
+            self._apply_carrier(
+                self.embed_vm.temp_carrier,
+                self.embed_vm.carrier_original,
+                self.embed_vm.temp_carrier,
+                self.embed_vm.output_path or "",
+            )
+        self._refresh_all()
+
+    def _suggest_example_output(self) -> None:
+        """Suggest saving the example result in an accessible user folder."""
+        if self.embed_vm.output_path:
+            return  # Keep what the user already typed.
+        for folder in (
+            os.path.expanduser("~/Documents"),
+            os.path.expanduser("~/Downloads"),
+            os.path.expanduser("~"),
+        ):
+            if os.path.isdir(folder):
+                self.embed_vm.set_output(
+                    os.path.join(folder, "phantom-example.stego.png")
+                )
+                return
+
+    def _on_builtin_carrier(self) -> None:
+        """One of the built-in PNGs as the carrier; the chosen payload stays.
+
+        Leaving the built-in example restores the user's form first.
+        """
+        if self.worker.busy:
+            self._show_warning("warn_operation_t", "warn_operation_m")
+            return
+        if self.embed_vm.carrier_source == self.embed_vm.SOURCE_EXAMPLE:
+            self._restore_example_state()
+        self.embed_result_panel.pack_forget()
+        self._drop_temp_carrier()
+        index = (self.embed_vm.builtin_index + 1) % 2
+        path = str(READY_CARRIER if index else EXAMPLE_CARRIER)
+        if not Path(path).is_file():
+            self._show_error(PhantomError("built-in image is missing", detail=path))
+            return
+        self.embed_vm.set_carrier_builtin(path, index)
+        self._invalidate_estimate()
+        self._set_entry_text(self.output_entry, self.embed_vm.output_path)
+        self._refresh_all()
+        self._start_job(
+            "probe_embed", self.embed_vm.make_probe_job(path), "status_embedding"
+        )
+
+    def _open_in_extract(self) -> None:
+        """Open the saved stego file in the “Извлечь” tab with one click."""
+        path = getattr(self, "_last_embed_output", "") or self.embed_vm.output_path
+        if not path or not os.path.isfile(path):
+            self._set_status_key("status_path_missing", severity="warn")
+            return
+        self._show_tab("extract")
+        self._set_stego(path)
 
     def _set_stego(self, path: str) -> None:
         rejection = self._carrier_rejection_message(path)
@@ -3158,7 +3531,11 @@ class PhantomApp:
             self._on_done(event)
             return
         if event.kind is WorkerEventType.CANCELLED:
+            operation = self._operation
             self._finish_operation_ui()
+            if operation == "prepare_carrier":
+                # A cancelled JPEG conversion leaves the previous carrier intact.
+                self._pending_carrier = None
             # The bar used to keep whatever fraction the cancelled job reached,
             # which reads as "still running" when nothing is running any more.
             self._reset_progress()
@@ -3167,8 +3544,15 @@ class PhantomApp:
         if event.kind is WorkerEventType.ERROR and event.error is not None:
             failed_estimate = self._operation == "estimate"
             failed_extract = self._operation == "extract"
+            failed_prepare = self._operation == "prepare_carrier"
             self._finish_operation_ui()
             self._reset_progress()
+            if failed_prepare:
+                # A JPEG could not be converted: keep the previous carrier and
+                # tell the user what happened, in plain words.
+                self._pending_carrier = None
+                self._show_error(event.error)
+                return
             if failed_estimate:
                 # The panel says "calculation error" instead of keeping the number
                 # of the previous payload up as if it described this one.
@@ -3218,6 +3602,21 @@ class PhantomApp:
             self.extract_vm.apply_probe(value)
             self._refresh_all()
             self._set_status_key("status_ready", severity="ok")
+        elif operation == "prepare_carrier" and isinstance(value, tuple):
+            # The worker finished converting a JPEG to a temp PNG copy.  Apply it
+            # and start the probe against the copy.  On error the previous carrier
+            # is untouched — _handle_worker_event already showed the message.
+            carrier_path, original = value
+            pending = self._pending_carrier
+            self._pending_carrier = None
+            if pending is None:
+                return
+            self._apply_carrier(
+                carrier_path,
+                original,
+                carrier_path,  # temp == carrier_path for a JPEG conversion
+                pending["previous_output"],
+            )
         elif operation == "estimate":
             revision, estimate = value if isinstance(value, tuple) else (-1, value)
             if revision != self._estimate_revision:
@@ -3286,6 +3685,8 @@ class PhantomApp:
         self.embed_result_panel.pack(fill="x", padx=18, pady=(0, 14))
         self.animator.to("progress", 1.0, duration=0.2, on_update=self.progress_bar.set)
         self._ensure_animation_loop()
+        self.embed_open_extract_button.configure(state="normal")
+        self.embed_send_hint.configure(text=self.i18n.t("hint_send_as_file"))
         self.settings.last_dir = os.path.dirname(outcome.output_path) or self.settings.last_dir
         self._save_settings()
         if outcome.wipe_error:
@@ -3781,13 +4182,17 @@ class PhantomApp:
     def _clear_embed(self) -> None:
         # The full reset really is a reset: text, password, carrier, output path and
         # the estimate history go, so a later estimate cannot be measured against a
-        # carrier that is no longer loaded.
+        # carrier that is no longer loaded.  Leaving the example discards the saved
+        # state — there is nothing to restore to.
+        self._example_saved_state = None
         self._dismiss_embed_carrier_error()
         self.embed_result_panel.pack_forget()
         self._last_embed_output = ""
+        self.embed_send_hint.configure(text="")
         self.debouncer.abort()
         self._invalidate_estimate()
         self.embed_vm.clear()
+        self._drop_temp_carrier()
         self._suppress_events = True
         try:
             self.embed_text.delete("1.0", "end")
@@ -3981,6 +4386,7 @@ class PhantomApp:
             if token is not None:
                 self.root.after_cancel(token)
                 setattr(self, name, None)
+        self._drop_temp_carrier()
         self._forget_clipboard()
         # The window is about to stop existing: take its widgets out of
         # CustomTkinter's process-wide notification list first (see

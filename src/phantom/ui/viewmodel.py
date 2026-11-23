@@ -7,12 +7,13 @@ layer only renders state and forwards user intent.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from enum import Enum, unique
-from typing import Literal, Protocol
+from typing import Final, Literal, Protocol
 
 from phantom.core import api as core_api
 from phantom.core import constants as C
@@ -189,6 +190,23 @@ class EmbedViewModel:
     verify: bool = True
     estimate: SizeEstimate | None = None
     notices: tuple[str, ...] = ()
+    #: Where the carrier came from: ``""`` (none yet), ``"example"``, ``"builtin"``
+    #: or ``"file"`` (the user's own file, possibly a JPEG turned into a temp PNG).
+    carrier_source: str = ""
+    #: The user's original file before a JPEG was converted to a temp PNG copy.
+    carrier_original: str | None = None
+    #: Temporary PNG copy of a user's JPEG; this window owns it and removes it.
+    temp_carrier: str | None = None
+    #: Index of the built-in PNG behind ``"builtin"`` (0 or 1).
+    builtin_index: int = 0
+
+    # carrier sources
+    SOURCE_EXAMPLE = "example"
+    SOURCE_BUILTIN = "builtin"
+    SOURCE_FILE = "file"
+
+    #: Password pre-filled for the built-in example carrier (a test value, not a secret).
+    EXAMPLE_PASSWORD: Final = "phantom-example"  # noqa: S105 - test password for the example carrier
 
     # -- state mutation (main thread only) ---------------------------------
     def set_carrier(self, path: str) -> None:
@@ -197,6 +215,67 @@ class EmbedViewModel:
         self.estimate = None
         self.notices = ()
         self.output_path = "" if not path else suggest_output_path(path, CarrierKind.IMAGE)
+
+    def _release_temp_carrier(self) -> None:
+        """Drop the temporary PNG copy of a user's JPEG; the original stays intact."""
+        temp = self.temp_carrier
+        self.temp_carrier = None
+        if temp and os.path.isfile(temp):
+            with contextlib.suppress(OSError):
+                os.unlink(temp)
+
+    def set_carrier_example(self, carrier_path: str, secret_path: str) -> None:
+        """Built-in example: carrier plus a test attachment, keeping what the user typed.
+
+        The output path is intentionally left untouched so the caller can
+        suggest a user-writable folder instead of the read-only resources dir.
+        Wipe-source is disabled for the demo: nothing the user owns is deleted.
+
+        The temporary PNG of a user's JPEG carrier is intentionally preserved:
+        it stays on disk and tracked so the carrier can be restored unchanged
+        when the user leaves the demo.
+        """
+        had_output = bool(self.output_path)
+        self.set_mode(PayloadMode.FILE)
+        self.set_secret_file(secret_path)
+        self.set_carrier(carrier_path)
+        # The carrier path lives in the read-only resources dir; never offer to
+        # save next to it.  Leave output_path as-is so the UI can point it at a
+        # user folder.
+        if not had_output:
+            self.output_path = ""
+        self.wipe_source = False
+        self.carrier_source = self.SOURCE_EXAMPLE
+        self.carrier_original = None
+        self.builtin_index = 0
+        self.reset_estimate()
+
+    def set_carrier_builtin(self, carrier_path: str, index: int) -> None:
+        """One of the built-in PNGs as the carrier; the payload the user chose stays."""
+        had_output = bool(self.output_path)
+        self._release_temp_carrier()
+        self.set_carrier(carrier_path)
+        if not had_output:
+            directory, _name = os.path.split(carrier_path)
+            self.output_path = os.path.join(directory or os.getcwd(), "phantom-ready.stego.png")
+        self.carrier_source = self.SOURCE_BUILTIN
+        self.carrier_original = None
+        self.temp_carrier = None
+        self.builtin_index = index
+        self.reset_estimate()
+
+    def set_carrier_file(self, carrier_path: str, original: str | None, temp: str | None) -> None:
+        """The user's own carrier: a JPEG already converted to a temp PNG copy.
+
+        ``original`` is the file the user chose (untouched); ``temp`` is the PNG
+        copy the engine actually embeds from, or both are ``None`` for a PNG.
+        """
+        self._release_temp_carrier()
+        self.set_carrier(carrier_path)
+        self.carrier_source = self.SOURCE_FILE
+        self.carrier_original = original
+        self.temp_carrier = temp
+        self.reset_estimate()
 
     def apply_probe(self, probe: CarrierProbe) -> None:
         self.carrier = probe
@@ -243,6 +322,7 @@ class EmbedViewModel:
         self.estimate = None
 
     def clear(self) -> None:
+        self._release_temp_carrier()
         self.carrier_path = ""
         self.carrier = None
         self.text = ""
@@ -252,6 +332,64 @@ class EmbedViewModel:
         self.wipe_source = False
         self.estimate = None
         self.notices = ()
+        self.carrier_source = ""
+        self.carrier_original = None
+        self.builtin_index = 0
+
+    def embed_form_snapshot(self) -> dict[str, object]:
+        """Return a copy of the user-editable form state.
+
+        Used to restore the form after the built-in example is left: the
+        example overwrites carrier, attachment, password and output path, and
+        the user's choices must come back when they exit example mode.
+
+        ``temp_carrier`` is included because the temporary PNG of a user's JPEG
+        carrier is preserved during the demo (see set_carrier_example), so a
+        restored temp path still points at an existing file.
+        """
+        return {
+            "mode": self.mode,
+            "text": self.text,
+            "secret_path": self.secret_path,
+            "output_path": self.output_path,
+            "password": self.password,
+            "wipe_source": self.wipe_source,
+            "verify": self.verify,
+            "carrier_path": self.carrier_path,
+            "carrier": self.carrier,
+            "estimate": self.estimate,
+            "notices": self.notices,
+            "carrier_source": self.carrier_source,
+            "carrier_original": self.carrier_original,
+            "temp_carrier": self.temp_carrier,
+            "builtin_index": self.builtin_index,
+        }
+
+    def restore_embed_form(self, state: dict[str, object]) -> None:
+        """Restore the form state saved by :meth:`embed_form_snapshot`.
+
+        The temporary carrier, if any, stays owned by the view model: restoring
+        does not touch the filesystem.  ``temp_carrier`` is restored from the
+        snapshot because the temporary PNG of a user's JPEG carrier is preserved
+        during the demo.  The temp PNG is intentionally *not* deleted here —
+        deleting it would leave ``temp_carrier`` pointing at a missing file
+        when the user leaves the demo and continues with their JPEG carrier.
+        """
+        self.mode = state["mode"]  # type: ignore[assignment]
+        self.text = state["text"]  # type: ignore[assignment]
+        self.secret_path = state["secret_path"]  # type: ignore[assignment]
+        self.output_path = state["output_path"]  # type: ignore[assignment]
+        self.password = state["password"]  # type: ignore[assignment]
+        self.wipe_source = state["wipe_source"]  # type: ignore[assignment]
+        self.verify = state["verify"]  # type: ignore[assignment]
+        self.carrier_path = state["carrier_path"]  # type: ignore[assignment]
+        self.carrier = state["carrier"]  # type: ignore[assignment]
+        self.estimate = state["estimate"]  # type: ignore[assignment]
+        self.notices = state["notices"]  # type: ignore[assignment]
+        self.carrier_source = state["carrier_source"]  # type: ignore[assignment]
+        self.carrier_original = state["carrier_original"]  # type: ignore[assignment]
+        self.temp_carrier = state.get("temp_carrier")  # type: ignore[assignment]
+        self.builtin_index = state["builtin_index"]  # type: ignore[assignment]
 
     # -- derived state -----------------------------------------------------
     @property

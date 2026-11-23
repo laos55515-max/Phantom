@@ -185,6 +185,7 @@ PNG_COMPRESS_LEVEL: Final = 3  # deflate dominates wall-clock: level 6 needs ~2.
 #: Informational: the on-disk price of the faster compression (measured, heuristic).
 PNG_LEVEL_3_SIZE_PENALTY_PCT: Final = 12.0
 IMAGE_EXTENSIONS: Final[tuple[str, ...]] = (".png",)
+JPEG_EXTENSIONS: Final[tuple[str, ...]] = (".jpg", ".jpeg")
 AUDIO_WAV_EXTENSIONS: Final[tuple[str, ...]] = (".wav", ".wave")
 AUDIO_FLAC_EXTENSIONS: Final[tuple[str, ...]] = (".flac",)
 LOSSY_AUDIO_EXTENSIONS: Final[tuple[str, ...]] = (
