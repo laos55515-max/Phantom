@@ -158,7 +158,7 @@ def main() -> int:
             record(
                 "extracted PDF is byte-identical (SHA-256)",
                 original_sha == extracted_sha,
-                f"{extracted_sha[:16]}…",
+                f"extracted={extracted_sha[:16]}",
             )
             report["sha256"] = {"original": original_sha, "extracted": extracted_sha}
         else:

@@ -1,6 +1,6 @@
 name: Desktop (Tauri)
 
-# Builds the Tauri 2 desktop prototype on macOS arm64, Windows x64 and Ubuntu
+# Builds the Tauri 2 desktop prototype on macOS (Apple silicon), Windows x64 and Ubuntu
 # 24.04 x64.  Each OS job: (a) freezes the Python core into `phantom-bridge`
 # with PyInstaller, (b) builds the app and its installer, (c) runs the stage
 # scenario — hide a PDF inside a PNG, extract it back, compare SHA-256 — twice:
@@ -170,8 +170,8 @@ jobs:
           retention-days: 14
 
   build-macos:
-    name: macOS arm64 (.dmg)
-    runs-on: macos-14
+    name: macOS (Apple silicon, .dmg)
+    runs-on: macos-latest
     needs: frontend
     timeout-minutes: 60
     steps:
