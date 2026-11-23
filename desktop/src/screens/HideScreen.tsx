@@ -166,7 +166,7 @@ export function HideScreen({ onGoExtract }: { onGoExtract: () => void }) {
       return;
     }
     if (!isExample && !carrier) {
-      setGateMsg(t("hide.need_carrier"));
+      setGateMsg(t("hide.carrier_hint"));
       return;
     }
     if (password.length < 12) {
@@ -174,7 +174,11 @@ export function HideScreen({ onGoExtract }: { onGoExtract: () => void }) {
       return;
     }
     if (!fits) {
-      setError({ code: "capacity", message: "too much data", detail: null });
+      if (isExample || carrier) {
+        setError({ code: "capacity", message: "too much data", detail: null });
+      } else {
+        setGateMsg(t("hide.carrier_hint"));
+      }
       return;
     }
 
@@ -239,7 +243,7 @@ export function HideScreen({ onGoExtract }: { onGoExtract: () => void }) {
     : content.kind === "none"
       ? t("hide.need_content")
       : !isExample && !carrier
-        ? t("hide.need_carrier")
+        ? null // the carrier hint block above the button already says it
         : password.length < 12
           ? t("hide.need_password")
           : null;
@@ -542,9 +546,16 @@ export function HideScreen({ onGoExtract }: { onGoExtract: () => void }) {
         </section>
       </div>
 
-      <CapacityBar needBytes={needBytes} capacityBytes={capacityBytes} />
+      {isExample || carrier ? (
+        <CapacityBar needBytes={needBytes} capacityBytes={capacityBytes} />
+      ) : (
+        <p className="carrier-hint" role="status">
+          <IconImage size={16} aria-hidden />
+          {t("hide.carrier_hint")}
+        </p>
+      )}
 
-      <div className="card card-pad" style={{ marginTop: 12 }}>
+      <div className="card card-compact" style={{ marginTop: 10 }}>
         <PasswordField
           id="hide-password"
           label={t("hide.password")}

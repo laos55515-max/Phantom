@@ -40,9 +40,19 @@ function AppInner() {
               <span>{t("demo.banner")}</span>
             </div>
           ) : null}
-          {tab === "hide" ? <HideScreen onGoExtract={() => setTab("extract")} /> : null}
-          {tab === "extract" ? <ExtractScreen /> : null}
-          {tab === "settings" ? <SettingsScreen /> : null}
+          {/* Screens stay mounted and are only hidden: whatever the user
+              typed or picked survives a trip to Settings or a language
+              switch.  Nothing here touches persistent storage — the draft
+              lives and dies in this process, passwords included. */}
+          <div hidden={tab !== "hide"}>
+            <HideScreen onGoExtract={() => setTab("extract")} />
+          </div>
+          <div hidden={tab !== "extract"}>
+            <ExtractScreen />
+          </div>
+          <div hidden={tab !== "settings"}>
+            <SettingsScreen />
+          </div>
         </div>
       </main>
       {language === null ? <FirstRun /> : null}

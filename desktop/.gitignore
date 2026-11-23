@@ -2,3 +2,6 @@ node_modules/
 dist/
 src-tauri/target/
 src-tauri/binaries/phantom-bridge-*
+
+# local screenshot scratch (CI uploads instead)
+desktop/screenshots/

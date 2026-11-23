@@ -6,6 +6,23 @@ All notable changes to PHANTOM are recorded here. The format follows
 
 ## [Unreleased]
 
+### Fixed — desktop prototype (Tauri 2 + React/TypeScript), review round 2
+
+- Carrier gate: while no carrier is chosen the Hide screen shows the hint
+  "Choose a picture or audio" («Выберите картинку или аудио» /
+  «Оберіть картинку або аудіо») in place of the capacity gauge; the
+  "does not fit" banner can only appear after the selected carrier has been
+  probed (component tests + CI layout check).
+- The primary action button is guaranteed fully visible at 980×720 in file and
+  text mode, light and dark themes — layout reworked and now enforced by
+  `desktop/e2e/layout_check.mjs` in CI (not just eyeballed screenshots).
+- Draft semantics: screens stay mounted (hidden only), so text typed or a
+  file picked survives navigating to Settings and switching language.  Only
+  language and theme are persisted; passwords and document contents live in
+  memory and are never written to storage (`App.test.tsx` pins this,
+  key by key).
+
+
 ### Added — desktop prototype (Tauri 2 + React/TypeScript)
 
 - **`desktop/` — a second, modern shell for the existing Python core.** Same

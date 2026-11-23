@@ -25,6 +25,7 @@ mkdirSync(outDir, { recursive: true });
 const VIEWPORT = { width: 980, height: 720 };
 const shots = [];
 
+const repoRoot = new URL("../..", import.meta.url).pathname;
 const browser = await chromium.launch();
 
 async function shoot(name, seed, navigate) {
@@ -81,6 +82,37 @@ await shoot("06-settings-uk", { language: "uk", theme: "dark" }, async (page) =>
 await shoot("07-settings-light-en", { language: "en", theme: "light" }, async (page) => {
   await page.getByRole("button", { name: "Settings" }).click();
 });
+
+// 8–11) The CTA at 980×720 in both modes and both themes.
+for (const theme of ["dark", "light"]) {
+  await shoot(`08-hide-file-${theme}`, { language: "ru", theme }, async (page) => {
+    const [chooser] = await Promise.all([
+      page.waitForEvent("filechooser"),
+      page.getByRole("button", { name: /^Файл/ }).click(),
+    ]);
+    await chooser.setFiles(`${repoRoot}/src/phantom/resources/example_payload.pdf`);
+    const [carrierChooser] = await Promise.all([
+      page.waitForEvent("filechooser"),
+      page.getByRole("button", { name: /Выбрать файл/ }).click(),
+    ]);
+    await carrierChooser.setFiles(`${repoRoot}/src/phantom/resources/example_carrier.png`);
+    await page.waitForTimeout(600);
+    await page.fill("#hide-password", "screenshot password 1234");
+  });
+  await shoot(`09-hide-text-${theme}`, { language: "ru", theme }, async (page) => {
+    await page.getByRole("button", { name: /^Текст/ }).click();
+    await page.getByPlaceholder(/Впишите или вставьте текст/).fill(
+      "Квартальный отчёт — демо\nбез реальных данных\nтретья строка для проверки компоновки",
+    );
+    const [carrierChooser] = await Promise.all([
+      page.waitForEvent("filechooser"),
+      page.getByRole("button", { name: /Выбрать файл/ }).click(),
+    ]);
+    await carrierChooser.setFiles(`${repoRoot}/src/phantom/resources/example_carrier.png`);
+    await page.waitForTimeout(600);
+    await page.fill("#hide-password", "screenshot password 1234");
+  });
+}
 
 await browser.close();
 console.log(`\n${shots.length} screenshots → ${outDir}`);

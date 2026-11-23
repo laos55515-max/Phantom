@@ -84,6 +84,10 @@ jobs:
           npm install --no-save --no-audit --no-fund playwright@1.49.1
           npx playwright install --with-deps chromium
           node e2e/screenshots.mjs --base http://127.0.0.1:4173 --out screenshots
+      - name: Layout check (980×720, file/text × light/dark)
+        working-directory: desktop
+        run: |
+          node e2e/layout_check.mjs --base http://127.0.0.1:4173 --out screenshots
       - name: Upload screenshots
         uses: actions/upload-artifact@v4
         if: always()

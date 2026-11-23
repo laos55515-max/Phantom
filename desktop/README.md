@@ -26,7 +26,9 @@ desktop/
 ├── phantom-bridge.spec     PyInstaller spec for the sidecar
 ├── phantom-bridge-entry.py entry point for the frozen build
 ├── e2e/full_cycle.py       stage-scenario check: hide PDF → extract → SHA-256 compare
-└── e2e/screenshots.mjs     CI screenshots of the web bundle (980×720)
+├── e2e/screenshots.mjs     CI screenshots of the web bundle (980×720)
+└── e2e/layout_check.mjs    objective 980×720 check: primary CTA fully visible,
+                            carrier hint before selection, capacity verdict only after
 ```
 
 The Python side of the contract lives in `src/phantom/bridge.py` — a stdio
@@ -42,9 +44,12 @@ JSON-lines protocol, one request per line, one response per line.
 - File payloads are extracted to the user-chosen path with `0600` permissions,
   never via a temp file in the clear.
 - The UI wipes the password from component state after the hide/save job
-  completes; it is never persisted (only language and theme persist, as the
-  `phantom.settings.draft` localStorage entry — the "draft" that is restored
-  on launch).
+  completes; it is never persisted anywhere.  Screens stay mounted (they are
+  only hidden), so anything typed or picked survives a trip to Settings or a
+  language switch — that is the draft, held **in memory only**.  On disk the
+  only persisted entry is `phantom.settings.draft` (language and theme —
+  nothing else); passwords and document contents are never written to
+  `localStorage`, logs or files by the shell.
 
 ## Prerequisites
 
@@ -88,12 +93,33 @@ python desktop/e2e/full_cycle.py --bridge dist/phantom-bridge --out cycle.json
 Expected: every step `PASS`, including
 `extracted PDF is byte-identical (SHA-256)`.
 
+## Verify the frontend behavior
+
+```bash
+cd desktop
+npm run build      # tsc --noEmit + production build
+npm test           # vitest: i18n parity + carrier-hint gate + in-memory draft scenarios
+node e2e/layout_check.mjs --base http://127.0.0.1:4173 [--out screenshots]
+```
+
+`layout_check.mjs` drives the built bundle in Chromium at exactly 980×720,
+in file and text mode, in light and dark themes, and fails unless the
+primary button is fully on-screen in every case.  It also checks the carrier
+gate: «Выберите картинку или аудио» before any carrier is chosen (no capacity
+verdict yet), the capacity bar only after one is probed.
+
+`App.test.tsx` covers the draft contract: type text / pick a PDF → open
+Settings → switch language → come back → same data; and the persistent draft
+is checked key-by-key — language, theme, savedAt, nothing else.
+
 ## CI
 
 `.github/workflows/desktop.yml` — see the PR description for per-OS results.
 Every OS job freezes the bridge, builds the installer, runs `full_cycle.py`
 **twice** (fresh bridge, then the bridge shipped inside the built package) and
-uploads its artifacts.
+uploads its artifacts.  The screenshots job also runs `layout_check.mjs`;
+if the primary button does not fit at 980×720 anywhere, that job fails the
+build — screenshots are capture, this one is a gate.
 
 ## Known limits of this stage
 
