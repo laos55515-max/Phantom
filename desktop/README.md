@@ -117,9 +117,12 @@ is checked key-by-key — language, theme, savedAt, nothing else.
 `.github/workflows/desktop.yml` — see the PR description for per-OS results.
 Every OS job freezes the bridge, builds the installer, runs `full_cycle.py`
 **twice** (fresh bridge, then the bridge shipped inside the built package) and
-uploads its artifacts.  The screenshots job also runs `layout_check.mjs`;
-if the primary button does not fit at 980×720 anywhere, that job fails the
-build — screenshots are capture, this one is a gate.
+uploads its artifacts.  The macOS artifact (`macos-arm64-packages`)
+also carries `verification-report.txt` (every `codesign`/`spctl` invocation,
+before and after signing, plus the mounted-DMG gate output) and
+`PHANTOM-aarch64.dmg.sha256`.  The screenshots job also runs
+`layout_check.mjs`; if the primary button does not fit at 980×720 anywhere,
+that job fails the build — screenshots are capture, this one is a gate.
 
 ## Known limits of this stage
 
