@@ -1,0 +1,387 @@
+name: Desktop (Tauri)
+
+# Builds the Tauri 2 desktop prototype on macOS (Apple silicon), Windows x64 and Ubuntu
+# 24.04 x64.  Each OS job: (a) freezes the Python core into `phantom-bridge`
+# with PyInstaller, (b) builds the app and its installer, (c) runs the stage
+# scenario — hide a PDF inside a PNG, extract it back, compare SHA-256 — twice:
+# once against the freshly frozen bridge, once against the binary that shipped
+# inside the package we built.  Artifacts are uploaded per OS.
+
+on:
+  push:
+    branches: [main, "arena/**"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHONUNBUFFERED: "1"
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+
+jobs:
+  frontend:
+    name: frontend checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+      - name: Install
+        working-directory: desktop
+        run: npm ci
+      - name: Unit tests (locale parity)
+        working-directory: desktop
+        run: npm test
+      - name: Type check + production build
+        working-directory: desktop
+        run: npm run build
+      - name: Upload web bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-dist
+          path: desktop/dist
+          retention-days: 7
+
+  screenshots:
+    name: interface screenshots (web bundle, 980x720)
+    runs-on: ubuntu-24.04
+    needs: frontend
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+      - name: Build
+        working-directory: desktop
+        run: |
+          npm ci
+          npm run build
+      - name: Serve the bundle
+        working-directory: desktop
+        run: |
+          nohup npx vite preview --port 4173 --strictPort --host 127.0.0.1 > preview.log 2>&1 &
+          for i in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:4173/ > /dev/null; then echo "preview is up"; exit 0; fi
+            sleep 1
+          done
+          echo "preview did not start"; cat preview.log; exit 1
+      - name: Capture screenshots
+        working-directory: desktop
+        run: |
+          npm install --no-save --no-audit --no-fund playwright@1.49.1
+          npx playwright install --with-deps chromium
+          node e2e/screenshots.mjs --base http://127.0.0.1:4173 --out screenshots
+      - name: Layout check (980×720, file/text × light/dark)
+        working-directory: desktop
+        run: |
+          node e2e/layout_check.mjs --base http://127.0.0.1:4173 --out screenshots
+      - name: Upload screenshots
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ui-screenshots
+          path: desktop/screenshots
+          if-no-files-found: warn
+          retention-days: 14
+
+  build-linux:
+    name: Ubuntu 24.04 x64 (.deb, .AppImage)
+    runs-on: ubuntu-24.04
+    needs: frontend
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements.txt
+      - name: System dependencies for Tauri
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential curl wget file libxdo-dev \
+            libwebkit2gtk-4.1-dev libjavascriptcoregtk-4.1-dev \
+            libgtk-3-dev librsvg2-dev libsoup-3.0-dev libayatana-appindicator3-dev
+      - name: Build the bridge sidecar
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt pyinstaller
+          pyinstaller --noconfirm --clean desktop/phantom-bridge.spec
+          mkdir -p desktop/src-tauri/binaries
+          cp dist/phantom-bridge desktop/src-tauri/binaries/phantom-bridge-x86_64-unknown-linux-gnu
+      - name: Full PDF cycle (freshly frozen bridge)
+        run: python desktop/e2e/full_cycle.py --bridge dist/phantom-bridge --out cycle-linux-bridge.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+      - name: Build the app
+        working-directory: desktop
+        run: |
+          npm ci
+          npx tauri build --bundles deb,appimage
+      - name: Full PDF cycle (bridge shipped in the .deb)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ./desktop/src-tauri/target/release/bundle/deb/*.deb
+          BRIDGE="$(find /usr/bin /usr/lib /usr/opt -name 'phantom-bridge*' -type f 2>/dev/null | head -n1)"
+          echo "installed bridge: $BRIDGE"
+          test -n "$BRIDGE"
+          python desktop/e2e/full_cycle.py --bridge "$BRIDGE" --out cycle-linux-deb.json
+      - name: Screenshot the installed app (xvfb)
+        continue-on-error: true
+        run: |
+          sudo apt-get install -y --no-install-recommends xvfb imagemagick
+          xvfb-run -a -s "-screen 0 1120x800x24" bash -c '
+            APP_BIN="$(find /usr/bin -name 'phantom*' -type f ! -name 'phantom-bridge*' | head -n1)"
+            echo "launching: $APP_BIN"
+            "$APP_BIN" & APP_PID=$!
+            sleep 12
+            import -window root phantom-installed.png || true
+            kill "$APP_PID" 2>/dev/null || true
+            wait "$APP_PID" 2>/dev/null || true
+          '
+      - name: Collect artifacts
+        if: always()
+        run: |
+          mkdir -p artifacts/deb artifacts/appimage
+          cp desktop/src-tauri/target/release/bundle/deb/*.deb artifacts/deb/ 2>/dev/null || true
+          cp desktop/src-tauri/target/release/bundle/appimage/*.AppImage artifacts/appimage/ 2>/dev/null || true
+          cp cycle-linux-bridge.json cycle-linux-deb.json artifacts/ 2>/dev/null || true
+          cp phantom-installed.png artifacts/ 2>/dev/null || true
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-x64-packages
+          path: artifacts
+          if-no-files-found: warn
+          retention-days: 14
+
+  build-macos:
+    name: macOS (Apple silicon, .dmg)
+    runs-on: macos-latest
+    needs: frontend
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements.txt
+      - name: Build the bridge sidecar
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt pyinstaller
+          pyinstaller --noconfirm --clean desktop/phantom-bridge.spec
+          mkdir -p desktop/src-tauri/binaries
+          cp dist/phantom-bridge desktop/src-tauri/binaries/phantom-bridge-aarch64-apple-darwin
+      - name: Full PDF cycle (freshly frozen bridge)
+        run: python desktop/e2e/full_cycle.py --bridge dist/phantom-bridge --out cycle-macos-bridge.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+      - name: Build the app (.app only — the dmg is packed after signing)
+        working-directory: desktop
+        run: |
+          npm ci
+          npx tauri build --bundles app
+
+      # The bundle tauri hands us has no usable signature for the shipped
+      # content: nested code is sealed (or not) before externalBin lands, so
+      # the outer seal and the files disagree — "code has no resources but
+      # signature indicates they must be present".  Reproduce and record the
+      # broken state first, then sign nested code, then the outer .app, and
+      # only then create the .dmg.
+      - name: Diagnose current signature state (before fix)
+        run: |
+          set +e
+          APP="$(ls -d desktop/src-tauri/target/release/bundle/macos/PHANTOM.app)"
+          {
+            echo "== diagnosis of the tauri-built bundle (before our signing) =="
+            echo
+            echo '$ codesign -dv --verbose=4 PHANTOM.app'
+            codesign -dv --verbose=4 "$APP" 2>&1
+            echo
+            echo '$ codesign --verify --deep --strict --verbose=2 PHANTOM.app'
+            codesign --verify --deep --strict --verbose=2 "$APP" 2>&1
+            echo "verify exit=$?"
+            echo
+            echo '$ ls -la PHANTOM.app/Contents/MacOS'
+            ls -la "$APP/Contents/MacOS" 2>&1
+            echo
+            echo '$ ls -la PHANTOM.app/Contents/_CodeSignature'
+            ls -la "$APP/Contents/_CodeSignature" 2>&1
+            echo
+            echo '$ cat PHANTOM.app/Contents/_CodeSignature/CodeResources'
+            cat "$APP/Contents/_CodeSignature/CodeResources" 2>&1
+            echo
+            echo '$ codesign -dv --verbose=4 Contents/MacOS/phantom-bridge'
+            codesign -dv --verbose=4 "$APP/Contents/MacOS/phantom-bridge" 2>&1
+            echo
+            echo '$ spctl -a -vvv -t execute PHANTOM.app'
+            spctl -a -vvv -t execute "$APP" 2>&1
+            echo "spctl exit=$?"
+          } | tee verification-report.txt
+          echo "diagnosis recorded (job continues)"
+      - name: Sign nested code, then the final .app (ad-hoc)
+        run: |
+          set -euo pipefail
+          APP="$(ls -d desktop/src-tauri/target/release/bundle/macos/PHANTOM.app)"
+          echo '== sign nested code: phantom-bridge =='
+          codesign --force --sign - --timestamp=none --verbose=2 "$APP/Contents/MacOS/phantom-bridge"
+          echo '== sign the outer bundle (deep) =='
+          codesign --force --deep --sign - --timestamp=none --verbose=2 "$APP"
+          {
+            echo
+            echo "== after signing =="
+            echo '$ codesign -dv --verbose=4 PHANTOM.app'
+            codesign -dv --verbose=4 "$APP" 2>&1
+            echo
+            echo '$ codesign -dv --verbose=4 Contents/MacOS/phantom-bridge'
+            codesign -dv --verbose=4 "$APP/Contents/MacOS/phantom-bridge" 2>&1
+          } | tee -a verification-report.txt
+      - name: Mandatory gate — codesign --verify --deep --strict on the built .app
+        run: |
+          set -euo pipefail
+          APP="$(ls -d desktop/src-tauri/target/release/bundle/macos/PHANTOM.app)"
+          echo '$ codesign --verify --verbose=2 Contents/MacOS/phantom-bridge' | tee -a verification-report.txt
+          codesign --verify --verbose=2 "$APP/Contents/MacOS/phantom-bridge" 2>&1 | tee -a verification-report.txt
+          echo '$ codesign --verify --deep --strict --verbose=2 PHANTOM.app' | tee -a verification-report.txt
+          codesign --verify --deep --strict --verbose=2 "$APP" 2>&1 | tee -a verification-report.txt
+          echo "gate passed" | tee -a verification-report.txt
+      - name: Create the DMG
+        run: |
+          set -euo pipefail
+          APP="$(ls -d desktop/src-tauri/target/release/bundle/macos/PHANTOM.app)"
+          STAGING="$(mktemp -d)/PHANTOM"
+          mkdir -p "$STAGING"
+          cp -R "$APP" "$STAGING/"
+          ln -s /Applications "$STAGING/Applications"
+          DMG="PHANTOM-aarch64.dmg"
+          hdiutil create -volname PHANTOM -srcfolder "$STAGING" -ov -format UDZO "$DMG"
+          shasum -a 256 "$DMG" | tee "$DMG.sha256" | tee -a verification-report.txt
+          echo "::notice title=DMG SHA-256::$(cat "$DMG.sha256")"
+      - name: Mounted-DMG verification gate (mandatory)
+        run: |
+          set -euo pipefail
+          DMG="PHANTOM-aarch64.dmg"
+          MOUNT_POINT="$(mktemp -d)/mnt"
+          mkdir -p "$MOUNT_POINT"
+          hdiutil attach "$DMG" -mountpoint "$MOUNT_POINT" -nobrowse -readonly
+          {
+            echo
+            echo "== post-mount verification (this is the gate the release depends on) =="
+          } | tee -a verification-report.txt
+          echo "$ codesign --verify --deep --strict --verbose=2 $MOUNT_POINT/PHANTOM.app" | tee -a verification-report.txt
+          codesign --verify --deep --strict --verbose=2 "$MOUNT_POINT/PHANTOM.app" 2>&1 | tee -a verification-report.txt
+          echo "$ codesign --verify --verbose=2 $MOUNT_POINT/PHANTOM.app/Contents/MacOS/phantom-bridge" | tee -a verification-report.txt
+          codesign --verify --verbose=2 "$MOUNT_POINT/PHANTOM.app/Contents/MacOS/phantom-bridge" 2>&1 | tee -a verification-report.txt
+          echo "$ spctl -a -vvv -t execute (informational; ad-hoc is expected to be rejected)" | tee -a verification-report.txt
+          spctl -a -vvv -t execute "$MOUNT_POINT/PHANTOM.app" 2>&1 | tee -a verification-report.txt || true
+          python desktop/e2e/full_cycle.py --bridge "$MOUNT_POINT/PHANTOM.app/Contents/MacOS/phantom-bridge" --out cycle-macos-dmg.json 2>&1 | tee -a verification-report.txt
+          hdiutil detach "$MOUNT_POINT"
+      - name: Screenshot the app (best effort)
+        continue-on-error: true
+        run: |
+          APP="$(ls -d desktop/src-tauri/target/release/bundle/macos/PHANTOM.app)"
+          open "$APP"
+          sleep 8
+          screencapture -x phantom-macos.png || true
+          osascript -e 'quit app "PHANTOM"' || true
+      - name: Collect artifacts
+        if: always()
+        run: |
+          mkdir -p artifacts
+          cp PHANTOM-aarch64.dmg PHANTOM-aarch64.dmg.sha256 artifacts/ 2>/dev/null || true
+          cp cycle-macos-bridge.json cycle-macos-dmg.json artifacts/ 2>/dev/null || true
+          cp verification-report.txt artifacts/ 2>/dev/null || true
+          cp phantom-macos.png artifacts/ 2>/dev/null || true
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-arm64-packages
+          path: artifacts
+          if-no-files-found: warn
+          retention-days: 14
+
+  build-windows:
+    name: Windows x64 (.msi, NSIS)
+    runs-on: windows-latest
+    needs: frontend
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements.txt
+      - name: Build the bridge sidecar
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt pyinstaller
+          pyinstaller --noconfirm --clean desktop/phantom-bridge.spec
+          New-Item -ItemType Directory -Force -Path desktop\src-tauri\binaries | Out-Null
+          Copy-Item dist\phantom-bridge.exe desktop\src-tauri\binaries\phantom-bridge-x86_64-pc-windows-msvc.exe
+      - name: Full PDF cycle (freshly frozen bridge)
+        run: python desktop/e2e/full_cycle.py --bridge dist/phantom-bridge.exe --out cycle-windows-bridge.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+      - name: Build the app
+        working-directory: desktop
+        run: |
+          npm ci
+          npx tauri build --bundles msi,nsis
+      - name: Full PDF cycle (bridge shipped in the .msi)
+        run: |
+          $msi = Get-ChildItem desktop\src-tauri\target\release\bundle\msi\*.msi | Select-Object -First 1
+          echo "msi: $($msi.FullName)"
+          $proc = Start-Process msiexec.exe -ArgumentList "/i", "`"$($msi.FullName)`"", "/qn", "/norestart" -Wait -PassThru
+          echo "msiexec exit code: $($proc.ExitCode)"
+          if ($proc.ExitCode -ne 0 -and $proc.ExitCode -ne 3010) { throw "msiexec failed with $($proc.ExitCode)" }
+          $bridge = Get-ChildItem -Path 'C:\Program Files\PHANTOM','C:\Program Files (x86)\PHANTOM' -Recurse -Filter phantom-bridge.exe -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $bridge) { $bridge = Get-ChildItem -Path 'C:\Program Files','C:\Program Files (x86)' -Recurse -Filter phantom-bridge.exe -ErrorAction SilentlyContinue | Select-Object -First 1 }
+          if (-not $bridge) { throw "phantom-bridge.exe not found after installation" }
+          echo "installed bridge: $($bridge.FullName)"
+          python desktop/e2e/full_cycle.py --bridge $bridge.FullName --out cycle-windows-msi.json
+      - name: Collect artifacts
+        if: always()
+        run: |
+          New-Item -ItemType Directory -Force -Path artifacts | Out-Null
+          Copy-Item desktop\src-tauri\target\release\bundle\msi\*.msi artifacts\ -ErrorAction SilentlyContinue
+          Copy-Item desktop\src-tauri\target\release\bundle\nsis\*.exe artifacts\ -ErrorAction SilentlyContinue
+          Copy-Item cycle-windows-bridge.json,cycle-windows-msi.json artifacts\ -ErrorAction SilentlyContinue
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-x64-packages
+          path: artifacts
+          if-no-files-found: warn
+          retention-days: 14

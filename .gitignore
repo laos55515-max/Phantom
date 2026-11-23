@@ -9,3 +9,6 @@ dist/
 # thread dumps a wedged GUI job leaves behind (tests/test_gui.py)
 gui_stacks.txt
 shutdown_stacks.txt
+
+# packaging metadata from editable installs
+*.egg-info/

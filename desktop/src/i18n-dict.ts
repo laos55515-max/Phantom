@@ -1,0 +1,484 @@
+/**
+ * PHANTOM desktop — UI strings.
+ *
+ * One flat dictionary per language; keys are identical across languages and a
+ * unit test keeps them that way.  Keys prefixed with `err.` mirror the Python
+ * core's `ErrorCode` values (`phantom/core/errors.py`).
+ */
+
+export const SUPPORTED_LANGUAGES = ["uk", "en", "ru"] as const;
+export type Language = (typeof SUPPORTED_LANGUAGES)[number];
+export const LANGUAGE_NAMES: Record<Language, string> = {
+  uk: "Українська",
+  en: "English",
+  ru: "Русский",
+};
+
+export type Dictionary = Record<string, string>;
+
+export const uk: Dictionary = {
+  "app.name": "PHANTOM",
+  "app.tagline": "Сховайте файл усередині зображення",
+  "nav.hide": "Сховати",
+  "nav.extract": "Витягти",
+  "nav.settings": "Налаштування",
+  "skip_to_content": "Перейти до вмісту",
+
+  "firstrun.choose": "Українська · English · Русский",
+  "firstrun.title": "Оберіть мову",
+  "firstrun.sub": "Мову можна змінити пізніше в налаштуваннях — вона застосується одразу.",
+  "firstrun.privacy": "Жодних мережевих запитів. Пароль не покидає цього пристрою.",
+
+  "common.back": "Назад",
+  "common.cancel": "Скасувати",
+  "common.copy": "Копіювати",
+  "common.copied": "Скопійовано",
+  "common.or": "або",
+  "common.choose_file": "Обрати файл…",
+  "common.bytes": "байт",
+  "common.details": "Деталі",
+  "common.close": "Закрити",
+  "unit.b": "Б",
+  "unit.kb": "КБ",
+  "unit.mb": "МБ",
+  "unit.gb": "ГБ",
+
+  "demo.banner":
+    "Демо в браузері: операції змодельовано. У застосунку все відбувається на цьому пристрої — файли нікуди не надсилаються.",
+
+  "hide.q": "Що хочете сховати?",
+  "hide.q_sub":
+    "Вміст шифрується (AES-256-GCM) на цьому пристрої. Без пароля його не прочитати.",
+  "hide.card_file": "Файл",
+  "hide.card_file_d": "Документ, PDF, архів — доки вміщується у носій",
+  "hide.card_text": "Текст",
+  "hide.card_text_d": "Нотатка, ключ, повідомлення — повернеться один в один",
+  "hide.card_example": "Спробувати на прикладі",
+  "hide.card_example_d": "example-payload.pdf у комплектній картинці",
+  "hide.change_selection": "Змінити вибір",
+  "hide.what": "Що ховаємо",
+  "hide.where": "У чому ховаємо",
+  "hide.container_image": "Зображення PNG",
+  "hide.container_audio": "Аудіо WAV / FLAC",
+  "hide.kind_image": "PNG-зображення",
+  "hide.kind_audio": "WAV/FLAC-аудіо",
+  "hide.drop_title": "Перетягніть сюди: {kind}",
+  "hide.drop_hint": "або скористайтеся системним вибором файлу",
+  "hide.drop_active": "Відпустіть файл тут",
+  "hide.carrier_change": "Інший файл",
+  "hide.example_note": "Демо: комплектна картинка 300×300, 809-байтовий PDF усередині",
+  "hide.capacity_need": "Потрібно ~{used}",
+  "hide.capacity_has": "Носій вміщує {cap}",
+  "hide.capacity_exceeds":
+    "Не вміщується: потрібно ~{used}, є {cap}. Візьміть більший носій або менший файл.",
+  "hide.capacity_note":
+    "Оцінка з запасом: після стиснення розмір може бути меншим.",
+  "hide.capacity_bad_carrier": "Не вдалося прочитати носій.",
+  "hide.capacity_aria": "Використання місткості {pct} відсотків",
+  "hide.password": "Пароль",
+  "hide.password_hint":
+    "Щонайменше 12 символів. Пароль ніде не зберігається і не потрапляє до журналів.",
+  "hide.password_show": "Показати пароль",
+  "hide.password_hide": "Сховати пароль",
+  "hide.password_generate": "Згенерувати (20)",
+  "hide.password_copy": "Скопіювати пароль",
+  "hide.password_copied": "Пароль скопійовано",
+  "hide.password_copy_error": "Не вдалося скопіювати пароль.",
+  "hide.strength_label": "Надійність: {level}",
+  "hide.strength_weak": "слабкий",
+  "hide.strength_fair": "середній",
+  "hide.strength_strong": "сильний",
+  "hide.submit": "Сховати",
+  "hide.busy": "Шифруємо й прячемо… {sec} с",
+  "hide.need_carrier": "Спершу оберіть контейнер (картинку або аудіо)",
+  "hide.carrier_hint": "Оберіть картинку або аудіо",
+  "hide.need_password": "Введіть пароль щонайменше з 12 символів",
+  "hide.size_unknown": "Розмір невідомий",
+  "hide.size_unavailable": "Не вдалося визначити розмір файлу. Оберіть файл знову.",
+  "hide.need_content": "Спершу оберіть, що хочете сховати",
+  "hide.success_title": "Готово",
+  "hide.success_verified":
+    "Перевірено: SHA-256 байт-у-байт збігається — вилучення поверне саме цей файл.",
+  "hide.success_output": "Збережено до",
+  "hide.success_meta": "{bytes} вбудовано · {kdf}",
+  "hide.open_folder": "Показати у папці",
+  "hide.hide_another": "Сховати ще один",
+  "hide.success_note":
+    "Надсилайте файл як документ, не як «фото» — месенджери пережимають зображення.",
+  "hide.text_placeholder": "Впишіть або вставте текст…",
+  "hide.text_count": "{chars} знаків · {bytes}",
+  "hide.example_pdf": "example-payload.pdf",
+
+  "extract.title": "Витягти",
+  "extract.sub":
+    "Відкрийте файл-носій, введіть пароль — і поверніть те, що в ньому заховали.",
+  "extract.drop_title": "Перетягніть сюди файл",
+  "extract.drop_hint": "PNG-зображення або WAV/FLAC-аудіо",
+  "extract.submit": "Витягти",
+  "extract.text_label": "Знайдений текст",
+  "extract.found_file": "Знайдено файл",
+  "extract.save_as": "Зберегти як…",
+  "extract.saved_as": "Збережено до",
+  "extract.audit": "Контейнер v{version} · {kdf} · цілісність SHA-256 ✓",
+  "extract.digest": "SHA-256: {digest}",
+  "extract.again": "Витягти ще раз",
+  "extract.failure_title": "Не вдалося витягти",
+
+  "settings.title": "Налаштування",
+  "settings.appearance": "Вигляд",
+  "settings.theme": "Тема",
+  "settings.theme_light": "Світла",
+  "settings.theme_dark": "Темна",
+  "settings.theme_system": "Системна",
+  "settings.language": "Мова",
+  "settings.saved":
+    "Зміни зберігаються автоматично — чернетка відновиться при наступному запуску.",
+  "settings.draft_saved": "Збережено локально",
+  "settings.about": "Про застосунок",
+  "settings.version": "PHANTOM desktop (Tauri) · ядро Python {core}",
+  "settings.license": "Ліцензія MIT",
+  "settings.notes": "Що варто знати",
+  "settings.notes_1":
+    "Контейнер не переживає пережаття: JPEG, зміна розміру, режим «фото» в месенджері — спрятане втрачається. Надсилайте як документ.",
+  "settings.notes_2":
+    "AES-256-GCM · Argon2id (m=96 МБ, t=3) · позиції бітів виводяться з пароля (v5).",
+  "settings.notes_3":
+    "Паролі не зберігаються, не пишуться до журналів і не покидають пристрій.",
+  "settings.stored":
+    "Зберігається лише мова й тема (локально на цьому пристрої). Паролі й вміст документів не зберігаються ніде.",
+
+  "err.wrong_password_or_no_data":
+    "Невірний пароль або тут немає спрятаного вмісту — розрізнити ці випадки неможливо свідомо.",
+  "err.capacity":
+    "Вміст не вміщується у цей носій. Менше вхідного файлу — або більший носій.",
+  "err.unsupported_carrier":
+    "Непідтримуваний носій. Для зображень потрібен PNG (без стиснення з втратами), для звуку — WAV або FLAC.",
+  "err.unsupported_format": "Непідтримуваний формат файлу.",
+  "err.invalid_password":
+    "Пароль не підходить: щонайменше 12 символів, лише символи з UTF-8-поданням.",
+  "err.invalid_input": "Некоректні вхідні дані.",
+  "err.invalid_unicode": "Текст містить символи, яких немає в UTF-8.",
+  "err.io": "Не вдалося прочитати або записати файл. Перевірте права доступу.",
+  "err.integrity": "Цілісність не підтвердилася — файл пошкоджено або підмінено.",
+  "err.output_is_carrier":
+    "Оберіть інше місце: цей файл — вихідний носій.",
+  "err.source_overwrite":
+    "Вихідний файл збігається з файлом, який ховаємо — відмовлено.",
+  "err.unsafe_path": "Небезпечна назва або шлях файлу.",
+  "err.audio_lossy":
+    "Формати з втратами (MP3, AAC, OGG, WMA) знищують спрятане. Лише WAV і FLAC.",
+  "err.audio_format": "Аудіофайл не вдалося прочитати.",
+  "err.audio_silence": "Доріжка занадто тиха — молодші біти там губляться.",
+  "err.signed_media":
+    "Файл має цифровий підпис (C2PA) — перезапис його зламає. Відмовлено.",
+  "err.cancelled": "Скасовано.",
+  "err.internal": "Внутрішня помилка ядра. Перевірте, що застосунок цілий.",
+};
+
+export const en: Dictionary = {
+  "app.name": "PHANTOM",
+  "app.tagline": "Hide a file inside a picture",
+  "nav.hide": "Hide",
+  "nav.extract": "Extract",
+  "nav.settings": "Settings",
+  "skip_to_content": "Skip to content",
+
+  "firstrun.choose": "Українська · English · Русский",
+  "firstrun.title": "Choose a language",
+  "firstrun.sub": "You can change it later in Settings — it applies right away.",
+  "firstrun.privacy": "No network calls. Your password never leaves this device.",
+
+  "common.back": "Back",
+  "common.cancel": "Cancel",
+  "common.copy": "Copy",
+  "common.copied": "Copied",
+  "common.or": "or",
+  "common.choose_file": "Choose file…",
+  "common.bytes": "bytes",
+  "common.details": "Details",
+  "common.close": "Close",
+  "unit.b": "B",
+  "unit.kb": "KB",
+  "unit.mb": "MB",
+  "unit.gb": "GB",
+
+  "demo.banner":
+    "Browser demo: operations are simulated. In the app everything runs on this device — files are never sent anywhere.",
+
+  "hide.q": "What do you want to hide?",
+  "hide.q_sub":
+    "The contents are encrypted (AES-256-GCM) on this device. No one can read them without the password.",
+  "hide.card_file": "A file",
+  "hide.card_file_d": "A document, a PDF, an archive — as long as it fits",
+  "hide.card_text": "Text",
+  "hide.card_text_d": "A note, a key, a message — it comes back exactly",
+  "hide.card_example": "Try the example",
+  "hide.card_example_d": "example-payload.pdf inside the bundled picture",
+  "hide.change_selection": "Change selection",
+  "hide.what": "What we hide",
+  "hide.where": "Where we hide it",
+  "hide.container_image": "PNG image",
+  "hide.container_audio": "WAV / FLAC audio",
+  "hide.kind_image": "PNG image",
+  "hide.kind_audio": "WAV / FLAC audio",
+  "hide.drop_title": "Drop it here: {kind}",
+  "hide.drop_hint": "or use the system file picker",
+  "hide.drop_active": "Release to use this file",
+  "hide.carrier_change": "Different file",
+  "hide.example_note": "Demo: bundled 300×300 picture with an 809-byte PDF inside",
+  "hide.capacity_need": "Needs ~{used}",
+  "hide.capacity_has": "Carrier fits {cap}",
+  "hide.capacity_exceeds":
+    "Too much data: needs ~{used}, carrier holds {cap}. Pick a bigger carrier or a smaller file.",
+  "hide.capacity_note": "Estimate with headroom: compression may shrink it further.",
+  "hide.capacity_bad_carrier": "The carrier could not be read.",
+  "hide.capacity_aria": "Capacity usage {pct} percent",
+  "hide.password": "Password",
+  "hide.password_hint":
+    "At least 12 characters. The password is never stored or written to logs.",
+  "hide.password_show": "Show password",
+  "hide.password_hide": "Hide password",
+  "hide.password_generate": "Generate (20)",
+  "hide.password_copy": "Copy password",
+  "hide.password_copied": "Password copied",
+  "hide.password_copy_error": "Could not copy the password.",
+  "hide.strength_label": "Strength: {level}",
+  "hide.strength_weak": "weak",
+  "hide.strength_fair": "fair",
+  "hide.strength_strong": "strong",
+  "hide.submit": "Hide it",
+  "hide.busy": "Encrypting and hiding… {sec}s",
+  "hide.need_carrier": "Pick a container first (a picture or audio)",
+  "hide.carrier_hint": "Choose a picture or audio",
+  "hide.need_password": "Enter a password of at least 12 characters",
+  "hide.size_unknown": "Size unknown",
+  "hide.size_unavailable": "Could not determine the file size. Please choose the file again.",
+  "hide.need_content": "Pick what you want to hide first",
+  "hide.success_title": "Done",
+  "hide.success_verified":
+    "Verified: SHA-256 matches byte for byte — extraction returns exactly this file.",
+  "hide.success_output": "Saved to",
+  "hide.success_meta": "{bytes} embedded · {kdf}",
+  "hide.open_folder": "Show in folder",
+  "hide.hide_another": "Hide another",
+  "hide.success_note":
+    "Send the file as a document, not as a “photo” — messengers re-encode images.",
+  "hide.text_placeholder": "Type or paste your text…",
+  "hide.text_count": "{chars} characters · {bytes}",
+  "hide.example_pdf": "example-payload.pdf",
+
+  "extract.title": "Extract",
+  "extract.sub": "Open the carrier, enter the password, and get back what was hidden.",
+  "extract.drop_title": "Drop the file here",
+  "extract.drop_hint": "A PNG image or WAV / FLAC audio",
+  "extract.submit": "Extract",
+  "extract.text_label": "Found text",
+  "extract.found_file": "Found a file",
+  "extract.save_as": "Save as…",
+  "extract.saved_as": "Saved to",
+  "extract.audit": "Layout v{version} · {kdf} · integrity SHA-256 ✓",
+  "extract.digest": "SHA-256: {digest}",
+  "extract.again": "Extract another",
+  "extract.failure_title": "Extraction failed",
+
+  "settings.title": "Settings",
+  "settings.appearance": "Appearance",
+  "settings.theme": "Theme",
+  "settings.theme_light": "Light",
+  "settings.theme_dark": "Dark",
+  "settings.theme_system": "System",
+  "settings.language": "Language",
+  "settings.saved":
+    "Changes are saved automatically — your draft is restored on next launch.",
+  "settings.draft_saved": "Saved locally",
+  "settings.about": "About",
+  "settings.version": "PHANTOM desktop (Tauri) · Python core {core}",
+  "settings.license": "MIT license",
+  "settings.notes": "Worth knowing",
+  "settings.notes_1":
+    "The container does not survive re-encoding: JPEG export, resizing or a “photo” in a messenger destroys it. Send as a document.",
+  "settings.notes_2":
+    "AES-256-GCM · Argon2id (m=96 MiB, t=3) · bit positions are derived from the password (v5).",
+  "settings.notes_3": "Passwords are never stored, logged or sent anywhere.",
+  "settings.stored":
+    "Only the language and theme are stored locally on this device. Passwords and document contents are never saved.",
+
+  "err.wrong_password_or_no_data":
+    "Wrong password, or nothing is hidden here — telling these apart is deliberately impossible.",
+  "err.capacity": "The contents do not fit in this carrier. Smaller input — or a bigger carrier.",
+  "err.unsupported_carrier":
+    "Unsupported carrier. Images must be PNG (lossless), audio must be WAV or FLAC.",
+  "err.unsupported_format": "Unsupported file format.",
+  "err.invalid_password":
+    "Password not accepted: at least 12 characters, all with UTF-8 forms.",
+  "err.invalid_input": "Invalid input.",
+  "err.invalid_unicode": "The text contains characters with no UTF-8 form.",
+  "err.io": "The file could not be read or written. Check permissions.",
+  "err.integrity": "Integrity check failed — the file was damaged or tampered with.",
+  "err.output_is_carrier": "Choose another location: this file is the original carrier.",
+  "err.source_overwrite": "The output file matches the file being hidden — refused.",
+  "err.unsafe_path": "Unsafe file name or path.",
+  "err.audio_lossy": "Lossy formats (MP3, AAC, OGG, WMA) destroy the hidden payload. WAV and FLAC only.",
+  "err.audio_format": "The audio file could not be decoded.",
+  "err.audio_silence": "The track is too quiet — its low bits are lost.",
+  "err.signed_media": "The file carries a digital signature (C2PA) — rewriting would break it. Refused.",
+  "err.cancelled": "Cancelled.",
+  "err.internal": "An internal core error. Check that the app bundle is intact.",
+};
+
+export const ru: Dictionary = {
+  "app.name": "PHANTOM",
+  "app.tagline": "Спрячьте файл внутри картинки",
+  "nav.hide": "Скрыть",
+  "nav.extract": "Извлечь",
+  "nav.settings": "Настройки",
+  "skip_to_content": "Перейти к содержанию",
+
+  "firstrun.choose": "Українська · English · Русский",
+  "firstrun.title": "Выберите язык",
+  "firstrun.sub": "Язык можно изменить позже в настройках — он применится сразу.",
+  "firstrun.privacy": "Никаких сетевых запросов. Пароль не покидает это устройство.",
+
+  "common.back": "Назад",
+  "common.cancel": "Отмена",
+  "common.copy": "Копировать",
+  "common.copied": "Скопировано",
+  "common.or": "или",
+  "common.choose_file": "Выбрать файл…",
+  "common.bytes": "байт",
+  "common.details": "Подробности",
+  "common.close": "Закрыть",
+  "unit.b": "Б",
+  "unit.kb": "КБ",
+  "unit.mb": "МБ",
+  "unit.gb": "ГБ",
+
+  "demo.banner":
+    "Демо в браузере: операции смоделированы. В приложении всё происходит на этом устройстве — файлы никуда не отправляются.",
+
+  "hide.q": "Что хотите спрятать?",
+  "hide.q_sub":
+    "Содержимое шифруется (AES-256-GCM) на этом устройстве. Без пароля его не прочитать.",
+  "hide.card_file": "Файл",
+  "hide.card_file_d": "Документ, PDF, архив — пока помещается",
+  "hide.card_text": "Текст",
+  "hide.card_text_d": "Заметка, ключ, сообщение — вернётся один в один",
+  "hide.card_example": "Попробовать на примере",
+  "hide.card_example_d": "example-payload.pdf в комплектной картинке",
+  "hide.change_selection": "Изменить выбор",
+  "hide.what": "Что прячем",
+  "hide.where": "В чём прячем",
+  "hide.container_image": "Изображение PNG",
+  "hide.container_audio": "Аудио WAV / FLAC",
+  "hide.kind_image": "PNG-изображение",
+  "hide.kind_audio": "WAV/FLAC-аудио",
+  "hide.drop_title": "Перетащите сюда: {kind}",
+  "hide.drop_hint": "или воспользуйтесь системным выбором файла",
+  "hide.drop_active": "Отпустите файл здесь",
+  "hide.carrier_change": "Другой файл",
+  "hide.example_note": "Демо: комплектная картинка 300×300 со встроенным PDF (809 байт)",
+  "hide.capacity_need": "Нужно ~{used}",
+  "hide.capacity_has": "Вмещает {cap}",
+  "hide.capacity_exceeds":
+    "Не вмещается: нужно ~{used}, есть {cap}. Возьмите больший контейнер или файл поменьше.",
+  "hide.capacity_note": "Оценка с запасом: после сжатия размер может быть меньше.",
+  "hide.capacity_bad_carrier": "Не удалось прочитать контейнер.",
+  "hide.capacity_aria": "Использование вместимости {pct} процентов",
+  "hide.password": "Пароль",
+  "hide.password_hint":
+    "Не менее 12 символов. Пароль нигде не сохраняется и не попадает в журналы.",
+  "hide.password_show": "Показать пароль",
+  "hide.password_hide": "Скрыть пароль",
+  "hide.password_generate": "Сгенерировать (20)",
+  "hide.password_copy": "Скопировать пароль",
+  "hide.password_copied": "Пароль скопирован",
+  "hide.password_copy_error": "Не удалось скопировать пароль.",
+  "hide.strength_label": "Надёжность: {level}",
+  "hide.strength_weak": "слабый",
+  "hide.strength_fair": "средний",
+  "hide.strength_strong": "сильный",
+  "hide.submit": "Спрятать",
+  "hide.busy": "Шифруем и прячем… {sec} с",
+  "hide.need_carrier": "Сперва выберите контейнер (картинку или аудио)",
+  "hide.carrier_hint": "Выберите картинку или аудио",
+  "hide.need_password": "Введите пароль не короче 12 символов",
+  "hide.size_unknown": "Размер неизвестен",
+  "hide.size_unavailable": "Не удалось определить размер файла. Выберите файл снова.",
+  "hide.need_content": "Сначала выберите, что хотите спрятать",
+  "hide.success_title": "Готово",
+  "hide.success_verified":
+    "Проверено: SHA-256 байт-в-байт совпадает — при извлечении вернётся ровно этот файл.",
+  "hide.success_output": "Сохранено в",
+  "hide.success_meta": "{bytes} встроено · {kdf}",
+  "hide.open_folder": "Показать в папке",
+  "hide.hide_another": "Спрятать ещё один",
+  "hide.success_note":
+    "Отправляйте файл как документ, а не как «фото» — мессенджеры пережимают изображения.",
+  "hide.text_placeholder": "Впишите или вставьте текст…",
+  "hide.text_count": "{chars} знаков · {bytes}",
+  "hide.example_pdf": "example-payload.pdf",
+
+  "extract.title": "Извлечь",
+  "extract.sub": "Откройте файл-контейнер, введите пароль — и верните то, что в нём спрятано.",
+  "extract.drop_title": "Перетащите сюда файл",
+  "extract.drop_hint": "PNG-изображение или WAV/FLAC-аудио",
+  "extract.submit": "Извлечь",
+  "extract.text_label": "Найденный текст",
+  "extract.found_file": "Найден файл",
+  "extract.save_as": "Сохранить как…",
+  "extract.saved_as": "Сохранено в",
+  "extract.audit": "Контейнер v{version} · {kdf} · целостность SHA-256 ✓",
+  "extract.digest": "SHA-256: {digest}",
+  "extract.again": "Извлечь ещё раз",
+  "extract.failure_title": "Не удалось извлечь",
+
+  "settings.title": "Настройки",
+  "settings.appearance": "Внешний вид",
+  "settings.theme": "Тема",
+  "settings.theme_light": "Светлая",
+  "settings.theme_dark": "Тёмная",
+  "settings.theme_system": "Системная",
+  "settings.language": "Язык",
+  "settings.saved":
+    "Изменения сохраняются автоматически — черновик восстановится при следующем запуске.",
+  "settings.draft_saved": "Сохранено локально",
+  "settings.about": "О приложении",
+  "settings.version": "PHANTOM desktop (Tauri) · ядро Python {core}",
+  "settings.license": "Лицензия MIT",
+  "settings.notes": "Что стоит знать",
+  "settings.notes_1":
+    "Контейнер не переживёт пережатия: JPEG, изменение размера, режим «фото» в мессенджере — спрятанное будет потеряно. Отправляйте как документ.",
+  "settings.notes_2":
+    "AES-256-GCM · Argon2id (m=96 МиБ, t=3) · позиции битов выводятся из пароля (v5).",
+  "settings.notes_3": "Пароли не сохраняются, не пишутся в журналы и не покидают устройство.",
+  "settings.stored":
+    "Хранятся только язык и тема (локально на этом устройстве). Пароли и содержимое документов нигде не сохраняются.",
+
+  "err.wrong_password_or_no_data":
+    "Неверный пароль или здесь нет спрятанного содержимого — эти случаи сознательно неразличимы.",
+  "err.capacity":
+    "Содержимое не помещается в этот контейнер. Меньше входного файла — или больше контейнер.",
+  "err.unsupported_carrier":
+    "Неподдерживаемый контейнер. Для изображений нужен PNG (без потерь), для звука — WAV или FLAC.",
+  "err.unsupported_format": "Неподдерживаемый формат файла.",
+  "err.invalid_password":
+    "Пароль не подходит: не менее 12 символов, все с UTF-8-представлением.",
+  "err.invalid_input": "Некорректные входные данные.",
+  "err.invalid_unicode": "Текст содержит символы, которых нет в UTF-8.",
+  "err.io": "Не удалось прочитать или записать файл. Проверьте права доступа.",
+  "err.integrity": "Целостность не подтвердилась — файл повреждён или подменён.",
+  "err.output_is_carrier":
+    "Выберите другое место: этот файл — исходный контейнер",
+  "err.source_overwrite": "Выходной файл совпадает с файлом, который прячем, — отказано.",
+  "err.unsafe_path": "Небезопасное имя или путь файла.",
+  "err.audio_lossy":
+    "Форматы с потерями (MP3, AAC, OGG, WMA) уничтожают спрятанное. Только WAV и FLAC.",
+  "err.audio_format": "Аудиофайл не удалось прочитать.",
+  "err.audio_silence": "Слишком тихая дорожка — младшие биты в ней теряются.",
+  "err.signed_media":
+    "Файл содержит цифровую подпись (C2PA) — перезапись её сломает. Отказано.",
+  "err.cancelled": "Отменено.",
+  "err.internal": "Внутренняя ошибка ядра. Проверьте, что приложение цело.",
+};
+
+export const dictionaries: Record<Language, Dictionary> = { uk, en, ru };
