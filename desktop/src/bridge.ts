@@ -28,7 +28,7 @@ export type BridgeResult<T> = ({ ok: true } & T) | { ok: false; error: BridgeErr
 export interface FilePick {
   path: string;
   name: string;
-  sizeBytes: number;
+  sizeBytes: number | null;
 }
 
 export interface ProbeInfo {
@@ -236,7 +236,7 @@ async function callBridge(request: Record<string, unknown>): Promise<Record<stri
   }
 }
 
-const tauriBridge: PhantomBridge = {
+export const tauriBridge: PhantomBridge = {
   async version() {
     const raw = await callBridge({ cmd: "version" });
     if (raw.ok !== true) return { ok: false, error: asError(raw) };
@@ -291,7 +291,18 @@ const tauriBridge: PhantomBridge = {
     return mapExtract(raw);
   },
   async pickFile(kind, media) {
-    return (await invoke("pick_file", { kind, media })) as FilePick | null;
+    const raw: unknown = await invoke("pick_file", { kind, media });
+    if (raw === null) return null;
+    if (!isRecord(raw) || typeof raw.path !== "string" || typeof raw.name !== "string") {
+      throw new Error("Invalid file picker response");
+    }
+    // Rust returns snake_case. Never coerce missing/invalid sizes to zero.
+    const size = raw.size_bytes;
+    return {
+      path: raw.path,
+      name: raw.name,
+      sizeBytes: typeof size === "number" && Number.isSafeInteger(size) && size >= 0 ? size : null,
+    };
   },
   async saveFile(suggestedName, kind) {
     return (await invoke("save_file", { suggestedName, kind })) as string | null;

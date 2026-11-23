@@ -90,6 +90,8 @@ export const uk: Dictionary = {
   "hide.need_carrier": "Спершу оберіть контейнер (картинку або аудіо)",
   "hide.carrier_hint": "Оберіть картинку або аудіо",
   "hide.need_password": "Введіть пароль щонайменше з 12 символів",
+  "hide.size_unknown": "Розмір невідомий",
+  "hide.size_unavailable": "Не вдалося визначити розмір файлу. Оберіть файл знову.",
   "hide.need_content": "Спершу оберіть, що хочете сховати",
   "hide.success_title": "Готово",
   "hide.success_verified":
@@ -243,6 +245,8 @@ export const en: Dictionary = {
   "hide.need_carrier": "Pick a container first (a picture or audio)",
   "hide.carrier_hint": "Choose a picture or audio",
   "hide.need_password": "Enter a password of at least 12 characters",
+  "hide.size_unknown": "Size unknown",
+  "hide.size_unavailable": "Could not determine the file size. Please choose the file again.",
   "hide.need_content": "Pick what you want to hide first",
   "hide.success_title": "Done",
   "hide.success_verified":
@@ -389,6 +393,8 @@ export const ru: Dictionary = {
   "hide.need_carrier": "Сперва выберите контейнер (картинку или аудио)",
   "hide.carrier_hint": "Выберите картинку или аудио",
   "hide.need_password": "Введите пароль не короче 12 символов",
+  "hide.size_unknown": "Размер неизвестен",
+  "hide.size_unavailable": "Не удалось определить размер файла. Выберите файл снова.",
   "hide.need_content": "Сначала выберите, что хотите спрятать",
   "hide.success_title": "Готово",
   "hide.success_verified":

@@ -6,6 +6,14 @@ All notable changes to PHANTOM are recorded here. The format follows
 
 ## [Unreleased]
 
+### Fixed — native file picker payload size
+
+- Map Rust's `size_bytes` to React's `sizeBytes` and reject invalid or missing
+  sizes without treating them as zero. Explain the problem beside the file and
+  offer reselection; do not calculate capacity until the size is known.
+- Exercise real native response shapes, including oversized and invalid sizes,
+  in the Hide screen regression tests.
+
 ### Fixed — macOS packaging: nested code signed before the .app, dmg packed last
 
 The bundle shipped by the previous pipeline could not be verified
@@ -16,9 +24,9 @@ checked on a stock MacBook).  The `build-macos` job now: (1) builds the
 (`codesign --force --deep --sign -`), (4) gates on
 `codesign --verify --deep --strict --verbose=2` for both the built bundle
 and the same bundle re-checked from the mounted `.dmg` — CI fails if the
-check fails, before any artifact is uploaded, (5) creates the `.dmg` last,
-(6) prints the image SHA-256 and posts the full verification output as a PR
-comment.  Ad-hoc only: no Developer ID, no notarization.
+check fails; (5) creates the `.dmg` after signing and (6) includes the image
+SHA-256 and verification output in the artifact. Diagnostic artifacts can still
+be uploaded on failure; the job remains failed.  Ad-hoc only: no Developer ID, no notarization.
 
 ### Fixed — desktop prototype (Tauri 2 + React/TypeScript), review round 2
 

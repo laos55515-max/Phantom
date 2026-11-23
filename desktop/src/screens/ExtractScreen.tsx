@@ -183,10 +183,10 @@ export function ExtractScreen() {
             <div className="file-name" title={carrier.name}>
               {carrier.name}
             </div>
-            <div className="file-meta">{fmt(carrier.sizeBytes)}</div>
+            <div className="file-meta">{carrier.sizeBytes === null ? t("hide.size_unknown") : fmt(carrier.sizeBytes)}</div>
           </div>
         ) : (
-          <DropZone ariaLabel={t("extract.drop_title")} onDrop={(file) => setCarrier({ ...file, sizeBytes: file.sizeBytes ?? 0 })}>
+          <DropZone ariaLabel={t("extract.drop_title")} onDrop={(file) => setCarrier(file)}>
             <IconImage size={26} strokeWidth={1.4} />
             <div className="dropzone-title">{t("extract.drop_title")}</div>
             <div className="dropzone-hint">{t("extract.drop_hint")}</div>

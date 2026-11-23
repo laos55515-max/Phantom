@@ -23,7 +23,7 @@ import { CapacityBar, ErrorBanner, PasswordField } from "../ui";
 
 export type ContentSel =
   | { kind: "none" }
-  | { kind: "file"; path: string; name: string; sizeBytes: number }
+  | { kind: "file"; path: string; name: string; sizeBytes: number | null }
   | { kind: "text"; text: string }
   | { kind: "example" };
 
@@ -90,7 +90,8 @@ export function HideScreen({ onGoExtract }: { onGoExtract: () => void }) {
   const userBytes = useMemo(() => {
     switch (content.kind) {
       case "file":
-        return content.sizeBytes;
+        return typeof content.sizeBytes === "number" && Number.isSafeInteger(content.sizeBytes) && content.sizeBytes >= 0
+          ? content.sizeBytes : null;
       case "text":
         return utf8Bytes(content.text);
       case "example":
@@ -111,11 +112,11 @@ export function HideScreen({ onGoExtract }: { onGoExtract: () => void }) {
     }
   }, [content, exampleSecretName]);
 
-  const needBytes = estimatePackedBytes(userBytes, nameBytes);
+  const needBytes = userBytes === null ? null : estimatePackedBytes(userBytes, nameBytes);
   // The bundled example carrier: 300×300 RGB → 33 684 bytes of capacity.
   const exampleCapacity = 33_684;
   const capacityBytes = isExample ? exampleCapacity : carrier?.capacityBytes ?? 0;
-  const fits = capacityBytes > 0 && needBytes <= capacityBytes;
+  const fits = capacityBytes > 0 && needBytes !== null && needBytes <= capacityBytes;
 
   async function probeCarrier(file: FilePick) {
     setCarrierBusy(true);
@@ -123,7 +124,7 @@ export function HideScreen({ onGoExtract }: { onGoExtract: () => void }) {
     const res = await bridge.probe({
       path: file.path,
       displayName: file.name,
-      displaySize: file.sizeBytes,
+      displaySize: file.sizeBytes ?? undefined,
     });
     setCarrierBusy(false);
     if (res.ok) {
@@ -171,6 +172,10 @@ export function HideScreen({ onGoExtract }: { onGoExtract: () => void }) {
     }
     if (password.length < 12) {
       setGateMsg(t("hide.need_password"));
+      return;
+    }
+    if (needBytes === null) {
+      setGateMsg(t("hide.size_unavailable"));
       return;
     }
     if (!fits) {
@@ -380,7 +385,9 @@ export function HideScreen({ onGoExtract }: { onGoExtract: () => void }) {
         <div className="file-name" title={content.name}>
           {content.name}
         </div>
-        <div className="file-meta">{fmt(content.sizeBytes)}</div>
+        <div className="file-meta">
+          {userBytes === null ? <span role="alert">{t("hide.size_unavailable")}</span> : fmt(userBytes)}
+        </div>
         <div className="row" style={{ marginTop: "auto" }}>
           <button type="button" className="btn btn-subtle" onClick={pickSecretFile}>
             {t("hide.change_selection")}
@@ -419,7 +426,7 @@ export function HideScreen({ onGoExtract }: { onGoExtract: () => void }) {
           <span>
             {t("hide.text_count", {
               chars: content.kind === "text" ? content.text.length : 0,
-              bytes: fmt(userBytes),
+              bytes: fmt(userBytes ?? 0),
             })}
           </span>
           <button type="button" className="btn btn-subtle" onClick={() => setContent({ kind: "text", text: "" })}>
@@ -546,14 +553,14 @@ export function HideScreen({ onGoExtract }: { onGoExtract: () => void }) {
         </section>
       </div>
 
-      {isExample || carrier ? (
+      {(isExample || carrier) && needBytes !== null ? (
         <CapacityBar needBytes={needBytes} capacityBytes={capacityBytes} />
-      ) : (
+      ) : !isExample && !carrier ? (
         <p className="carrier-hint" role="status">
           <IconImage size={16} aria-hidden />
           {t("hide.carrier_hint")}
         </p>
-      )}
+      ) : null}
 
       <div className="card card-compact" style={{ marginTop: 10 }}>
         <PasswordField

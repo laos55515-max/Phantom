@@ -153,14 +153,14 @@ async fn bridge_call(request: Value) -> Result<Value, String> {
 }
 
 fn path_fields(path: &std::path::Path) -> Result<Value, String> {
-    let metadata = std::fs::metadata(path).map_err(|error| error.to_string())?;
+    let size_bytes = std::fs::metadata(path).ok().map(|metadata| metadata.len());
     Ok(serde_json::json!({
         "path": path.to_string_lossy(),
         "name": path
             .file_name()
             .map(|n| n.to_string_lossy())
             .unwrap_or_default(),
-        "size_bytes": metadata.len(),
+        "size_bytes": size_bytes,
     }))
 }
 
