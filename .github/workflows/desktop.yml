@@ -15,7 +15,6 @@ on:
 
 permissions:
   contents: read
-  issues: write  # the macOS job posts its verification report as a PR comment
 
 concurrency:
   group: desktop-${{ github.ref }}
@@ -315,25 +314,6 @@ jobs:
           cp cycle-macos-bridge.json cycle-macos-dmg.json artifacts/ 2>/dev/null || true
           cp verification-report.txt artifacts/ 2>/dev/null || true
           cp phantom-macos.png artifacts/ 2>/dev/null || true
-      - name: Report verification to the PR
-        if: always() && github.event_name == 'pull_request'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-        run: |
-          {
-            echo "### macOS (Apple silicon) — подпись и проверка (${GITHUB_SHA:0:7})"
-            echo
-            echo "- Образ: \`PHANTOM-aarch64.dmg\` (артефакт \`macos-arm64-packages\`)"
-            echo "- SHA-256 образа: \`$(cut -d' ' -f1 PHANTOM-aarch64.dmg.sha256 2>/dev/null || echo 'нет (сборка упала до создания образа)')\`"
-            echo "- Подпись: **ad-hoc**. Developer ID **не** использовался; нотаризация **не** выполнялась — подтверждений нет. Gatekeeper будет блокировать/предупреждать запуск."
-            echo "- Каноничная проверка из смонтированного итогового образа:"
-            echo '```'
-            cat verification-report.txt 2>/dev/null || echo 'отчёт не сформировался — сборка упала раньше'
-            echo '```'
-          } > comment.md
-          gh pr comment "$PR_NUMBER" --repo "${{ github.repository }}" --body-file comment.md
-          echo "comment posted to PR #${PR_NUMBER}"
       - name: Upload artifacts
         if: always()
         uses: actions/upload-artifact@v4
