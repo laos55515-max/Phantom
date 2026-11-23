@@ -283,3 +283,33 @@ def test_extract_save_verifies_before_replace_and_creates_private_temp(
         bridge.cmd_extract(request)
     assert target.read_bytes() == b"existing file"
     assert [p.name for p in tmp_path.iterdir()] == ["report.pdf"]
+
+
+def test_large_text_preview_omitted_but_full_utf8_saved(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import hashlib
+
+    from phantom import bridge
+    from phantom.core import api
+    from phantom.core.payload import ExtractedPayload, PayloadKind
+
+    text = ("абзац\n\n" * 1_000_000).encode("utf-8")
+    digest = hashlib.sha256(text).hexdigest()
+    payload = ExtractedPayload(
+        kind=PayloadKind.TEXT, name="", data=text, sha256_expected=digest,
+        sha256_actual=digest, integrity_ok=True, original_size=len(text), compressed_size=1,
+    )
+    outcome = api.ExtractOutcome(payload=payload, carrier_kind=api.CarrierKind.IMAGE, duration_seconds=0)
+    monkeypatch.setattr(bridge, "_extract_verified", lambda *_: outcome)
+    carrier = tmp_path / "carrier.png"
+    carrier.write_bytes(b"carrier")
+    request = {"carrier_path": str(carrier), "password": PASSWORD}
+    info = bridge.cmd_extract({**request, "mode": "info"})
+    assert info["text_omitted"] is True
+    assert "text" not in info
+    output = tmp_path / "output.txt"
+    result = bridge.cmd_extract({**request, "mode": "save_file", "output_path": str(output)})
+    assert result["ok"] is True
+    assert output.read_bytes() == text
+    assert carrier.read_bytes() == b"carrier"
