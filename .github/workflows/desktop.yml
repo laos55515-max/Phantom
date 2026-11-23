@@ -299,6 +299,7 @@ jobs:
           spctl -a -vvv -t execute "$MOUNT_POINT/PHANTOM.app" 2>&1 | tee -a verification-report.txt || true
           python desktop/e2e/full_cycle.py --bridge "$MOUNT_POINT/PHANTOM.app/Contents/MacOS/phantom-bridge" --out cycle-macos-dmg.json 2>&1 | tee -a verification-report.txt
           python desktop/e2e/long_text_cycle.py --bridge "$MOUNT_POINT/PHANTOM.app/Contents/MacOS/phantom-bridge" 2>&1 | tee -a verification-report.txt
+          python desktop/e2e/image_preview_cycle.py --bridge "$MOUNT_POINT/PHANTOM.app/Contents/MacOS/phantom-bridge" 2>&1 | tee -a verification-report.txt
           hdiutil detach "$MOUNT_POINT"
       - name: Screenshot the app (best effort)
         continue-on-error: true

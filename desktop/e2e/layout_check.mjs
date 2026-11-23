@@ -164,6 +164,56 @@ for (const theme of ["dark", "light"]) {
   await context.close();
 }
 
+
+// Target-size image preview layout with mocked Tauri IPC (not native extraction).
+{
+  const context = await browser.newContext({ viewport: VIEWPORT });
+  await context.addInitScript((jpeg) => {
+    window.localStorage.setItem("phantom.settings.draft", JSON.stringify({ language: "ru", theme: "dark" }));
+    window.__TAURI_INTERNALS__ = {
+      metadata: { currentWindow: { label: "main" }, currentWebview: { label: "main" } },
+      transformCallback: () => 1, unregisterCallback: () => {},
+      invoke: async (command) => {
+        if (command === "app_info") return { app: "2.1.0", core: "2.1.0", name: "PHANTOM" };
+        if (command === "pick_file") return { path: "/mock/carrier.wav", name: "carrier.wav", size_bytes: 2000 };
+        if (command === "bridge_call") return { ok: true, kind: "file", suggested_name: "photo.jpg", original_size: 5000,
+          sha256: "a".repeat(64), integrity_ok: true, container_version: 5, kdf_label: "argon2id",
+          image_preview: { type: "JPEG", status: "available", mime: "image/jpeg", data: jpeg, width: 120, height: 60 } };
+        return 1;
+      },
+    };
+  }, "/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/2wBDAQkJCQwLDBgNDRgyIRwhMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjL/wAARCAA8AHgDASIAAhEBAxEB/8QAHwAAAQUBAQEBAQEAAAAAAAAAAAECAwQFBgcICQoL/8QAtRAAAgEDAwIEAwUFBAQAAAF9AQIDAAQRBRIhMUEGE1FhByJxFDKBkaEII0KxwRVS0fAkM2JyggkKFhcYGRolJicoKSo0NTY3ODk6Q0RFRkdISUpTVFVWV1hZWmNkZWZnaGlqc3R1dnd4eXqDhIWGh4iJipKTlJWWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uHi4+Tl5ufo6erx8vP09fb3+Pn6/8QAHwEAAwEBAQEBAQEBAQAAAAAAAAECAwQFBgcICQoL/8QAtREAAgECBAQDBAcFBAQAAQJ3AAECAxEEBSExBhJBUQdhcRMiMoEIFEKRobHBCSMzUvAVYnLRChYkNOEl8RcYGRomJygpKjU2Nzg5OkNERUZHSElKU1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6goOEhYaHiImKkpOUlZaXmJmaoqOkpaanqKmqsrO0tba3uLm6wsPExcbHyMnK0tPU1dbX2Nna4uPk5ebn6Onq8vP09fb3+Pn6/9oADAMBAAIRAxEAPwDi6KKK+ZP3EKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKACiiigAooooAKKKKAP/2Q==");
+  const page = await context.newPage();
+  await page.goto(base, { waitUntil: "networkidle" });
+  await page.getByRole("button", { name: "Извлечь" }).first().click();
+  await page.getByRole("button", { name: /Выбрать файл/ }).click();
+  await page.locator("#extract-password").fill("layout check password 123");
+  await page.getByRole("button", { name: "Извлечь" }).last().click();
+  const show = page.getByRole("button", { name: "Показать изображение" });
+  await show.waitFor();
+  for (const label of ["Показать изображение", "Сохранить как…"]) {
+    const control = page.getByRole("button", { name: label });
+    await control.scrollIntoViewIfNeeded();
+    const box = await control.boundingBox();
+    if (!box || box.y < 0 || box.y + box.height > VIEWPORT.height || box.x < 0 || box.x + box.width > VIEWPORT.width)
+      results.push({ name: "image-controls", ok: false, detail: `${label} clipped` });
+  }
+  await show.click();
+  const dialog = page.getByRole("dialog", { name: "Предпросмотр изображения" });
+  const image = dialog.getByRole("img");
+  await image.evaluate((img) => img.decode());
+  const imageBox = await image.boundingBox();
+  const closeBox = await dialog.getByRole("button", { name: "Закрыть" }).boundingBox();
+  if (!imageBox || imageBox.width > VIEWPORT.width || imageBox.height > VIEWPORT.height ||
+      Math.abs(imageBox.width / imageBox.height - 2) > 0.01 || !closeBox || closeBox.y + closeBox.height > VIEWPORT.height)
+    results.push({ name: "image-preview-980x720", ok: false, detail: "image or close button clipped or distorted" });
+  await page.screenshot({ path: `${arg("out", "screenshots")}/image-preview.png` });
+  await page.keyboard.press("Escape");
+  if (await page.getByRole("dialog").count()) results.push({ name: "image-escape", ok: false, detail: "dialog still visible" });
+  else results.push({ name: "image-preview-980x720", ok: true, detail: "controls, aspect ratio and Escape" });
+  await context.close();
+}
+
 await browser.close();
 
 let failed = 0;

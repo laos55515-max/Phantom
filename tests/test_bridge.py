@@ -313,3 +313,21 @@ def test_large_text_preview_omitted_but_full_utf8_saved(
     assert result["ok"] is True
     assert output.read_bytes() == text
     assert carrier.read_bytes() == b"carrier"
+
+
+def test_bounded_image_preview_rejects_large_and_corrupt_data() -> None:
+    import io
+
+    from PIL import Image
+
+    from phantom.bridge import PREVIEW_MAX_SOURCE_BYTES, _image_preview
+
+    corrupt = _image_preview(b"\x89PNG\r\n\x1a\nnot an image")
+    assert corrupt == {"type": "PNG", "status": "unavailable", "reason": "decode"}
+    oversized = _image_preview(b"\xff\xd8\xff" + b"x" * PREVIEW_MAX_SOURCE_BYTES)
+    assert oversized == {"type": "JPEG", "status": "unavailable", "reason": "size"}
+    with io.BytesIO() as buffer:
+        Image.new("RGB", (5000, 4001)).save(buffer, format="PNG")
+        over_pixels = _image_preview(buffer.getvalue())
+    assert over_pixels == {"type": "PNG", "status": "unavailable", "reason": "size"}
+    assert _image_preview(b"%PDF-1.7\n") is None

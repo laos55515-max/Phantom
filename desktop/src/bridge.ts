@@ -64,9 +64,13 @@ export interface ExtractBase {
   kdf: string;
 }
 
+export type ImagePreview =
+  | { type: "JPEG" | "PNG"; status: "available"; data: string; width: number; height: number }
+  | { type: "JPEG" | "PNG"; status: "unavailable"; reason: "size" | "decode" };
+
 export type ExtractResponse = BridgeResult<
   | (ExtractBase & { kind: "text"; text?: string; textOmitted?: boolean })
-  | (ExtractBase & { kind: "file"; suggestedName: string; outputPath?: string })
+  | (ExtractBase & { kind: "file"; suggestedName: string; outputPath?: string; imagePreview?: ImagePreview })
 >;
 
 export interface ExampleInfo {
@@ -206,10 +210,24 @@ function mapExtract(raw: Record<string, unknown>): ExtractResponse {
       textOmitted: raw.text_omitted === true || raw.textOmitted === true ? true : undefined,
     };
   }
+  const rawPreview = raw.image_preview;
+  let imagePreview: ImagePreview | undefined;
+  if (isRecord(rawPreview) && (rawPreview.type === "JPEG" || rawPreview.type === "PNG")) {
+    if (rawPreview.status === "available" && rawPreview.mime === "image/jpeg" &&
+        typeof rawPreview.data === "string" && rawPreview.data.length <= 1_398_104 &&
+        /^[A-Za-z0-9+/]*={0,2}$/.test(rawPreview.data) &&
+        typeof rawPreview.width === "number" && Number.isInteger(rawPreview.width) && rawPreview.width > 0 && rawPreview.width <= 1024 &&
+        typeof rawPreview.height === "number" && Number.isInteger(rawPreview.height) && rawPreview.height > 0 && rawPreview.height <= 1024) {
+      imagePreview = { type: rawPreview.type, status: "available", data: rawPreview.data, width: rawPreview.width, height: rawPreview.height };
+    } else {
+      imagePreview = { type: rawPreview.type, status: "unavailable", reason: rawPreview.reason === "size" ? "size" : "decode" };
+    }
+  }
   return {
     ok: true,
     ...base,
     kind: "file",
+    imagePreview,
     suggestedName: String(raw.suggested_name ?? raw.suggestedName ?? "phantom-extracted.bin"),
     outputPath:
       typeof raw.output_path === "string"
