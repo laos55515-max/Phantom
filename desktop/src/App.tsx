@@ -5,6 +5,7 @@ import { I18nProvider, useI18n } from "./i18n";
 import { Sidebar, type Tab } from "./Sidebar";
 import { ExtractScreen } from "./screens/ExtractScreen";
 import { HideScreen } from "./screens/HideScreen";
+import { MetadataScreen } from "./screens/MetadataScreen";
 import { SettingsScreen } from "./screens/SettingsScreen";
 import { IconInfo } from "./icons";
 
@@ -50,6 +51,9 @@ function AppInner() {
           </div>
           <div hidden={tab !== "extract"}>
             <ExtractScreen handoff={extractHandoff} />
+          </div>
+          <div hidden={tab !== "metadata"}>
+            <MetadataScreen />
           </div>
           <div hidden={tab !== "settings"}>
             <SettingsScreen />

@@ -127,6 +127,7 @@ jobs:
         run: |
           python desktop/e2e/full_cycle.py --bridge dist/phantom-bridge --out cycle-linux-bridge.json
           python desktop/e2e/builtin_carrier_cycle.py --bridge dist/phantom-bridge
+          python desktop/e2e/metadata_cycle.py --bridge dist/phantom-bridge --out metadata-linux-bridge.json
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -146,6 +147,7 @@ jobs:
           test -n "$BRIDGE"
           python desktop/e2e/full_cycle.py --bridge "$BRIDGE" --out cycle-linux-deb.json
           python desktop/e2e/builtin_carrier_cycle.py --bridge "$BRIDGE"
+          python desktop/e2e/metadata_cycle.py --bridge "$BRIDGE" --out metadata-linux-deb.json
       - name: Screenshot the installed app (xvfb)
         continue-on-error: true
         run: |
@@ -166,6 +168,7 @@ jobs:
           cp desktop/src-tauri/target/release/bundle/deb/*.deb artifacts/deb/ 2>/dev/null || true
           cp desktop/src-tauri/target/release/bundle/appimage/*.AppImage artifacts/appimage/ 2>/dev/null || true
           cp cycle-linux-bridge.json cycle-linux-deb.json artifacts/ 2>/dev/null || true
+          cp metadata-linux-bridge.json metadata-linux-deb.json artifacts/ 2>/dev/null || true
           cp phantom-installed.png artifacts/ 2>/dev/null || true
       - name: Upload artifacts
         if: always()
@@ -199,6 +202,7 @@ jobs:
         run: |
           python desktop/e2e/full_cycle.py --bridge dist/phantom-bridge --out cycle-macos-bridge.json
           python desktop/e2e/builtin_carrier_cycle.py --bridge dist/phantom-bridge
+          python desktop/e2e/metadata_cycle.py --bridge dist/phantom-bridge --out metadata-macos-bridge.json
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -306,6 +310,7 @@ jobs:
           python desktop/e2e/builtin_carrier_cycle.py --bridge "$MOUNT_POINT/PHANTOM.app/Contents/MacOS/phantom-bridge" 2>&1 | tee -a verification-report.txt
           python desktop/e2e/long_text_cycle.py --bridge "$MOUNT_POINT/PHANTOM.app/Contents/MacOS/phantom-bridge" 2>&1 | tee -a verification-report.txt
           python desktop/e2e/image_preview_cycle.py --bridge "$MOUNT_POINT/PHANTOM.app/Contents/MacOS/phantom-bridge" 2>&1 | tee -a verification-report.txt
+          python desktop/e2e/metadata_cycle.py --bridge "$MOUNT_POINT/PHANTOM.app/Contents/MacOS/phantom-bridge" --out metadata-macos-dmg.json 2>&1 | tee -a verification-report.txt
           hdiutil detach "$MOUNT_POINT"
       - name: Screenshot the app (best effort)
         continue-on-error: true
@@ -321,6 +326,7 @@ jobs:
           mkdir -p artifacts
           cp PHANTOM-aarch64.dmg PHANTOM-aarch64.dmg.sha256 artifacts/ 2>/dev/null || true
           cp cycle-macos-bridge.json cycle-macos-dmg.json artifacts/ 2>/dev/null || true
+          cp metadata-macos-bridge.json metadata-macos-dmg.json artifacts/ 2>/dev/null || true
           cp verification-report.txt artifacts/ 2>/dev/null || true
           cp phantom-macos.png artifacts/ 2>/dev/null || true
       - name: Upload artifacts
@@ -358,6 +364,7 @@ jobs:
         run: |
           python desktop/e2e/full_cycle.py --bridge dist/phantom-bridge.exe --out cycle-windows-bridge.json
           python desktop/e2e/builtin_carrier_cycle.py --bridge dist/phantom-bridge.exe
+          python desktop/e2e/metadata_cycle.py --bridge dist/phantom-bridge.exe --out metadata-windows-bridge.json
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -381,6 +388,7 @@ jobs:
           echo "installed bridge: $($bridge.FullName)"
           python desktop/e2e/full_cycle.py --bridge $bridge.FullName --out cycle-windows-msi.json
           python desktop/e2e/builtin_carrier_cycle.py --bridge $bridge.FullName
+          python desktop/e2e/metadata_cycle.py --bridge $bridge.FullName --out metadata-windows-msi.json
       - name: Collect artifacts
         if: always()
         run: |
@@ -388,6 +396,7 @@ jobs:
           Copy-Item desktop\src-tauri\target\release\bundle\msi\*.msi artifacts\ -ErrorAction SilentlyContinue
           Copy-Item desktop\src-tauri\target\release\bundle\nsis\*.exe artifacts\ -ErrorAction SilentlyContinue
           Copy-Item cycle-windows-bridge.json,cycle-windows-msi.json artifacts\ -ErrorAction SilentlyContinue
+          Copy-Item metadata-windows-bridge.json,metadata-windows-msi.json artifacts\ -ErrorAction SilentlyContinue
       - name: Upload artifacts
         if: always()
         uses: actions/upload-artifact@v4

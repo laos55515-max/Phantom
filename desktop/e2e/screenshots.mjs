@@ -116,5 +116,27 @@ for (const theme of ["dark", "light"]) {
   });
 }
 
+// 10–11) Metadata — grouped report with the safe default preview, then the verified copy.
+await shoot("10-metadata-report-dark", { language: "ru", theme: "dark" }, async (page) => {
+  await page.getByRole("button", { name: "Метаданные" }).click();
+  const [chooser] = await Promise.all([
+    page.waitForEvent("filechooser"),
+    page.getByRole("button", { name: "Открыть файл…" }).click(),
+  ]);
+  await chooser.setFiles(`${repoRoot}/src/phantom/resources/example_carrier.png`);
+  await page.getByRole("heading", { name: "Перед сохранением" }).waitFor();
+});
+await shoot("11-metadata-result-light", { language: "en", theme: "light" }, async (page) => {
+  await page.getByRole("button", { name: "Metadata" }).click();
+  const [chooser] = await Promise.all([
+    page.waitForEvent("filechooser"),
+    page.getByRole("button", { name: "Open a file…" }).click(),
+  ]);
+  await chooser.setFiles(`${repoRoot}/src/phantom/resources/example_carrier.png`);
+  await page.getByRole("heading", { name: "Before saving" }).waitFor();
+  await page.getByRole("button", { name: "Save cleaned copy…" }).click();
+  await page.getByText("Cleaned copy saved").waitFor();
+});
+
 await browser.close();
 console.log(`\n${shots.length} screenshots → ${outDir}`);

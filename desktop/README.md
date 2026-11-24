@@ -7,16 +7,20 @@ readable), same AES-256-GCM / Argon2id primitives, same `phantom.core.api`
 calls. This folder is deliberately separate from the CustomTkinter app and
 from the SwiftUI experiments.
 
-Stage one ships exactly one finished scenario, end to end: **hide a PDF inside
-a PNG — and extract the same PDF back, byte for byte**. Everything else
-arrives after this path is verified on real machines.
+Stage one ships the hide/extract scenario end to end — **hide a PDF inside a
+PNG and extract the same PDF back, byte for byte** — and the **Metadata** tab:
+inspect a PNG, WAV or FLAC, see what it carries grouped by category, and save a
+verified cleaned copy without touching the original. The Metadata tab uses the
+same `phantom.metadata` policy as the CustomTkinter app (`inspect_path`,
+`default_selection`, `plan`, `clean`), reached through the sidecar; the frozen
+bridge now bundles that module instead of excluding it.
 
 ## Layout
 
 ```
 desktop/
 ├── src/                    React 18 + TS frontend (Vite)
-│   ├── screens/            HideScreen · ExtractScreen · SettingsScreen
+│   ├── screens/            HideScreen · ExtractScreen · MetadataScreen · SettingsScreen
 │   ├── bridge.ts           UI ↔ sidecar glue (+ a clearly-labelled browser demo)
 │   ├── i18n-dict.ts        Українська · English · Русский (key parity enforced by tests)
 │   └── …                   DropZone, password field with strength meter, …
@@ -32,7 +36,12 @@ desktop/
 ```
 
 The Python side of the contract lives in `src/phantom/bridge.py` — a stdio
-JSON-lines protocol, one request per line, one response per line.
+JSON-lines protocol, one request per line, one response per line. The Metadata
+tab uses three commands: `metadata_inspect` (report + safe default selection +
+plan), `metadata_plan` (re-reads the file, then previews a selection) and
+`metadata_clean` (writes a staged, verified copy and refuses to replace the
+source with `source_overwrite`, or a credential-bearing file with
+`signed_media`).
 
 ### Security rules (enforced in code)
 
@@ -43,6 +52,10 @@ JSON-lines protocol, one request per line, one response per line.
   code). `PHANTOM_BRIDGE_DEBUG=1` adds a traceback — still never on stdout.
 - File payloads are extracted to the user-chosen path with `0600` permissions,
   never via a temp file in the clear.
+- The metadata source is only ever opened for reading. The cleaned copy is
+  staged next to the destination, its pixels or PCM samples are compared with
+  the source, and it is published with one rename; a path that resolves to the
+  source is refused before anything is read, in the shell and again in the core.
 - The UI wipes the password from component state after the hide/save job
   completes; it is never persisted anywhere.  Screens stay mounted (they are
   only hidden), so anything typed or picked survives a trip to Settings or a
@@ -93,6 +106,16 @@ python desktop/e2e/full_cycle.py --bridge dist/phantom-bridge --out cycle.json
 Expected: every step `PASS`, including
 `extracted PDF is byte-identical (SHA-256)`.
 
+```bash
+python desktop/e2e/metadata_cycle.py --bridge dist/phantom-bridge --out metadata.json
+```
+
+Expected: `33/33 checks passed` — a PNG with GPS and orientation, a WAV and a
+FLAC with tags, the source byte-identical after every clean, identical pixels and
+PCM samples, a refused source overwrite and a refused C2PA-signed file. If the
+sidecar was frozen without `phantom.metadata`, the first inspect fails: that is
+the check that the module really ships.
+
 ## Verify the frontend behavior
 
 ```bash
@@ -106,7 +129,12 @@ node e2e/layout_check.mjs --base http://127.0.0.1:4173 [--out screenshots]
 in file and text mode, in light and dark themes, and fails unless the
 primary button is fully on-screen in every case.  It also checks the carrier
 gate: «Выберите картинку или аудио» before any carrier is chosen (no capacity
-verdict yet), the capacity bar only after one is probed.
+verdict yet), the capacity bar only after one is probed. The Metadata tab has
+its own 980×720 scenarios: the grouped list, the live remove/keep preview and
+the save button (both themes); a mocked IPC run where the save dialog returns
+the source and the UI must refuse without calling `metadata_clean`; and a
+credential-bearing file whose plan is not allowed, with the refusal explained
+and the button disabled.
 
 `App.test.tsx` covers the draft contract: type text / pick a PDF → open
 Settings → switch language → come back → same data; and the persistent draft
@@ -126,6 +154,10 @@ that job fails the build — screenshots are capture, this one is a gate.
 
 ## Known limits of this stage
 
+- The browser demo shows a synthetic metadata report and simulates the clean;
+  only the Tauri app reads and writes real files.
+- The Metadata tab cleans PNG, WAV and FLAC only — the same formats the core
+  inspector accepts, detected by contents rather than by extension.
 - No wiping of the source file after embedding (the Python core supports it;
   the shell does not expose it yet).
 - The Extract screen shows text payloads inline; file payloads require a save

@@ -6,6 +6,37 @@ All notable changes to PHANTOM are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added — metadata inspection and cleaning in PHANTOM Desktop (Tauri)
+
+- A fourth tab, **Metadata**, opens PNG, WAV and FLAC files through the
+  existing `phantom.metadata` policy: every field is grouped by category
+  (personal, descriptive, technical, rights, provenance, unknown), with derived
+  views marked and protected rows carrying the reason they stay.
+- The safe personal selection is the core's `default_selection`; the preview
+  before saving is the core's `plan`, re-read from the file, listing what will
+  be removed, what will be kept and what was selected but is protected.
+- Saving goes through the system dialog and calls `clean`. The source is only
+  read: the copy is staged, its decoded pixels or PCM samples are compared with
+  the source, the chunk CRCs are checked for PNG, and the copy is published with
+  one rename. The tab shows the result, the untouched source hash, the removed
+  and kept counts, and the decoded-content verdict.
+- A destination that resolves to the source is refused with
+  `source_overwrite` in the shell and again in the core. A file carrying a
+  C2PA/JUMBF content credential is inspected but never rewritten: the tab
+  explains the `signed_media` refusal instead of failing after the dialog.
+- Three bridge commands (`metadata_inspect`, `metadata_plan`,
+  `metadata_clean`) keep the shell thin; the PyInstaller sidecar now collects
+  `phantom.metadata` instead of excluding it, so the packaged app really has
+  the cleaner.
+- Texts in Ukrainian, Russian and English, including the core's `meta.*`
+  reason/value/category keys, with a test enforcing that every key exists in
+  all three languages.
+- Automated checks: bridge tests for a PNG with GPS and orientation, WAV and
+  FLAC with tags, source immutability, identical pixels/samples and both
+  refusals; `desktop/e2e/metadata_cycle.py` runs the same scenario through a
+  frozen bridge; the 980×720 layout check covers the grouped list, the preview,
+  the sticky save button, the overwrite refusal and the credential refusal.
+
 ### Fixed — browser demo verification
 
 - Verification is unavailable in the browser demo instead of reporting a

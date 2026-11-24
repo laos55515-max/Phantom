@@ -77,6 +77,19 @@ def test_pyinstaller_spec_targets_the_package_layout() -> None:
     assert "app.py" in spec
 
 
+def test_desktop_sidecar_bundles_the_metadata_module() -> None:
+    """The Tauri shell's Metadata tab is useless if the frozen bridge drops it.
+
+    The module was excluded while the desktop app had no metadata surface.  The
+    spec must now collect it — including the lazily imported Pillow/soundfile
+    paths in ``phantom.metadata.integrity`` — and the exclude list must not
+    silently take it away again.
+    """
+    spec = (ROOT / "desktop" / "phantom-bridge.spec").read_text(encoding="utf-8")
+    assert 'collect_submodules("phantom.metadata")' in spec
+    assert '"phantom.metadata"' not in spec.split("excludes=")[1].split("]")[0]
+
+
 def test_no_virtualenv_or_build_output_is_committed() -> None:
     ignore = (ROOT / ".gitignore").read_text(encoding="utf-8")
     for pattern in (".venv/", "build/", "dist/", "__pycache__/"):

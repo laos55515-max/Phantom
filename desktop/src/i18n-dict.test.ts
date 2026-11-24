@@ -1,5 +1,14 @@
 import { describe, expect, it } from "vitest";
 import { dictionaries, SUPPORTED_LANGUAGES } from "./i18n-dict";
+import ukLocale from "../../src/phantom/locales/uk.json";
+import enLocale from "../../src/phantom/locales/en.json";
+import ruLocale from "../../src/phantom/locales/ru.json";
+
+const PYTHON_LOCALES: Record<string, Record<string, string>> = {
+  uk: ukLocale,
+  en: enLocale,
+  ru: ruLocale,
+};
 
 describe("i18n dictionaries", () => {
   const [first, ...rest] = SUPPORTED_LANGUAGES;
@@ -40,6 +49,20 @@ describe("i18n dictionaries", () => {
     }
   });
 
+  it("defines every meta.* key the Python core can emit, in the core's own words", () => {
+    // The core sends a locale key for a structured reason ("kept by policy"), a
+    // prose value ("12 bytes") and every category/format/provenance label.  A
+    // missing key would show a raw identifier inside a translated card, so the
+    // desktop dictionaries carry the same strings the Tkinter panel uses.
+    for (const language of SUPPORTED_LANGUAGES) {
+      const locale = PYTHON_LOCALES[language];
+      for (const [key, value] of Object.entries(locale)) {
+        if (!key.startsWith("meta.")) continue;
+        expect(dictionaries[language][key], `${language}:${key}`).toBe(value);
+      }
+    }
+  });
+
   it("defines every err.* key the Python core can emit", () => {
     const coreCodes = [
       "wrong_password_or_no_data",
@@ -59,6 +82,8 @@ describe("i18n dictionaries", () => {
       "audio_format",
       "audio_silence",
       "signed_media",
+      "metadata",
+      "metadata_conflict",
       "internal",
     ];
     for (const language of SUPPORTED_LANGUAGES) {

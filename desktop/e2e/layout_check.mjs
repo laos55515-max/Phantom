@@ -216,6 +216,186 @@ for (const theme of ["dark", "light"]) {
   await context.close();
 }
 
+// --------------------------------------------------------------- metadata tab
+// The Metadata tab at exactly 980×720: the save button must stay on screen while
+// the grouped field list scrolls, the preview must name removals and keeps, and
+// the overwrite attempt must be refused in the real (non-demo) code path.
+const METADATA_FIELDS = [
+  { key: "png.gps.0x0001", label: "GPSLatitudeRef", value: "N", category: "personal", container: "GPS", removable: true, derived: false, reason: "", reason_key: "", reason_params: {}, value_key: "", value_params: {}, size: 1, truncated: false },
+  { key: "png.gps.0x0002", label: "GPSLatitude", value: "50, 27, 0", category: "personal", container: "GPS", removable: true, derived: false, reason: "", reason_key: "", reason_params: {}, value_key: "", value_params: {}, size: 9, truncated: false },
+  { key: "png.gps.coordinates", label: "GPS coordinates", value: "50.450000, 30.516667", category: "personal", container: "GPS", removable: false, derived: true, reason: "derived", reason_key: "meta.reason.gps_derived", reason_params: {}, value_key: "", value_params: {}, size: 20, truncated: false },
+  { key: "png.text.tEXt.Comment", label: "Comment", value: "kitchen wifi", category: "personal", container: "tEXt", removable: true, derived: false, reason: "", reason_key: "", reason_params: {}, value_key: "", value_params: {}, size: 12, truncated: false },
+  { key: "png.exif.0x0112", label: "Orientation", value: "6", category: "technical", container: "eXIf/0th", removable: false, derived: false, reason: "kept by policy", reason_key: "meta.reason.kept_by_policy", reason_params: {}, value_key: "", value_params: {}, size: 2, truncated: false },
+  { key: "png.exif.0x8298", label: "Copyright", value: "(c) 2024 Ada", category: "rights", container: "eXIf/0th", removable: false, derived: false, reason: "kept by policy", reason_key: "meta.reason.kept_by_policy", reason_params: {}, value_key: "", value_params: {}, size: 12, truncated: false },
+  { key: "png.text.tEXt.Title", label: "Title", value: "Holiday", category: "descriptive", container: "tEXt", removable: false, derived: false, reason: "kept by policy", reason_key: "meta.reason.kept_by_policy", reason_params: {}, value_key: "", value_params: {}, size: 7, truncated: false },
+  { key: "png.chunk.prVt", label: "Unknown chunk prVt", value: "17 bytes", category: "unknown", container: "container", removable: false, derived: false, reason: "unknown data", reason_key: "meta.reason.unknown_data", reason_params: {}, value_key: "meta.value.bytes", value_params: { size: "17" }, size: 17, truncated: false },
+];
+const METADATA_DEFAULT = ["png.gps.0x0001", "png.gps.0x0002", "png.text.tEXt.Comment"];
+const METADATA_REPORT = {
+  path: "/mock/holiday.png",
+  format: "png",
+  size_bytes: 2048,
+  sha256: "a".repeat(64),
+  counts: { total: 7, personal: 3, descriptive: 1, technical: 1, rights: 1, provenance: 0, unknown: 1, removable: 3 },
+  derived_counts: { total: 1, personal: 1, unknown: 0 },
+  technical: { width: "300", height: "300", mode: "RGB" },
+  technical_summary: { width: "300", height: "300", resolution: "300x300" },
+  checksum_ok: true,
+  warnings: [],
+  fields: METADATA_FIELDS,
+  chunks: [{ kind: "IHDR", offset: 8, size: 13, checksum_ok: true, note: "" }],
+  provenance: { state: "none", detected: false, manifests: [], signed: false, details: [] },
+  removable: ["png.gps.0x0001", "png.gps.0x0002", "png.text.tEXt.Comment"],
+};
+function metadataPlanFor(selection) {
+  const remove = METADATA_FIELDS.filter((f) => selection.includes(f.key) && f.removable && !f.derived);
+  const blocked = METADATA_FIELDS.filter((f) => selection.includes(f.key) && !f.removable && !f.derived);
+  const keep = METADATA_FIELDS.filter((f) => !f.derived && !remove.includes(f));
+  return { allowed: true, reason: "", remove, keep, blocked, warnings: [] };
+}
+
+async function openMetadata(page) {
+  await page.getByRole("button", { name: "Метаданные" }).click();
+  await page.getByRole("button", { name: "Открыть файл…" }).click();
+}
+
+// Demo mode: the whole tab, grouped list, live preview, result — both themes.
+for (const theme of ["dark", "light"]) {
+  const context = await browser.newContext({ viewport: VIEWPORT });
+  await context.addInitScript((settings) => {
+    window.localStorage.setItem("phantom.settings.draft", JSON.stringify(settings));
+  }, { language: "ru", theme });
+  const page = await context.newPage();
+  await page.goto(base, { waitUntil: "networkidle" });
+  const [chooser] = await Promise.all([
+    page.waitForEvent("filechooser"),
+    openMetadata(page),
+  ]);
+  await chooser.setFiles(EXAMPLE_CARRIER);
+  const fail = (msg) => results.push({ name: `metadata-${theme}`, ok: false, detail: msg });
+  await page.getByRole("heading", { name: "Перед сохранением" }).waitFor();
+  for (const label of ["Личные данные", "Технические", "Права и авторство", "Описательные", "Неизвестные"]) {
+    if ((await page.getByRole("heading", { name: label }).count()) !== 1) fail(`group ${label} missing`);
+  }
+  const orientation = page.getByRole("checkbox", { name: "Orientation (eXIf/0th)" });
+  if (!(await orientation.isDisabled())) fail("orientation checkbox is not protected");
+  if ((await page.getByText(/Будет удалено: 4/).count()) !== 1) fail("preview does not list removals");
+  if ((await page.getByText(/Останется: 6/).count()) !== 1) fail("preview does not list keeps");
+  const save = page.getByRole("button", { name: "Сохранить очищенную копию…" });
+  if (await save.isDisabled()) fail("save button disabled with a safe default selection");
+  await save.scrollIntoViewIfNeeded();
+  const box = await save.boundingBox();
+  if (!box || box.y < 0 || box.y + box.height > VIEWPORT.height || box.x < 0 || box.x + box.width > VIEWPORT.width) {
+    fail(`save button clipped: ${JSON.stringify(box)}`);
+  }
+  await page.getByRole("checkbox", { name: "Comment (tEXt)" }).uncheck();
+  await page.getByText(/Будет удалено: 3/).waitFor();
+  await save.click();
+  await page.getByText("Очищенная копия сохранена").waitFor();
+  if ((await page.getByText(/Оригинал не изменён/).count()) !== 1) fail("result does not prove the source unchanged");
+  if ((await page.getByText("Пиксели совпадают с оригиналом побайтово").count()) !== 1) fail("result does not prove pixels");
+  const again = page.getByRole("button", { name: "Очистить другой файл" });
+  const againBox = await again.boundingBox();
+  if (!againBox || againBox.y + againBox.height > VIEWPORT.height) fail("result action is outside the viewport");
+  await page.screenshot({ path: `${arg("out", "screenshots")}/layout-metadata-${theme}.png` });
+  if (!results.some((row) => row.name === `metadata-${theme}`)) {
+    results.push({ name: `metadata-${theme}`, ok: true, detail: "groups, preview, save and result at 980x720" });
+  }
+  await context.close();
+}
+
+// Real code path with mocked Tauri IPC: the save dialog returns the source path,
+// so the UI must refuse before the core is ever asked to clean.
+{
+  const context = await browser.newContext({ viewport: VIEWPORT });
+  await context.addInitScript((fixture) => {
+    window.localStorage.setItem("phantom.settings.draft", JSON.stringify({ language: "ru", theme: "dark" }));
+    window.__META_CALLS__ = [];
+    window.__TAURI_INTERNALS__ = {
+      metadata: { currentWindow: { label: "main" }, currentWebview: { label: "main" } },
+      transformCallback: () => 1,
+      unregisterCallback: () => undefined,
+      invoke: async (command, args) => {
+        if (command === "app_info") return { app: "2.1.0", core: "2.1.0", name: "PHANTOM" };
+        if (command === "pick_file") return { path: "/mock/holiday.png", name: "holiday.png", size_bytes: 2048 };
+        if (command === "save_file") return "/mock/holiday.png"; // the user picks the original
+        if (command === "bridge_call") {
+          window.__META_CALLS__.push(args.request);
+          if (args.request.cmd === "metadata_inspect") {
+            return { ok: true, report: fixture.report, default_selection: fixture.defaultSelection,
+              plan: { allowed: true, reason: "", remove: fixture.report.fields.filter((f) => fixture.defaultSelection.includes(f.key)),
+                keep: fixture.report.fields.filter((f) => !fixture.defaultSelection.includes(f.key)), blocked: [], warnings: [] } };
+          }
+          if (args.request.cmd === "metadata_plan") {
+            return { ok: true, report: fixture.report, plan: fixture.plan };
+          }
+          if (args.request.cmd === "metadata_clean") return { ok: false, error: { code: "internal", message: "must not be called", detail: null } };
+        }
+        return 1;
+      },
+    };
+  }, { report: METADATA_REPORT, defaultSelection: METADATA_DEFAULT, plan: metadataPlanFor(METADATA_DEFAULT) });
+  const page = await context.newPage();
+  await page.goto(base, { waitUntil: "networkidle" });
+  await page.getByRole("button", { name: "Метаданные" }).click();
+  await page.getByRole("button", { name: "Открыть файл…" }).click();
+  await page.getByRole("heading", { name: "Перед сохранением" }).waitFor();
+  const save = page.getByRole("button", { name: "Сохранить очищенную копию…" });
+  await save.click();
+  await page.getByRole("alert").waitFor();
+  const refused = await page.getByText(/Выходной файл совпадает с оригиналом/).count();
+  const calls = await page.evaluate(() => window.__META_CALLS__.map((request) => request.cmd));
+  const box = await save.boundingBox();
+  if (refused !== 1) results.push({ name: "metadata-overwrite", ok: false, detail: "refusal message missing" });
+  else if (calls.includes("metadata_clean")) results.push({ name: "metadata-overwrite", ok: false, detail: "the core was asked to overwrite the source" });
+  else if (!box || box.y + box.height > VIEWPORT.height) results.push({ name: "metadata-overwrite", ok: false, detail: "save button clipped" });
+  else results.push({ name: "metadata-overwrite", ok: true, detail: `refused before clean; calls=${calls.join(",")}` });
+  await page.screenshot({ path: `${arg("out", "screenshots")}/layout-metadata-overwrite.png` });
+  await context.close();
+}
+
+// A credential-bearing file: the plan is not allowed, so save is disabled and
+// the refusal is explained in place instead of failing after the dialog.
+{
+  const signed = {
+    ...METADATA_REPORT,
+    path: "/mock/signed.png",
+    provenance: { state: "unverified", detected: true, manifests: ["urn:uuid:demo"], signed: true, details: [] },
+  };
+  const context = await browser.newContext({ viewport: VIEWPORT });
+  await context.addInitScript((report) => {
+    window.localStorage.setItem("phantom.settings.draft", JSON.stringify({ language: "ru", theme: "dark" }));
+    window.__TAURI_INTERNALS__ = {
+      metadata: { currentWindow: { label: "main" }, currentWebview: { label: "main" } },
+      transformCallback: () => 1,
+      unregisterCallback: () => undefined,
+      invoke: async (command) => {
+        if (command === "app_info") return { app: "2.1.0", core: "2.1.0", name: "PHANTOM" };
+        if (command === "pick_file") return { path: "/mock/signed.png", name: "signed.png", size_bytes: 2048 };
+        if (command === "bridge_call") {
+          return { ok: true, report, default_selection: [],
+            plan: { allowed: false, reason: "signed_media", remove: [], keep: report.fields, blocked: [], warnings: [] } };
+        }
+        return 1;
+      },
+    };
+  }, signed);
+  const page = await context.newPage();
+  await page.goto(base, { waitUntil: "networkidle" });
+  await page.getByRole("button", { name: "Метаданные" }).click();
+  await page.getByRole("button", { name: "Открыть файл…" }).click();
+  await page.getByText("Очистка недоступна для этого файла").waitFor();
+  const save = page.getByRole("button", { name: "Сохранить очищенную копию…" });
+  const disabled = await save.isDisabled();
+  const explained = await page.getByText(/C2PA\/JUMBF/).count();
+  const box = await save.boundingBox();
+  if (!disabled || explained < 1) results.push({ name: "metadata-credential", ok: false, detail: `disabled=${disabled} explained=${explained}` });
+  else if (!box || box.y + box.height > VIEWPORT.height) results.push({ name: "metadata-credential", ok: false, detail: "save button clipped" });
+  else results.push({ name: "metadata-credential", ok: true, detail: "refusal explained, save disabled, button on screen" });
+  await page.screenshot({ path: `${arg("out", "screenshots")}/layout-metadata-credential.png` });
+  await context.close();
+}
+
 await browser.close();
 
 let failed = 0;

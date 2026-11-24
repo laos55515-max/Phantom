@@ -178,6 +178,9 @@ async fn pick_file(kind: String, media: String) -> Result<Option<Value>, String>
             ("carrier", "audio") => {
                 dialog = dialog.add_filter("WAV / FLAC audio", &["wav", "flac"]);
             }
+            ("carrier", "metadata") => {
+                dialog = dialog.add_filter("PNG, WAV or FLAC", &["png", "wav", "flac"]);
+            }
             ("secret", _) => {}
             _ => {}
         }
@@ -200,6 +203,9 @@ async fn save_file(suggested_name: String, kind: String) -> Result<Option<String
             "image" => dialog.add_filter("PNG image", &["png"]),
             "audio" => dialog.add_filter("WAV / FLAC audio", &["wav", "flac"]),
             "text" => dialog.add_filter("Text file", &["txt"]),
+            // The Metadata tab saves a cleaned copy in the source's own format, so
+            // the dialog offers the three containers the inspector understands.
+            "metadata" => dialog.add_filter("PNG, WAV or FLAC", &["png", "wav", "flac"]),
             _ => dialog,
         };
         Ok(dialog.save_file().map(|path| path.to_string_lossy().into_owned()))

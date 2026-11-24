@@ -1,10 +1,10 @@
 import { useRef } from "react";
 import { isDemoMode } from "./bridge";
 import { useI18n } from "./i18n";
-import { IconExtract, IconHide, IconMoon, IconSettings, IconSun } from "./icons";
+import { IconExtract, IconHide, IconMetadata, IconMoon, IconSettings, IconSun } from "./icons";
 import mark from "./phantom-mark.png";
 
-export type Tab = "hide" | "extract" | "settings";
+export type Tab = "hide" | "extract" | "metadata" | "settings";
 
 export function Sidebar({
   tab,
@@ -21,6 +21,7 @@ export function Sidebar({
   const items: Array<{ id: Tab; label: string; icon: JSX.Element }> = [
     { id: "hide", label: t("nav.hide"), icon: <IconHide size={18} /> },
     { id: "extract", label: t("nav.extract"), icon: <IconExtract size={18} /> },
+    { id: "metadata", label: t("nav.metadata"), icon: <IconMetadata size={18} /> },
     { id: "settings", label: t("nav.settings"), icon: <IconSettings size={18} /> },
   ];
 
