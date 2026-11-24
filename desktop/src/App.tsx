@@ -11,6 +11,7 @@ import { IconInfo } from "./icons";
 function AppInner() {
   const { language, t } = useI18n();
   const [tab, setTab] = useState<Tab>("hide");
+  const [extractHandoff, setExtractHandoff] = useState<{ path: string } | null>(null);
   const [version, setVersion] = useState("2.1.0");
 
   useEffect(() => {
@@ -45,10 +46,10 @@ function AppInner() {
               switch.  Nothing here touches persistent storage — the draft
               lives and dies in this process, passwords included. */}
           <div hidden={tab !== "hide"}>
-            <HideScreen onGoExtract={() => setTab("extract")} />
+            <HideScreen onGoExtract={(path) => { setExtractHandoff({ path }); setTab("extract"); }} />
           </div>
           <div hidden={tab !== "extract"}>
-            <ExtractScreen />
+            <ExtractScreen handoff={extractHandoff} />
           </div>
           <div hidden={tab !== "settings"}>
             <SettingsScreen />

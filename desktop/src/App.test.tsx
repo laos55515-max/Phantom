@@ -28,6 +28,7 @@ vi.mock("./bridge", async (importOriginal) => {
         secret: { name: "example_payload.pdf", sizeBytes: 809 },
       })),
       hide: vi.fn(),
+      verifyContainer: vi.fn(),
       appInfo: vi.fn(async () => ({ app: "2.1.0", core: "2.1.0", name: "PHANTOM" })),
     },
   };
@@ -133,4 +134,33 @@ describe("App — in-memory draft survives a trip to Settings and a language swi
     const draft = storedDraft();
     expect(Object.keys(draft).sort()).toEqual(["language", "savedAt", "theme"]);
   });
+});
+
+it("opens the actual saved container in Extract and clears the old password", async () => {
+  pickFileMock.mockResolvedValue({ path: "/old/input.png", name: "input.png", sizeBytes: 500 });
+  vi.mocked(bridge.saveFile).mockResolvedValue("/downloads/user-choice.png");
+  vi.mocked(bridge.hide).mockResolvedValue({
+    ok: true, outputPath: "/downloads/actual-output.wav", kind: "audio", payloadKind: "file",
+    payloadBytes: 100, userBytes: 90, capacityBytes: 30000, verified: true, kdf: "argon2id",
+  });
+  render(<App />);
+  fireEvent.click(screen.getByRole("button", { name: "Извлечь" }));
+  fireEvent.click(screen.getByRole("button", { name: /Выбрать файл/ }));
+  await screen.findByText("input.png");
+  fireEvent.change(screen.getByLabelText("Пароль"), { target: { value: "old-password-123456" } });
+  fireEvent.click(screen.getByRole("button", { name: "Скрыть" }));
+  fireEvent.click(screen.getByRole("button", { name: /Попробовать на примере/ }));
+  fireEvent.change(document.querySelector("#hide-password")!, { target: { value: "new-password-123456" } });
+  fireEvent.click(screen.getByRole("button", { name: "Спрятать" }));
+  await screen.findByText("/downloads/actual-output.wav");
+  fireEvent.click(screen.getByRole("button", { name: "Открыть в «Извлечь»" }));
+  expect(await screen.findByText("actual-output.wav")).toBeTruthy();
+  expect(document.querySelector("#extract-password")).toHaveProperty("value", "");
+  expect(screen.queryByText("input.png")).toBeNull();
+  expect(screen.getByRole("button", { name: "Проверить с паролем" })).toHaveProperty("disabled", true);
+  vi.mocked(bridge.verifyContainer).mockResolvedValue({ ok: true, verified: true });
+  fireEvent.change(document.querySelector("#extract-password")!, { target: { value: "separately-entered-password" } });
+  fireEvent.click(screen.getByRole("button", { name: "Проверить с паролем" }));
+  await screen.findByText("Контейнер проверен");
+  expect(bridge.verifyContainer).toHaveBeenCalledWith({ carrierPath: "/downloads/actual-output.wav", password: "separately-entered-password" });
 });

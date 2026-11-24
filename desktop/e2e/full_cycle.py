@@ -126,6 +126,22 @@ def main() -> int:
         hide_ok = hide.get("ok") is True and hide.get("verified") is True
         record("hide PDF into PNG (self-verified)", hide_ok, f"verified={hide.get('verified')} kdf={hide.get('profile_label')}")
 
+        verify_request = {"cmd": "extract", "carrier_path": str(hidden), "password": DEMO_PASSWORD, "mode": "verify"}
+        before_files = {p.name for p in tmp.iterdir()}
+        verification = bridge.call(verify_request)
+        record("verify container without disclosure or file writes",
+               verification.get("ok") is True and verification.get("verified") is True
+               and set(verification) <= {"ok", "verified", "elapsed_ms"}
+               and {p.name for p in tmp.iterdir()} == before_files)
+        bad_password = bridge.call({**verify_request, "password": DEMO_PASSWORD + "-wrong"})
+        record("verify rejects wrong password", bad_password.get("ok") is False)
+        no_payload = bridge.call({**verify_request, "carrier_path": str(carrier)})
+        record("verify rejects ordinary PNG", no_payload.get("ok") is False)
+        damaged = tmp / "damaged.png"
+        damaged.write_bytes(hidden.read_bytes()[:128])
+        corrupt = bridge.call({**verify_request, "carrier_path": str(damaged)})
+        record("verify rejects damaged container", corrupt.get("ok") is False)
+
         info = bridge.call(
             {"cmd": "extract", "carrier_path": str(hidden), "password": DEMO_PASSWORD, "mode": "info"}
         )
