@@ -72,8 +72,21 @@ jobs:
                          'first_paint_ms': data.get('first_paint_ms'),
                          'worst_gap_ms': data.get('worst_gap_ms'), 'worst_gap': worst}
                   rows.append(row)
-                  print('::notice::' + json.dumps(row, ensure_ascii=True), flush=True)
           (output / 'summary.json').write_text(json.dumps(rows, indent=2))
+          # GitHub limits annotations per step; four summaries cover all 12 rows.
+          for tree in ('base', 'merge'):
+              for capture in (True, False):
+                  group = [row for row in rows if row['label'].startswith(tree + '-')
+                           and row['capture_requested'] == capture]
+                  compact = [{**{k: row[k] for k in ('label', 'first_paint_ms', 'worst_gap_ms',
+                                                       'exit', 'capture')},
+                              'start_ms': (row['worst_gap'] or {}).get('start_ms'),
+                              'end_ms': (row['worst_gap'] or {}).get('end_ms')}
+                             for row in group]
+                  print('::notice::' + json.dumps(compact), flush=True)
+                  worst = max(group, key=lambda row: row['worst_gap_ms'] or 0)
+                  print('::notice::worst stacks ' + worst['label'] + ' ' +
+                        json.dumps(worst['worst_gap']), flush=True)
           if any(row['exit'] != 0 for row in rows):
               raise SystemExit('At least one measurement failed; inspect the artifacts')
           PY
