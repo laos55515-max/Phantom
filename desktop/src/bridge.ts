@@ -451,10 +451,9 @@ const demoBridge: PhantomBridge = {
       kdf: "argon2id",
     };
   },
-  async verifyContainer({ password }) {
-    await demoSleep(400);
-    if (password.length < 12) return { ok: false, error: { code: "invalid_password", message: "too short (demo)", detail: null } };
-    return { ok: true, verified: true };
+  async verifyContainer() {
+    // Browser demo cannot inspect the real carrier; never report a fake success.
+    return { ok: false, error: { code: "invalid_input", message: "Verification requires the desktop app", detail: null } };
   },
   async pickFile(kind, media) {
     return new Promise((resolve) => {

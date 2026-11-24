@@ -6,6 +6,11 @@ All notable changes to PHANTOM are recorded here. The format follows
 
 ## [Unreleased]
 
+### Fixed — browser demo verification
+
+- Verification is unavailable in the browser demo instead of reporting a
+  simulated success; the user is directed to the desktop application.
+
 ### Added — verify a container after sending
 
 - Open the freshly saved carrier directly in Extract without carrying a password.

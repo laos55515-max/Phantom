@@ -130,7 +130,7 @@ export function ExtractScreen({ handoff = null }: { handoff?: { path: string } |
   }
 
   async function verifyContainer() {
-    if (!carrier || password.length < 12 || phase === "busy" || busy) return;
+    if (isDemoMode() || !carrier || password.length < 12 || phase === "busy" || busy) return;
     const current = generation.current;
     setPhase("busy");
     setVerified(false);
@@ -315,10 +315,15 @@ export function ExtractScreen({ handoff = null }: { handoff?: { path: string } |
             {phase === "busy" ? t("hide.busy", { sec: 0 }) : t("extract.submit")}
           </button>
           <button type="button" className="btn btn-ghost btn-big" onClick={() => void verifyContainer()}
-            disabled={!carrier || password.length < 12 || phase === "busy" || busy}>
+            disabled={isDemoMode() || !carrier || password.length < 12 || phase === "busy" || busy}
+            aria-describedby={isDemoMode() ? "verify-demo-hint" : undefined}>
             {t("extract.verify")}
           </button>
         </div>
+      ) : null}
+
+      {isDemoMode() && phase !== "done" ? (
+        <p className="hint" id="verify-demo-hint">{t("extract.verify_desktop_only")}</p>
       ) : null}
 
       {phase === "done" && outcome ? (
