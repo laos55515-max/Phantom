@@ -17,8 +17,9 @@ from PyInstaller.utils.hooks import collect_all, collect_submodules
 ROOT = os.path.abspath(".")
 SRC = os.path.join(ROOT, "src")
 LOCALES = os.path.join(SRC, "phantom", "locales")
+RESOURCES = os.path.join(SRC, "phantom", "resources")
 
-datas = []
+datas = [(RESOURCES, "phantom/resources")]
 binaries = []
 hiddenimports = []
 

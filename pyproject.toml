@@ -43,7 +43,7 @@ package-dir = { "" = "src" }
 where = ["src"]
 
 [tool.setuptools.package-data]
-phantom = ["locales/*.json", "resources/*"]
+phantom = ["locales/*.json", "resources/*", "resources/carriers/*.png"]
 
 [tool.pytest.ini_options]
 minversion = "7.0"
