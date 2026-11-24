@@ -66,6 +66,7 @@ from PIL import Image, ImageOps
 
 from phantom import __version__
 from phantom.core import api
+from phantom.core import carriers as builtin_carriers
 from phantom.core import constants as C
 from phantom.core.errors import (
     InternalError,
@@ -399,6 +400,60 @@ def cmd_example_hide(request: dict[str, Any]) -> dict[str, Any]:
     )
 
 
+def cmd_builtin_carriers(_: dict[str, Any]) -> dict[str, Any]:
+    probes = builtin_carriers.list_builtin_carriers()
+    items = [{**_carrier_fields(p), "builtin": True} for p in probes]
+    max_cap = max((p.capacity.payload_bytes for p in probes), default=0)
+    return _ok(count=len(items), max_capacity_bytes=max_cap, carriers=items)
+
+
+def cmd_select_carrier(request: dict[str, Any]) -> dict[str, Any]:
+    secret_path = request.get("secret_path")
+    text = request.get("text")
+    required_bytes_raw = request.get("required_bytes")
+
+    if secret_path is not None and not isinstance(secret_path, str):
+        raise InvalidInput("secret_path must be a string")
+    if text is not None and not isinstance(text, str):
+        raise InvalidInput("text must be a string")
+    if required_bytes_raw is not None and (
+        isinstance(required_bytes_raw, bool) or not isinstance(required_bytes_raw, int)
+    ):
+        raise InvalidInput("required_bytes must be an integer")
+
+    exclude_path = request.get("exclude_path")
+    if exclude_path is not None and not isinstance(exclude_path, str):
+        raise InvalidInput("exclude_path must be a string")
+
+    offset = request.get("offset", 0)
+    if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
+        raise InvalidInput("offset must be a non-negative integer")
+
+    req_bytes = builtin_carriers.estimate_required_bytes(
+        secret_path=secret_path,
+        text=text,
+        required_bytes=required_bytes_raw,
+    )
+    selection = builtin_carriers.select_builtin_carrier(
+        required_bytes=req_bytes,
+        exclude_path=exclude_path,
+        offset=offset,
+    )
+    carrier_payload = (
+        {**_carrier_fields(selection.carrier), "builtin": True}
+        if selection.carrier is not None
+        else None
+    )
+    return _ok(
+        fits=selection.fits,
+        required_bytes=selection.required_bytes,
+        max_capacity_bytes=selection.max_capacity_bytes,
+        suitable_count=selection.suitable_count,
+        index=selection.index,
+        carrier=carrier_payload,
+    )
+
+
 _COMMANDS = {
     "version": cmd_version,
     "probe": cmd_probe,
@@ -406,6 +461,8 @@ _COMMANDS = {
     "extract": cmd_extract,
     "example_info": cmd_example_info,
     "example_hide": cmd_example_hide,
+    "builtin_carriers": cmd_builtin_carriers,
+    "select_carrier": cmd_select_carrier,
 }
 
 def _log_line(cmd: str, ok: bool, code: str | None = None) -> None:
