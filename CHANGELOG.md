@@ -37,6 +37,24 @@ All notable changes to PHANTOM are recorded here. The format follows
   frozen bridge; the 980×720 layout check covers the grouped list, the preview,
   the sticky save button, the overwrite refusal and the credential refusal.
 
+### Fixed — two cleans could publish over each other
+
+- Publication used an unconditional `os.replace`: two verified copies racing for
+  the same free name could each replace the other, and the loser was still
+  reported as a success. With `overwrite=False` the staged copy is now published
+  with one conditional filesystem operation — `link(2)` on POSIX (fails with
+  `EEXIST`), `os.rename` on Windows (refuses an existing name), and an `O_EXCL`
+  copy on filesystems without hard links. The target appears complete, an
+  occupied name raises `output_exists`, and the existing file keeps its bytes.
+- `overwrite=True` still uses the unconditional rename, but only for the exact
+  name the caller asked to replace; an extension-rewritten destination is
+  published exclusively.
+- Regression: two cleans of different PNGs are synchronized inside the
+  publication primitive. Exactly one succeeds, the other returns
+  `output_exists`, the file on disk matches the winner's verified copy, both
+  sources are unchanged. The packaged-bridge cycle runs the same race across two
+  processes and now has 42 checks.
+
 ### Fixed — a cleaned copy could replace the wrong file
 
 - The cleaner replaced the requested extension with the real format's only

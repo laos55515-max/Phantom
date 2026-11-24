@@ -14,6 +14,7 @@ import soundfile
 from PIL import Image
 
 import metadata_samples as samples
+from phantom.core import files as fsutil
 from phantom.core.errors import (
     ErrorCode,
     MetadataConflictError,
@@ -552,6 +553,97 @@ def test_a_long_unicode_output_name_works(tmp_path: Path) -> None:
 
     assert Path(outcome.output).exists()
     assert os.path.basename(outcome.output) == name
+
+
+def test_exclusive_publish_never_replaces_an_existing_file(tmp_path: Path) -> None:
+    staged = tmp_path / "staged.bin"
+    staged.write_bytes(b"the verified copy")
+    target = tmp_path / "target.bin"
+    target.write_bytes(b"someone else's file")
+
+    with pytest.raises(FileExistsError):
+        fsutil.publish_staged_exclusive(str(staged), str(target))
+
+    assert target.read_bytes() == b"someone else's file"
+    assert staged.read_bytes() == b"the verified copy", "the caller still owns the staged copy"
+
+    target.unlink()
+    fsutil.publish_staged_exclusive(str(staged), str(target))
+
+    assert target.read_bytes() == b"the verified copy"
+    assert not staged.exists()
+
+
+def test_two_cleans_publishing_to_one_path_have_exactly_one_winner(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two verified copies racing for the same free name: one success, one refusal.
+
+    The barrier is inside the publication primitive, after both cleans have
+    passed every earlier check and verified their rewrite — the exact moment the
+    old unconditional rename let both of them replace the file, and the loser
+    still looked successful.
+    """
+    first = tmp_path / "first.png"
+    first.write_bytes(
+        samples.png_bytes(text={"Comment": "first"}, pixels=samples.texture(seed=1))
+    )
+    second = tmp_path / "second.png"
+    second.write_bytes(
+        samples.png_bytes(text={"Comment": "second"}, pixels=samples.texture(seed=2))
+    )
+    originals = {first: _sha(first), second: _sha(second)}
+    target = tmp_path / "shared.png"
+    barrier = threading.Barrier(2, timeout=30)
+    publish = fsutil.publish_staged_exclusive
+
+    def synchronized(staged: str, destination: str) -> None:
+        barrier.wait()  # both cleans are one call away from publishing
+        publish(staged, destination)
+
+    monkeypatch.setattr(fsutil, "publish_staged_exclusive", synchronized)
+
+    outcomes: list[cleaner.CleaningOutcome] = []
+    refusals: list[OutputExistsError] = []
+    unexpected: list[Exception] = []
+
+    def clean_one(source: Path) -> None:
+        try:
+            outcomes.append(
+                cleaner.clean(
+                    str(source),
+                    str(target),
+                    frozenset({"png.text.tEXt.Comment"}),
+                )
+            )
+        except OutputExistsError as exc:
+            refusals.append(exc)
+        except Exception as exc:  # noqa: BLE001 - collected to report the real cause
+            unexpected.append(exc)
+
+    threads = [
+        threading.Thread(target=clean_one, args=(first,)),
+        threading.Thread(target=clean_one, args=(second,)),
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=60)
+
+    assert not any(thread.is_alive() for thread in threads)
+    assert unexpected == []
+    assert len(outcomes) == 1, f"expected exactly one success, got {len(outcomes)}"
+    assert len(refusals) == 1, f"expected exactly one output_exists, got {len(refusals)}"
+
+    winner = outcomes[0]
+    assert winner.output == str(target)
+    assert _sha(target) == winner.output_sha256, "the published bytes are the winner's"
+    assert np.array_equal(_pixels(target), _pixels(Path(winner.source)))
+    assert refusals[0].detail == str(target)
+    assert refusals[0].params["path"] == str(target)
+    for source, digest in originals.items():
+        assert _sha(source) == digest, "neither source may change"
+    assert _staged_siblings(tmp_path) == []
 
 
 def test_a_second_pass_finds_nothing_personal_left(tmp_path: Path) -> None:

@@ -11,7 +11,9 @@ The order of operations is the safety property:
 5. decode both files and compare the pixels or the PCM samples;
 6. re-scan the staged file and confirm that the selected fields are gone and the
    protected ones are still there;
-7. publish the staged file onto the destination with one rename, or discard it.
+7. publish the staged file with one conditional operation — a rename when the
+   caller explicitly asked to replace that name, a create/link that cannot
+   replace anything otherwise — or discard it.
 
 A failure at any step leaves the destination exactly as it was, which is the only
 version of this feature worth shipping.
@@ -279,7 +281,11 @@ def clean(
     # Resolution happens after the format is known: checking the path the user
     # typed (``photo.wav``) is not checking the path that would be written
     # (``photo.png``), and that difference used to destroy the source.
+    requested = output
     output = resolve_output(source, output, fmt, overwrite=overwrite)
+    # Replacing is allowed only for the exact name the caller asked to replace;
+    # an extension-rewritten destination is published exclusively.
+    may_replace = overwrite and output == requested
     before = inspector.report_from_bytes(source, data, fmt)
     progress(Stage.SCANNING, 1, 4)
     if before.provenance.detected:
@@ -308,11 +314,12 @@ def clean(
             raise MetadataError("the rewritten PNG fails its own CRC check")
     check_cancel(cancel)
     progress(Stage.VERIFYING, 3, 4)
-    # Ask again immediately before the rename: a file created while the copy was
+    # Ask again immediately before publishing: a file created while the copy was
     # being verified must not be replaced, and a hard link created meanwhile must
-    # not turn the destination into the source.
+    # not turn the destination into the source.  Even this check can lose a race,
+    # so the publication itself is conditional (see ``_publish``).
     output = resolve_output(source, output, fmt, overwrite=overwrite)
-    published = _publish(output, cleaned)
+    published = _publish(output, cleaned, replace=may_replace)
     # ``after`` describes the bytes that now live in ``published``: reporting it
     # under the source name made "analysis" and "file" name different files in the
     # same card, and the user could not tell which one carried the numbers.
@@ -380,17 +387,30 @@ def _confirm_removal(decision: CleaningPlan, after: MetadataReport) -> None:
         )
 
 
-def _publish(output: str, cleaned: bytes) -> str:
-    """Write the staged file, then rename it into place — or leave nothing behind."""
+def _publish(output: str, cleaned: bytes, *, replace: bool) -> str:
+    """Write the staged file, then publish it — or leave nothing behind.
+
+    With ``replace=False`` the publication is conditional at the filesystem
+    level, so two cleans that reach this point together cannot both succeed and
+    neither can replace a file that appeared while it was verifying.
+    """
     staged = fsutil.staged_path(output, suffix=".metadata")
+    published = fsutil.published_path(output, staged)
     try:
         with open(staged, "wb") as handle:
             handle.write(cleaned)
             handle.flush()
             os.fsync(handle.fileno())
-        published = fsutil.published_path(output, staged)
-        fsutil.publish_staged(staged, published)
+        if replace:
+            fsutil.publish_staged(staged, published)
+        else:
+            fsutil.publish_staged_exclusive(staged, published)
         return published
+    except FileExistsError as exc:
+        _discard_quietly(staged)
+        raise OutputExistsError(
+            "the destination already exists", detail=published
+        ).with_params(path=published) from exc
     except PhantomError:
         _discard_quietly(staged)
         raise

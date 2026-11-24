@@ -117,11 +117,13 @@ Expected: every step `PASS`, including
 python desktop/e2e/metadata_cycle.py --bridge dist/phantom-bridge --out metadata.json
 ```
 
-Expected: `39/39 checks passed` — a PNG with GPS and orientation, a WAV and a
+Expected: `42/42 checks passed` — a PNG with GPS and orientation, a WAV and a
 FLAC with tags, the source byte-identical after every clean, identical pixels and
 PCM samples, a refused source overwrite, a refused existing destination, the two
 reproduced extension cases (`photo.png` → `photo.wav`, `existing.wav` with
-`existing.png` present) and a refused C2PA-signed file. If the
+`existing.png` present), two packaged processes racing for one destination
+(exactly one succeeds, the other gets `output_exists`) and a refused
+C2PA-signed file. If the
 sidecar was frozen without `phantom.metadata`, the first inspect fails: that is
 the check that the module really ships.
 

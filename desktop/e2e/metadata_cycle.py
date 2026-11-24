@@ -13,7 +13,13 @@ does and verifies the scenario from the product brief:
 4. a file with a content credential is inspected but refused with
    ``signed_media`` and no output is created;
 5. WAV and FLAC with tags are inspected and cleaned; every PCM sample survives;
-6. data that is not PNG, WAV or FLAC is refused by content, not by name.
+6. data that is not PNG, WAV or FLAC is refused by content, not by name;
+7. destinations are resolved after the real format is known: ``photo.wav`` for a
+   PNG is refused with ``source_overwrite``, an occupied ``existing.png`` with
+   ``output_exists``, and both sources stay byte-identical;
+8. two packaged processes cleaning different PNGs into one free name: exactly
+   one publishes, the other gets ``output_exists``, the file on disk is the
+   winner's verified copy.
 
 Usage::
 
@@ -34,6 +40,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import threading
 import zlib
 from fractions import Fraction
 from pathlib import Path
@@ -102,8 +109,8 @@ def keys(fields: list[dict]) -> set[str]:
 
 
 # --------------------------------------------------------------------------- fixtures
-def texture(width: int = 64, height: int = 48) -> np.ndarray:
-    rng = np.random.default_rng(11)
+def texture(width: int = 64, height: int = 48, *, seed: int = 11) -> np.ndarray:
+    rng = np.random.default_rng(seed)
     yy, xx = np.mgrid[0:height, 0:width]
     base = (np.sin(xx / 5.0) * 40 + np.cos(yy / 7.0) * 25 + 128).astype(np.int16)
     channels = [
@@ -119,7 +126,7 @@ def png_chunk(kind: bytes, payload: bytes) -> bytes:
     return struct.pack(">I", len(payload)) + body + struct.pack(">I", zlib.crc32(body) & 0xFFFFFFFF)
 
 
-def png_with_gps(path: Path) -> Path:
+def png_with_gps(path: Path, *, seed: int = 11) -> Path:
     """A PNG with a camera dossier: GPS, orientation, author, comment, copyright."""
     exif = Image.Exif()
     exif[0x010F] = "PhantomCam"
@@ -139,7 +146,7 @@ def png_with_gps(path: Path) -> Path:
     info.add_text("Comment", "shot at home, kitchen wifi")
     info.add_text("Title", "Holiday")
     info.add_text("Copyright", "(c) 2024 Ada Lovelace")
-    with Image.fromarray(texture(), "RGB") as image:
+    with Image.fromarray(texture(seed=seed), "RGB") as image:
         image.save(path, format="PNG", pnginfo=info, exif=exif, compress_level=1)
     return path
 
@@ -473,7 +480,61 @@ def main() -> int:
             str(resolved.get("error", resolved.get("output"))),
         )
 
-        # --- 7. unsupported content ------------------------------------------
+        # --- 8. two packaged processes racing for one destination -------------
+        shared = cases / "shared.png"
+        race_a = png_with_gps(cases / "race-a.png", seed=21)
+        race_b = png_with_gps(cases / "race-b.png", seed=22)
+        race_before = {race_a: sha256_hex(race_a), race_b: sha256_hex(race_b)}
+        race: list[dict] = []
+        race_lock = threading.Lock()
+
+        def clean_for_the_same_name(source: Path) -> None:
+            response = bridge.call(
+                {
+                    "cmd": "metadata_clean",
+                    "path": str(source),
+                    "output_path": str(shared),
+                    "selection": default_selection,
+                }
+            )
+            with race_lock:
+                race.append(response)
+
+        runners = [
+            threading.Thread(target=clean_for_the_same_name, args=(race_a,)),
+            threading.Thread(target=clean_for_the_same_name, args=(race_b,)),
+        ]
+        for runner in runners:
+            runner.start()
+        for runner in runners:
+            runner.join(timeout=600)
+
+        succeeded = [item for item in race if item.get("ok") is True]
+        refused = [
+            item
+            for item in race
+            if item.get("error", {}).get("code") == "output_exists"
+        ]
+        check(
+            "two packaged cleans racing for one name: exactly one wins",
+            len(race) == 2 and len(succeeded) == 1 and len(refused) == 1,
+            f"ok={len(succeeded)} output_exists={len(refused)}",
+        )
+        winner = succeeded[0] if len(succeeded) == 1 else {}
+        check(
+            "the raced file holds the winner's verified copy",
+            shared.is_file()
+            and winner.get("output_sha256") == sha256_hex(shared),
+            str(winner.get("output")),
+        )
+        check(
+            "the loser wrote nothing and both sources are unchanged",
+            not any(thread.is_alive() for thread in runners)
+            and all(sha256_hex(source) == digest for source, digest in race_before.items())
+            and not [item for item in cases.iterdir() if item.name.startswith(".")],
+        )
+
+        # --- 9. unsupported content ------------------------------------------
         disguised = work / "photo.png"
         disguised.write_text("not a PNG, only a misleading name\n", encoding="utf-8")
         unsupported = bridge.call({"cmd": "metadata_inspect", "path": str(disguised)})

@@ -6,6 +6,11 @@ Two jobs:
 and then ``os.replace``d, so a crash or a full disk never leaves a half-written
 stego file and never destroys the original (D8).
 
+``publish_staged_exclusive`` — publish only while the name is free: ``link(2)``
+on POSIX, ``rename`` on Windows, an ``O_EXCL`` copy elsewhere.  Two verified
+copies racing for one destination produce one file and one ``EEXIST``, never a
+silent replacement.
+
 ``staged_path``/``publish_staged`` — the same idea one level up, for the verify
 step: a writer that must be *checked* before it may replace anything writes into
 a staged sibling, the check runs on that file, and only a passing check publishes
@@ -20,10 +25,12 @@ snapshots or journaling: the UI says exactly that (D7).
 from __future__ import annotations
 
 import contextlib
+import errno
 import hashlib
 import logging
 import os
 import secrets
+import shutil
 import stat
 import subprocess
 import sys
@@ -311,6 +318,78 @@ def publish_staged(staged: str, target: str) -> None:
     except OSError as exc:
         raise PhantomIOError("cannot publish the output file", detail=str(exc)) from exc
     _fsync_dir(os.path.dirname(os.path.abspath(target)) or ".")
+
+
+#: Errors that mean "this filesystem cannot hard-link" rather than "something
+#: is wrong": exFAT/SMB/FUSE mounts are the common ones.  Only those fall back to
+#: an exclusive copy, which still never replaces an existing file.
+_NO_HARD_LINK: Final = frozenset({errno.EPERM, errno.EOPNOTSUPP, errno.ENOSYS, errno.EXDEV})
+
+
+def publish_staged_exclusive(staged: str, target: str) -> None:
+    """Publish ``staged`` as ``target`` only while the name is still free.
+
+    :func:`publish_staged` uses ``os.replace``: atomic, but unconditional.  Two
+    verified copies that reach the last step at the same time would each replace
+    the other, and the loser would still be reported as a success.  Here the
+    "is it free?" decision is made by the filesystem, in the same operation that
+    makes the file visible:
+
+    * POSIX: ``link(2)`` the staged file onto the target; it fails with
+      ``EEXIST`` instead of replacing, and the target appears with the complete
+      contents in one step;
+    * Windows: ``os.rename``, which refuses an existing destination;
+    * filesystems without hard links: a copy created with ``O_EXCL``, so the
+      name is still never taken from an existing file.
+
+    Raises ``FileExistsError`` when the destination is occupied; the existing
+    file is untouched and the caller decides what to do with the staged copy.
+    """
+    directory = os.path.dirname(os.path.abspath(target)) or "."
+    try:
+        _fsync_file(staged)
+        if os.name == "nt":
+            os.rename(staged, target)
+        else:
+            try:
+                os.link(staged, target)
+            except OSError as exc:
+                if exc.errno not in _NO_HARD_LINK:
+                    raise
+                _copy_exclusive(staged, target)
+            else:
+                _unlink_staged_after_publish(staged)
+    except FileExistsError:
+        raise
+    except OSError as exc:
+        raise PhantomIOError("cannot publish the output file", detail=str(exc)) from exc
+    _fsync_dir(directory)
+
+
+def _copy_exclusive(staged: str, target: str) -> None:
+    """Fallback for filesystems without hard links; never replaces an existing file."""
+    descriptor = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o666)
+    try:
+        with os.fdopen(descriptor, "wb") as out, open(staged, "rb") as src:
+            shutil.copyfileobj(src, out, 1 << 20)
+            out.flush()
+            os.fsync(out.fileno())
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(target)
+        raise
+    _unlink_staged_after_publish(staged)
+
+
+def _unlink_staged_after_publish(staged: str) -> None:
+    try:
+        os.unlink(staged)
+    except OSError as exc:
+        # The copy is published, but its verified bytes still sit in a hidden
+        # sibling.  A WipeError says exactly that instead of a silent leak.
+        raise WipeError(
+            "the staged copy could not be removed after publishing", detail=str(exc)
+        ) from exc
 
 
 def discard_staged(staged: str) -> None:

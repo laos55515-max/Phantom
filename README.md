@@ -271,9 +271,11 @@ extension-rewritten name is never replaced, because the file it would hit was
 never shown to the user. In PHANTOM Desktop the save dialog is reopened with the
 resolved path, so what the dialog confirms is exactly what is written.
 
-Publishing is atomic: the copy is written to a staged sibling, verified, and only
-then renamed onto the destination; on any failure the staged file is discarded
-and the destination is untouched.
+Publishing is atomic and conditional: the copy is written to a staged sibling,
+verified, and only then published in one step that cannot replace an existing
+file (`link(2)` on POSIX, `rename` on Windows). If two cleans race for the same
+free name, exactly one publishes and the other reports `output_exists`; on any
+failure the staged file is discarded and the destination is untouched.
 
 Verification after cleaning is mandatory, not advisory:
 
