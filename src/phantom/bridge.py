@@ -34,8 +34,8 @@ Requests
 ``{"cmd": "extract", "carrier_path", "password", "mode": "info"}``
     → decrypts, verifies and returns metadata.  Text payloads return ``text``
     (capped at ``MAX_RETURNED_TEXT``); file payloads return ``suggested_name``
-    (sanitised) without any bytes, so the caller can ask the user for a
-    destination and call again with ``mode="save_file"``.
+    and, for bounded JPEG/PNG inputs, an optional resized image preview. Original
+    bytes are never returned; ``save_file`` writes the original verified payload.
 
 ``{"cmd": "extract", "carrier_path", "password", "mode": "save_file",
    "output_path": str}``
@@ -48,13 +48,18 @@ Requests
 
 from __future__ import annotations
 
+import base64
+import io
 import json
 import os
 import sys
 import time
 import traceback
+import warnings
 from pathlib import Path
 from typing import Any
+
+from PIL import Image, ImageOps
 
 from phantom import __version__
 from phantom.core import api
@@ -167,6 +172,58 @@ def _carrier_fields(probe: api.CarrierProbe) -> dict[str, Any]:
     return out
 
 
+# Preview limits are independent of the core's container/file-size limits.
+# Only a small, freshly encoded image crosses IPC; the original stays in memory.
+PREVIEW_MAX_SOURCE_BYTES = 8 * 1024 * 1024
+PREVIEW_MAX_PIXELS = 20_000_000
+PREVIEW_MAX_EDGE = 1024
+PREVIEW_MAX_BYTES = 1024 * 1024
+
+
+def _image_preview(data: bytes) -> dict[str, Any] | None:
+    if data.startswith(b"\xff\xd8\xff"):
+        kind = "JPEG"
+    elif data.startswith(b"\x89PNG\r\n\x1a\n"):
+        kind = "PNG"
+    else:
+        return None
+    result: dict[str, Any] = {"type": kind, "status": "unavailable"}
+    if len(data) > PREVIEW_MAX_SOURCE_BYTES:
+        result["reason"] = "size"
+        return result
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", Image.DecompressionBombWarning)
+            with Image.open(io.BytesIO(data), formats=[kind]) as source:
+                width, height = source.size
+                if width <= 0 or height <= 0 or width * height > PREVIEW_MAX_PIXELS:
+                    result["reason"] = "size"
+                    return result
+                # Decode only after checking dimensions. Strip metadata and alpha;
+                # the preview is not the original and is never used for saving.
+                source.load()
+                oriented = ImageOps.exif_transpose(source)
+                oriented.thumbnail((PREVIEW_MAX_EDGE, PREVIEW_MAX_EDGE), Image.Resampling.LANCZOS)
+                if "A" in oriented.getbands() or "transparency" in oriented.info:
+                    rgba = oriented.convert("RGBA")
+                    preview = Image.new("RGB", rgba.size, "white")
+                    preview.paste(rgba, mask=rgba.getchannel("A"))
+                else:
+                    preview = oriented.convert("RGB")
+                with io.BytesIO() as out:
+                    preview.save(out, format="JPEG", quality=80, optimize=True)
+                    encoded = out.getvalue()
+                if len(encoded) > PREVIEW_MAX_BYTES:
+                    result["reason"] = "size"
+                    return result
+                result.update(status="available", mime="image/jpeg", width=preview.width,
+                              height=preview.height, data=base64.b64encode(encoded).decode("ascii"))
+                return result
+    except Exception:  # noqa: BLE001 - preview is optional; decoding must never block saving
+        result["reason"] = "decode"
+        return result
+
+
 # --------------------------------------------------------------------------- commands
 
 def cmd_version(_: dict[str, Any]) -> dict[str, Any]:
@@ -272,6 +329,10 @@ def cmd_extract(request: dict[str, Any]) -> dict[str, Any]:
         "suggested_name": _suggested_name(payload),
         "duration_seconds": round(outcome.duration_seconds, 3),
     }
+    if payload.kind is PayloadKind.FILE:
+        preview = _image_preview(payload.data)
+        if preview is not None:
+            result["image_preview"] = preview
     if payload.kind is PayloadKind.TEXT:
         text_bytes = payload.data
         if len(text_bytes) <= MAX_RETURNED_TEXT:

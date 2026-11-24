@@ -1,7 +1,8 @@
 import { useState, type FormEvent } from "react";
-import { bridge, isDemoMode, type BridgeError, type FilePick } from "../bridge";
+import { bridge, isDemoMode, type BridgeError, type FilePick, type ImagePreview } from "../bridge";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { TextWorkspace } from "../TextWorkspace";
+import { ImageWorkspace } from "../ImageWorkspace";
 import { formatBytes } from "../format";
 import { DropZone } from "../DropZone";
 import { useI18n } from "../i18n";
@@ -29,7 +30,7 @@ interface AuditInfo {
 
 type ExtractOutcome =
   | { kind: "text"; text: string; textOmitted: boolean; audit: AuditInfo }
-  | { kind: "file"; suggestedName: string; audit: AuditInfo };
+  | { kind: "file"; suggestedName: string; imagePreview?: ImagePreview; audit: AuditInfo };
 
 export function ExtractScreen() {
   const { t } = useI18n();
@@ -45,9 +46,11 @@ export function ExtractScreen() {
   const [error, setError] = useState<BridgeError | null>(null);
   const [copied, setCopied] = useState(false);
   const [textExpanded, setTextExpanded] = useState(false);
+  const [imageExpanded, setImageExpanded] = useState(false);
 
   const reset = () => {
     setTextExpanded(false);
+    setImageExpanded(false);
     setCarrier(null);
     setPassword("");
     setOutcome(null);
@@ -92,7 +95,7 @@ export function ExtractScreen() {
     if (res.kind === "text") {
       setOutcome({ kind: "text", text: res.text ?? "", textOmitted: res.textOmitted === true, audit });
     } else {
-      setOutcome({ kind: "file", suggestedName: res.suggestedName, audit });
+      setOutcome({ kind: "file", suggestedName: res.suggestedName, imagePreview: res.imagePreview, audit });
     }
     // The password stays in memory only until the terminal action
     // (save-as completes or the screen is reset): the save step reuses it for
@@ -183,6 +186,12 @@ export function ExtractScreen() {
       {textExpanded && outcome?.kind === "text" && !outcome.textOmitted ? <TextWorkspace
         label={t("extract.text_label")} value={outcome.text} onClose={() => setTextExpanded(false)}
         actions={<>{textActions}{error ? <ErrorBanner error={error} /> : null}{savedPath ? <span className="file-meta">{t("extract.saved_as")} {savedPath}</span> : null}</>} /> : null}
+      {imageExpanded && outcome?.kind === "file" && outcome.imagePreview?.status === "available" ? <ImageWorkspace
+        name={outcome.suggestedName} src={`data:image/jpeg;base64,${outcome.imagePreview.data}`}
+        onClose={() => setImageExpanded(false)} onError={() => {
+          setImageExpanded(false);
+          setOutcome({ ...outcome, imagePreview: { type: outcome.imagePreview!.type, status: "unavailable", reason: "decode" } });
+        }} /> : null}
       <h1 className="screen-title">{t("extract.title")}</h1>
       <p className="screen-sub">{t("extract.sub")}</p>
 
@@ -275,6 +284,9 @@ export function ExtractScreen() {
                   <IconFile size={28} />
                 </div>
                 <div className="file-name">{outcome.suggestedName}</div>
+                {outcome.imagePreview ? <div className="file-meta">{outcome.imagePreview.type} · {fmt(outcome.audit.originalSize)}</div> : null}
+                {outcome.imagePreview?.status === "available" ? <button type="button" className="btn btn-ghost" onClick={() => setImageExpanded(true)}>{t("extract.show_image")}</button> : null}
+                {outcome.imagePreview?.status === "unavailable" ? <p className="hint" role="status">{t(outcome.imagePreview.reason === "size" ? "extract.image_size" : "extract.image_decode")}</p> : null}
                 <div className="mono" style={{ color: "var(--secondary)", overflowWrap: "anywhere" }}>
                   {t("extract.digest", { digest: outcome.audit.sha256 })}
                 </div>

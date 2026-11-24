@@ -6,6 +6,15 @@ All notable changes to PHANTOM are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added — extracted image preview in Tauri Desktop
+
+- Detect JPEG and PNG by contents, show file type, name and size, and open an
+  in-app aspect-preserving preview with Escape to close. The original is saved
+  unchanged via the verified extraction path.
+- The in-memory preview accepts at most 8 MiB and 20 million input pixels,
+  downsizes to 1024 pixels per edge and caps the encoded copy at 1 MiB. Large,
+  corrupt and unsupported files can still be saved without a preview.
+
 ### Added — long text editing and reading
 
 - Expand the text editor or extracted text into the application workspace,
