@@ -124,7 +124,9 @@ jobs:
           mkdir -p desktop/src-tauri/binaries
           cp dist/phantom-bridge desktop/src-tauri/binaries/phantom-bridge-x86_64-unknown-linux-gnu
       - name: Full PDF cycle (freshly frozen bridge)
-        run: python desktop/e2e/full_cycle.py --bridge dist/phantom-bridge --out cycle-linux-bridge.json
+        run: |
+          python desktop/e2e/full_cycle.py --bridge dist/phantom-bridge --out cycle-linux-bridge.json
+          python desktop/e2e/builtin_carrier_cycle.py --bridge dist/phantom-bridge
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -143,6 +145,7 @@ jobs:
           echo "installed bridge: $BRIDGE"
           test -n "$BRIDGE"
           python desktop/e2e/full_cycle.py --bridge "$BRIDGE" --out cycle-linux-deb.json
+          python desktop/e2e/builtin_carrier_cycle.py --bridge "$BRIDGE"
       - name: Screenshot the installed app (xvfb)
         continue-on-error: true
         run: |
@@ -193,7 +196,9 @@ jobs:
           mkdir -p desktop/src-tauri/binaries
           cp dist/phantom-bridge desktop/src-tauri/binaries/phantom-bridge-aarch64-apple-darwin
       - name: Full PDF cycle (freshly frozen bridge)
-        run: python desktop/e2e/full_cycle.py --bridge dist/phantom-bridge --out cycle-macos-bridge.json
+        run: |
+          python desktop/e2e/full_cycle.py --bridge dist/phantom-bridge --out cycle-macos-bridge.json
+          python desktop/e2e/builtin_carrier_cycle.py --bridge dist/phantom-bridge
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -298,6 +303,7 @@ jobs:
           echo "$ spctl -a -vvv -t execute (informational; ad-hoc is expected to be rejected)" | tee -a verification-report.txt
           spctl -a -vvv -t execute "$MOUNT_POINT/PHANTOM.app" 2>&1 | tee -a verification-report.txt || true
           python desktop/e2e/full_cycle.py --bridge "$MOUNT_POINT/PHANTOM.app/Contents/MacOS/phantom-bridge" --out cycle-macos-dmg.json 2>&1 | tee -a verification-report.txt
+          python desktop/e2e/builtin_carrier_cycle.py --bridge "$MOUNT_POINT/PHANTOM.app/Contents/MacOS/phantom-bridge" 2>&1 | tee -a verification-report.txt
           python desktop/e2e/long_text_cycle.py --bridge "$MOUNT_POINT/PHANTOM.app/Contents/MacOS/phantom-bridge" 2>&1 | tee -a verification-report.txt
           python desktop/e2e/image_preview_cycle.py --bridge "$MOUNT_POINT/PHANTOM.app/Contents/MacOS/phantom-bridge" 2>&1 | tee -a verification-report.txt
           hdiutil detach "$MOUNT_POINT"
@@ -349,7 +355,9 @@ jobs:
           New-Item -ItemType Directory -Force -Path desktop\src-tauri\binaries | Out-Null
           Copy-Item dist\phantom-bridge.exe desktop\src-tauri\binaries\phantom-bridge-x86_64-pc-windows-msvc.exe
       - name: Full PDF cycle (freshly frozen bridge)
-        run: python desktop/e2e/full_cycle.py --bridge dist/phantom-bridge.exe --out cycle-windows-bridge.json
+        run: |
+          python desktop/e2e/full_cycle.py --bridge dist/phantom-bridge.exe --out cycle-windows-bridge.json
+          python desktop/e2e/builtin_carrier_cycle.py --bridge dist/phantom-bridge.exe
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -372,6 +380,7 @@ jobs:
           if (-not $bridge) { throw "phantom-bridge.exe not found after installation" }
           echo "installed bridge: $($bridge.FullName)"
           python desktop/e2e/full_cycle.py --bridge $bridge.FullName --out cycle-windows-msi.json
+          python desktop/e2e/builtin_carrier_cycle.py --bridge $bridge.FullName
       - name: Collect artifacts
         if: always()
         run: |

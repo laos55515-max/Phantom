@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { bridge, isDemoMode, type BridgeError, type FilePick, type ProbeInfo } from "../bridge";
 import { DropZone } from "../DropZone";
 import { TextWorkspace } from "../TextWorkspace";
@@ -47,9 +47,16 @@ export function HideScreen({ onGoExtract }: { onGoExtract: (path: string) => voi
   const [exampleSecretName, setExampleSecretName] = useState("example-payload.pdf");
 
   const [media, setMedia] = useState<"image" | "audio">("image");
+  const [carrierMode, setCarrierMode] = useState<"auto" | "custom">("auto");
   const [carrier, setCarrier] = useState<ProbeInfo | null>(null);
   const [carrierError, setCarrierError] = useState<BridgeError | null>(null);
   const [carrierBusy, setCarrierBusy] = useState(false);
+  const [suitableCount, setSuitableCount] = useState(0);
+  const [builtinOverflow, setBuiltinOverflow] = useState<{
+    requiredBytes: number;
+    maxCapacityBytes: number;
+  } | null>(null);
+  const carrierReqSeq = useRef(0);
 
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
@@ -120,7 +127,103 @@ export function HideScreen({ onGoExtract }: { onGoExtract: (path: string) => voi
   const capacityBytes = isExample ? exampleCapacity : carrier?.capacityBytes ?? 0;
   const fits = capacityBytes > 0 && needBytes !== null && needBytes <= capacityBytes;
 
+  useEffect(() => {
+    if (content.kind !== "file" && content.kind !== "text") {
+      carrierReqSeq.current += 1;
+      setBuiltinOverflow(null);
+      setSuitableCount(0);
+      return;
+    }
+    if (media !== "image" || carrierMode !== "auto") {
+      setBuiltinOverflow(null);
+      return;
+    }
+    if (content.kind === "file" && userBytes === null) {
+      return;
+    }
+    let cancelled = false;
+    const seq = ++carrierReqSeq.current;
+    const req =
+      content.kind === "file"
+        ? { secretPath: content.path, requiredBytes: needBytes ?? undefined }
+        : { text: content.text };
+    const delayMs = content.kind === "text" ? 250 : 0;
+
+    const run = () => {
+      if (cancelled || carrierReqSeq.current !== seq) return;
+      setCarrierBusy(true);
+      bridge
+        .selectBuiltinCarrier(req)
+        .then((res) => {
+          if (cancelled || carrierReqSeq.current !== seq) return;
+          setCarrierBusy(false);
+          if (!res.ok) return;
+          setCarrierError(null);
+          setSuitableCount(res.suitableCount);
+          if (res.fits && res.carrier) {
+            setCarrier(res.carrier);
+            setBuiltinOverflow(null);
+          } else {
+            setCarrier(null);
+            setBuiltinOverflow({
+              requiredBytes: res.requiredBytes,
+              maxCapacityBytes: res.maxCapacityBytes,
+            });
+          }
+        })
+        .catch(() => {
+          if (!cancelled && carrierReqSeq.current === seq) setCarrierBusy(false);
+        });
+    };
+
+    if (delayMs > 0) {
+      const timerId = window.setTimeout(run, delayMs);
+      return () => {
+        cancelled = true;
+        window.clearTimeout(timerId);
+      };
+    }
+    run();
+    return () => {
+      cancelled = true;
+    };
+  }, [content, media, carrierMode, userBytes, needBytes]);
+
+  async function selectAnotherBuiltin() {
+    if (carrierBusy || (content.kind !== "file" && content.kind !== "text")) return;
+    const seq = ++carrierReqSeq.current;
+    setCarrierBusy(true);
+    setCarrierError(null);
+    const req =
+      content.kind === "file"
+        ? {
+            secretPath: content.path,
+            requiredBytes: needBytes ?? undefined,
+            excludeId: carrier?.builtinId,
+          }
+        : { text: content.text, excludeId: carrier?.builtinId };
+    const res = await bridge.selectBuiltinCarrier(req);
+    if (carrierReqSeq.current !== seq) return;
+    setCarrierBusy(false);
+    if (!res.ok) {
+      setCarrierError(res.error);
+      return;
+    }
+    setSuitableCount(res.suitableCount);
+    if (res.fits && res.carrier) {
+      setCarrier(res.carrier);
+      setBuiltinOverflow(null);
+    } else {
+      setCarrier(null);
+      setBuiltinOverflow({
+        requiredBytes: res.requiredBytes,
+        maxCapacityBytes: res.maxCapacityBytes,
+      });
+    }
+  }
+
   async function probeCarrier(file: FilePick) {
+    const seq = ++carrierReqSeq.current;
     setCarrierBusy(true);
     setCarrierError(null);
     const res = await bridge.probe({
@@ -128,8 +231,12 @@ export function HideScreen({ onGoExtract }: { onGoExtract: (path: string) => voi
       displayName: file.name,
       displaySize: file.sizeBytes ?? undefined,
     });
+    if (carrierReqSeq.current !== seq) return;
     setCarrierBusy(false);
     if (res.ok) {
+      setCarrierMode("custom");
+      setMedia(res.kind);
+      setBuiltinOverflow(null);
       setCarrier(res);
     } else {
       setCarrier(null);
@@ -143,16 +250,21 @@ export function HideScreen({ onGoExtract }: { onGoExtract: (path: string) => voi
     if (picked) setContent({ kind: "file", ...picked });
   }
 
-  async function pickCarrierFile() {
+  async function pickCarrierFile(filterMedia: "image" | "audio" | "any" = media) {
     setError(null);
-    const picked = await bridge.pickFile("carrier", media);
+    const picked = await bridge.pickFile("carrier", filterMedia);
     if (picked) await probeCarrier(picked);
   }
 
   function resetAll(keepCarrier: boolean) {
     setContent({ kind: "none" });
     setTextExpanded(false);
-    if (!keepCarrier) setCarrier(null);
+    if (!keepCarrier) {
+      setCarrier(null);
+      setCarrierMode("auto");
+    }
+    setBuiltinOverflow(null);
+    setSuitableCount(0);
     setPassword("");
     setDone(null);
     setError(null);
@@ -215,10 +327,11 @@ export function HideScreen({ onGoExtract }: { onGoExtract: (path: string) => voi
 
     setBusy(true);
     const isText = content.kind === "text";
+    const useBuiltin = Boolean(carrier?.builtin && carrier.builtinId);
     const res = isExample
       ? await bridge.hide({ carrierPath: "", outputPath, password, example: true })
       : await bridge.hide({
-          carrierPath: carrier!.path,
+          ...(useBuiltin ? { builtinCarrierId: carrier!.builtinId } : { carrierPath: carrier!.path }),
           outputPath,
           password,
           secretPath: content.kind === "file" ? content.path : undefined,
@@ -481,8 +594,15 @@ export function HideScreen({ onGoExtract }: { onGoExtract: (path: string) => voi
             <h2 className="section-label" style={{ margin: 0 }}>
               {t("hide.where")}
             </h2>
-            {carrier ? (
-              <button type="button" className="btn btn-subtle" onClick={() => setCarrier(null)}>
+            {carrier && !carrier.builtin ? (
+              <button
+                type="button"
+                className="btn btn-subtle"
+                onClick={() => {
+                  setCarrier(null);
+                  setCarrierMode("custom");
+                }}
+              >
                 {t("hide.carrier_change")}
               </button>
             ) : null}
@@ -501,6 +621,36 @@ export function HideScreen({ onGoExtract }: { onGoExtract: (path: string) => voi
             </div>
           ) : carrier ? (
             <div className="content-summary">
+              {carrier.builtin ? (
+                <div className="media-toggle" role="group" aria-label={t("hide.where")} style={{ marginBottom: 8 }}>
+                  <button
+                    type="button"
+                    className="media-option"
+                    aria-pressed={media === "image"}
+                    onClick={() => {
+                      setMedia("image");
+                      setCarrierMode("auto");
+                    }}
+                  >
+                    <IconImage size={16} />
+                    {t("hide.container_image")}
+                  </button>
+                  <button
+                    type="button"
+                    className="media-option"
+                    aria-pressed={media === "audio"}
+                    onClick={() => {
+                      carrierReqSeq.current += 1;
+                      setMedia("audio");
+                      setCarrierMode("custom");
+                      setCarrier(null);
+                    }}
+                  >
+                    <IconAudio size={16} />
+                    {t("hide.container_audio")}
+                  </button>
+                </div>
+              ) : null}
               <div className="file-glyph">
                 {carrier.kind === "image" ? <IconImage size={28} /> : <IconAudio size={28} />}
               </div>
@@ -510,9 +660,46 @@ export function HideScreen({ onGoExtract }: { onGoExtract: (path: string) => voi
               <div className="file-meta">
                 {fmt(carrier.sizeBytes)} · {carrier.description}
               </div>
-              {carrier.notices.length > 0 ? (
-                <p className="hint">{carrier.notices.join(" · ")}</p>
-              ) : null}
+              {carrier.builtin ? (
+                <>
+                  <p className="hint">{t("hide.builtin_auto_note")}</p>
+                  <div className="row" style={{ marginTop: "auto", gap: 8, flexWrap: "wrap" }}>
+                    <button
+                      type="button"
+                      className="btn btn-subtle"
+                      disabled={carrierBusy || suitableCount <= 1}
+                      onClick={() => void selectAnotherBuiltin()}
+                    >
+                      {t("hide.builtin_other")}
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-ghost"
+                      disabled={carrierBusy}
+                      onClick={() => void pickCarrierFile("any")}
+                    >
+                      {t("hide.builtin_choose_own")}
+                    </button>
+                  </div>
+                </>
+              ) : (
+                <>
+                  {carrier.notices.length > 0 ? (
+                    <p className="hint">{carrier.notices.join(" · ")}</p>
+                  ) : null}
+                  {media === "image" ? (
+                    <div className="row" style={{ marginTop: "auto" }}>
+                      <button
+                        type="button"
+                        className="btn btn-subtle"
+                        onClick={() => setCarrierMode("auto")}
+                      >
+                        {t("hide.builtin_back")}
+                      </button>
+                    </div>
+                  ) : null}
+                </>
+              )}
             </div>
           ) : (
             <>
@@ -521,7 +708,10 @@ export function HideScreen({ onGoExtract }: { onGoExtract: (path: string) => voi
                   type="button"
                   className="media-option"
                   aria-pressed={media === "image"}
-                  onClick={() => setMedia("image")}
+                  onClick={() => {
+                    setMedia("image");
+                    setCarrierMode("auto");
+                  }}
                 >
                   <IconImage size={16} />
                   {t("hide.container_image")}
@@ -530,12 +720,25 @@ export function HideScreen({ onGoExtract }: { onGoExtract: (path: string) => voi
                   type="button"
                   className="media-option"
                   aria-pressed={media === "audio"}
-                  onClick={() => setMedia("audio")}
+                  onClick={() => {
+                    setMedia("audio");
+                    setCarrierMode("custom");
+                  }}
                 >
                   <IconAudio size={16} />
                   {t("hide.container_audio")}
                 </button>
               </div>
+              {builtinOverflow ? (
+                <div className="banner banner-error" role="alert" style={{ marginBottom: 8 }}>
+                  <div className="banner-text">
+                    {t("hide.builtin_none_fits", {
+                      need: fmt(builtinOverflow.requiredBytes),
+                      max: fmt(builtinOverflow.maxCapacityBytes),
+                    })}
+                  </div>
+                </div>
+              ) : null}
               <DropZone
                 ariaLabel={t("hide.drop_title", {
                   kind: media === "image" ? t("hide.kind_image") : t("hide.kind_audio"),
@@ -549,9 +752,13 @@ export function HideScreen({ onGoExtract }: { onGoExtract: (path: string) => voi
                   })}
                 </div>
                 <div className="dropzone-hint">{t("hide.drop_hint")}</div>
-                <button type="button" className="btn btn-ghost" onClick={pickCarrierFile}>
+                <button
+                  type="button"
+                  className="btn btn-ghost"
+                  onClick={() => void pickCarrierFile(builtinOverflow ? "any" : media)}
+                >
                   {carrierBusy ? <IconSpinner size={16} className="spin" /> : null}
-                  {t("common.choose_file")}
+                  {builtinOverflow ? t("hide.builtin_choose_own") : t("common.choose_file")}
                 </button>
               </DropZone>
               {carrierError ? <ErrorBanner error={carrierError} /> : null}
@@ -562,6 +769,11 @@ export function HideScreen({ onGoExtract }: { onGoExtract: (path: string) => voi
 
       {(isExample || carrier) && needBytes !== null ? (
         <CapacityBar needBytes={needBytes} capacityBytes={capacityBytes} />
+      ) : builtinOverflow ? (
+        <CapacityBar
+          needBytes={builtinOverflow.requiredBytes}
+          capacityBytes={builtinOverflow.maxCapacityBytes}
+        />
       ) : !isExample && !carrier ? (
         <p className="carrier-hint" role="status">
           <IconImage size={16} aria-hidden />

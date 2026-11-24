@@ -56,18 +56,20 @@ async function scenario(name, { mode, theme, language, fillText }) {
     await page.getByRole("button", { name: language === "ru" ? /^Текст/ : /^Text/ }).click();
     await page.getByPlaceholder(language === "ru" ? /Впишите или вставьте текст/ : /Type or paste/).fill(fillText);
   }
-  await page.waitForTimeout(200);
+  await page.waitForTimeout(400);
 
-  // --- step 2: before the carrier is chosen, the hint must be there and no capacity verdict
-  const hintVisible = await page.getByText(language === "ru" ? "Выберите картинку или аудио" : "Choose a picture or audio").isVisible().catch(() => false);
-  const progressBefore = await page.getByRole("progressbar").count();
-  if (!hintVisible) fail("carrier hint not visible before a carrier is chosen");
-  if (progressBefore !== 0) fail("capacity bar shown before a carrier is probed");
+  // --- step 2: a built-in PNG is auto-selected and the capacity bar is shown
+  const progressAfterAuto = await page.getByRole("progressbar").count();
+  if (progressAfterAuto !== 1) fail("capacity bar not shown after built-in carrier auto-selection");
 
-  // --- step 3: now pick the carrier (evidence/worst-case layout)
+  // --- step 3: now pick a custom carrier via «Выбрать свой файл» (evidence/worst-case layout)
   const [carrierChooser] = await Promise.all([
     page.waitForEvent("filechooser"),
-    page.getByRole("button", { name: language === "ru" ? /Выбрать файл/ : /Choose file/ }).click(),
+    page
+      .getByRole("button", {
+        name: language === "ru" ? /Выбрать свой файл/ : /Choose your own file/,
+      })
+      .click(),
   ]);
   await carrierChooser.setFiles(EXAMPLE_CARRIER);
   await page.waitForTimeout(800); // demo probe latency (250 ms) + render
