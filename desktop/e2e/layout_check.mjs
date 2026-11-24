@@ -388,12 +388,15 @@ for (const theme of ["dark", "light"]) {
               plan: { allowed: true, reason: "", remove: fixture.report.fields.filter((f) => fixture.defaultSelection.includes(f.key)),
                 keep: fixture.report.fields.filter((f) => !fixture.defaultSelection.includes(f.key)), blocked: [], warnings: [] } };
           }
+          if (args.request.cmd === "metadata_plan") {
+            return { ok: true, report: fixture.report, plan: fixture.plan };
+          }
           if (args.request.cmd === "metadata_clean") return { ok: false, error: { code: "internal", message: "must not be called", detail: null } };
         }
         return 1;
       },
     };
-  }, { report: METADATA_REPORT, defaultSelection: METADATA_DEFAULT });
+  }, { report: METADATA_REPORT, defaultSelection: METADATA_DEFAULT, plan: metadataPlanFor(METADATA_DEFAULT) });
   const page = await context.newPage();
   await page.goto(base, { waitUntil: "networkidle" });
   await page.getByRole("button", { name: "Метаданные" }).click();
