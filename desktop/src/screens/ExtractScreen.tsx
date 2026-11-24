@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import { bridge, isDemoMode, type BridgeError, type FilePick, type ImagePreview } from "../bridge";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { TextWorkspace } from "../TextWorkspace";
@@ -32,7 +32,7 @@ type ExtractOutcome =
   | { kind: "text"; text: string; textOmitted: boolean; audit: AuditInfo }
   | { kind: "file"; suggestedName: string; imagePreview?: ImagePreview; audit: AuditInfo };
 
-export function ExtractScreen() {
+export function ExtractScreen({ handoff = null }: { handoff?: { path: string } | null }) {
   const { t } = useI18n();
   const units = { b: t("unit.b"), kb: t("unit.kb"), mb: t("unit.mb"), gb: t("unit.gb") };
   const fmt = (bytes: number) => formatBytes(bytes, units);
@@ -47,8 +47,29 @@ export function ExtractScreen() {
   const [copied, setCopied] = useState(false);
   const [textExpanded, setTextExpanded] = useState(false);
   const [imageExpanded, setImageExpanded] = useState(false);
+  const [verified, setVerified] = useState(false);
+  const generation = useRef(0);
+
+  useEffect(() => {
+    if (!handoff) return;
+    generation.current += 1;
+    const segments = handoff.path.split(/[\\/]/);
+    setCarrier({ path: handoff.path, name: segments[segments.length - 1] || handoff.path, sizeBytes: null });
+    setPassword("");
+    setPhase("idle");
+    setOutcome(null);
+    setSavedPath(null);
+    setError(null);
+    setBusy(false);
+    setVerified(false);
+    setTextExpanded(false);
+    setImageExpanded(false);
+  }, [handoff]);
 
   const reset = () => {
+    generation.current += 1;
+    setVerified(false);
+    setBusy(false);
     setTextExpanded(false);
     setImageExpanded(false);
     setCarrier(null);
@@ -62,6 +83,8 @@ export function ExtractScreen() {
   async function pickCarrier() {
     const picked = await bridge.pickFile("carrier", "any");
     if (picked) {
+      generation.current += 1;
+      setVerified(false);
       setCarrier(picked);
       setError(null);
       setOutcome(null);
@@ -72,7 +95,9 @@ export function ExtractScreen() {
   async function runExtract(event?: FormEvent) {
     event?.preventDefault();
     if (!carrier || password.length < 12 || phase === "busy") return;
+    const current = generation.current;
     setPhase("busy");
+    setVerified(false);
     setError(null);
     setSavedPath(null);
     const res = await bridge.extract({
@@ -80,6 +105,7 @@ export function ExtractScreen() {
       password,
       mode: "info",
     });
+    if (current !== generation.current) return;
     if (!res.ok) {
       setPhase("idle");
       setError(res.error);
@@ -103,11 +129,38 @@ export function ExtractScreen() {
     setPhase("done");
   }
 
+  async function verifyContainer() {
+    if (!carrier || password.length < 12 || phase === "busy" || busy) return;
+    const current = generation.current;
+    setPhase("busy");
+    setVerified(false);
+    setError(null);
+    setOutcome(null);
+    setSavedPath(null);
+    try {
+      const res = await bridge.verifyContainer({ carrierPath: carrier.path, password });
+      if (current !== generation.current) return;
+      setPhase("idle");
+      if (res.ok && res.verified) {
+        setVerified(true);
+        setPassword("");
+      } else if (!res.ok) {
+        setError(res.error);
+      }
+    } catch {
+      if (current !== generation.current) return;
+      setPhase("idle");
+      setError({ code: "internal", message: "verification failed", detail: null });
+    }
+  }
+
   async function saveFilePayload() {
     if (outcome?.kind !== "file" || !carrier) return;
+    const current = generation.current;
     setBusy(true);
     setError(null);
     const outputPath = await bridge.saveFile(outcome.suggestedName, "file");
+    if (current !== generation.current) return;
     if (!outputPath) {
       setBusy(false);
       return; // user cancelled — nothing chosen, nothing written
@@ -118,6 +171,7 @@ export function ExtractScreen() {
       mode: "save_file",
       outputPath,
     });
+    if (current !== generation.current) return;
     setBusy(false);
     if (res.ok) {
       setSavedPath(outputPath);
@@ -129,14 +183,16 @@ export function ExtractScreen() {
 
   async function saveTextPayload() {
     if (outcome?.kind !== "text" || !carrier) return;
+    const current = generation.current;
     setBusy(true);
     setError(null);
     try {
       const outputPath = await bridge.saveFile("phantom-extracted.txt", "text");
-      if (!outputPath) return;
+      if (current !== generation.current || !outputPath) return;
       if (!isDemoMode()) {
         // The bridge re-decrypts and writes all bytes, including omitted previews.
         const res = await bridge.extract({ carrierPath: carrier.path, password, mode: "save_file", outputPath });
+        if (current !== generation.current) return;
         if (res.ok) setSavedPath(outputPath);
         else setError(res.error);
       } else if (!outcome.textOmitted) {
@@ -152,9 +208,9 @@ export function ExtractScreen() {
         setError({ code: "io", message: "Text preview unavailable in demo", detail: null });
       }
     } catch {
-      setError({ code: "io", message: "Save failed", detail: null });
+      if (current === generation.current) setError({ code: "io", message: "Save failed", detail: null });
     } finally {
-      setBusy(false);
+      if (current === generation.current) setBusy(false);
     }
   }
 
@@ -221,7 +277,7 @@ export function ExtractScreen() {
             <div className="file-meta">{carrier.sizeBytes === null ? t("hide.size_unknown") : fmt(carrier.sizeBytes)}</div>
           </div>
         ) : (
-          <DropZone ariaLabel={t("extract.drop_title")} onDrop={(file) => setCarrier(file)}>
+          <DropZone ariaLabel={t("extract.drop_title")} onDrop={(file) => { generation.current += 1; setVerified(false); setError(null); setCarrier(file); }}>
             <IconImage size={26} strokeWidth={1.4} />
             <div className="dropzone-title">{t("extract.drop_title")}</div>
             <div className="dropzone-hint">{t("extract.drop_hint")}</div>
@@ -238,7 +294,7 @@ export function ExtractScreen() {
             id="extract-password"
             label={t("hide.password")}
             value={password}
-            onChange={setPassword}
+            onChange={(value) => { if (phase !== "busy") { setPassword(value); setVerified(false); } }}
             onEnter={() => void runExtract()}
             autoFocus
           />
@@ -246,6 +302,7 @@ export function ExtractScreen() {
       ) : null}
 
       {error ? <ErrorBanner error={error} title={t("extract.failure_title")} /> : null}
+      {verified ? <p className="success-verified" role="status"><IconCheckCircle size={16} />{t("extract.verified")}</p> : null}
 
       {carrier && phase !== "done" ? (
         <div className="action-row">
@@ -256,6 +313,10 @@ export function ExtractScreen() {
           >
             {phase === "busy" ? <IconSpinner size={17} className="spin" /> : <IconShield size={17} />}
             {phase === "busy" ? t("hide.busy", { sec: 0 }) : t("extract.submit")}
+          </button>
+          <button type="button" className="btn btn-ghost btn-big" onClick={() => void verifyContainer()}
+            disabled={!carrier || password.length < 12 || phase === "busy" || busy}>
+            {t("extract.verify")}
           </button>
         </div>
       ) : null}

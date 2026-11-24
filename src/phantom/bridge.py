@@ -37,6 +37,9 @@ Requests
     and, for bounded JPEG/PNG inputs, an optional resized image preview. Original
     bytes are never returned; ``save_file`` writes the original verified payload.
 
+``{"cmd": "extract", "carrier_path", "password", "mode": "verify"}``
+    → decrypts and verifies the full payload in memory, returns only success.
+
 ``{"cmd": "extract", "carrier_path", "password", "mode": "save_file",
    "output_path": str}``
     → decrypts, verifies and writes the payload to ``output_path``.
@@ -293,8 +296,12 @@ def cmd_extract(request: dict[str, Any]) -> dict[str, Any]:
     path = _require_str(request, "carrier_path")
     password = _check_password(request.get("password"))
     mode = request.get("mode", "info")
-    if mode not in ("info", "save_file"):
-        raise InvalidInput("mode must be 'info' or 'save_file'")
+    if mode not in ("info", "save_file", "verify"):
+        raise InvalidInput("mode must be 'info', 'verify' or 'save_file'")
+
+    if mode == "verify":
+        _extract_verified(path, password)
+        return _ok(verified=True)
 
     if mode == "save_file":
         output = _require_str(request, "output_path")

@@ -107,6 +107,7 @@ export interface PhantomBridge {
     mode: "info" | "save_file";
     outputPath?: string;
   }): Promise<ExtractResponse>;
+  verifyContainer(args: { carrierPath: string; password: string }): Promise<BridgeResult<{ verified: true }>>;
   pickFile(
     kind: "secret" | "carrier",
     media: "image" | "audio" | "any",
@@ -308,6 +309,12 @@ export const tauriBridge: PhantomBridge = {
     });
     return mapExtract(raw);
   },
+  async verifyContainer({ carrierPath, password }) {
+    const raw = await callBridge({ cmd: "extract", carrier_path: carrierPath, password, mode: "verify" });
+    if (raw.ok !== true) return { ok: false, error: asError(raw) };
+    if (raw.verified !== true) return { ok: false, error: { code: "internal", message: "invalid verification response", detail: null } };
+    return { ok: true, verified: true };
+  },
   async pickFile(kind, media) {
     const raw: unknown = await invoke("pick_file", { kind, media });
     if (raw === null) return null;
@@ -443,6 +450,11 @@ const demoBridge: PhantomBridge = {
       containerVersion: 5,
       kdf: "argon2id",
     };
+  },
+  async verifyContainer({ password }) {
+    await demoSleep(400);
+    if (password.length < 12) return { ok: false, error: { code: "invalid_password", message: "too short (demo)", detail: null } };
+    return { ok: true, verified: true };
   },
   async pickFile(kind, media) {
     return new Promise((resolve) => {

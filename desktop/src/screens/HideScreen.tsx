@@ -36,7 +36,7 @@ interface SuccessInfo {
   demo?: boolean;
 }
 
-export function HideScreen({ onGoExtract }: { onGoExtract: () => void }) {
+export function HideScreen({ onGoExtract }: { onGoExtract: (path: string) => void }) {
   const { t } = useI18n();
   const units = { b: t("unit.b"), kb: t("unit.kb"), mb: t("unit.mb"), gb: t("unit.gb") };
   const fmt = (bytes: number) => formatBytes(bytes, units);
@@ -363,9 +363,9 @@ export function HideScreen({ onGoExtract }: { onGoExtract: () => void }) {
               <IconFolder size={17} />
               {t("hide.open_folder")}
             </button>
-            <button type="button" className="btn btn-subtle" onClick={() => onGoExtract()}>
+            <button type="button" className="btn btn-subtle" onClick={() => onGoExtract(done.outputPath)}>
               <IconExtract size={17} />
-              {t("nav.extract")}
+              {t("hide.open_extract")}
             </button>
             <button type="button" className="btn btn-primary" onClick={() => resetAll(true)}>
               {t("hide.hide_another")}

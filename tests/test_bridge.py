@@ -98,6 +98,27 @@ def test_hide_and_extract_roundtrip_example_pdf_bytes(tmp_path: Path) -> None:
     )
     assert hide["ok"] is True and hide["verified"] is True
 
+    # Verification decrypts the entire payload but returns no content or metadata
+    # and must never publish a plaintext file.
+    before = sorted(p.name for p in tmp_path.iterdir())
+    verify_request = {"cmd": "extract", "carrier_path": str(hidden), "password": PASSWORD, "mode": "verify"}
+    verified = _call(verify_request)
+    assert verified["ok"] is True
+    assert verified["verified"] is True
+    assert set(verified) <= {"ok", "verified", "elapsed_ms"}
+    assert sorted(p.name for p in tmp_path.iterdir()) == before
+    wrong = _call({**verify_request, "password": PASSWORD + "-wrong"})
+    assert wrong["ok"] is False
+    assert wrong["error"]["code"] == "wrong_password_or_no_data"
+    empty = _call({**verify_request, "carrier_path": str(EXAMPLE_CARRIER)})
+    assert empty["ok"] is False
+    damaged = tmp_path / "damaged.png"
+    damaged.write_bytes(hidden.read_bytes()[:128])
+    corrupted = _call({**verify_request, "carrier_path": str(damaged)})
+    assert corrupted["ok"] is False
+    assert "verified" not in corrupted
+    assert not target.exists()
+
     info = _call(
         {
             "cmd": "extract",
@@ -331,3 +352,24 @@ def test_bounded_image_preview_rejects_large_and_corrupt_data() -> None:
         over_pixels = _image_preview(buffer.getvalue())
     assert over_pixels == {"type": "PNG", "status": "unavailable", "reason": "size"}
     assert _image_preview(b"%PDF-1.7\n") is None
+
+
+def test_verification_does_not_log_password_or_plaintext(tmp_path: Path) -> None:
+    hidden = tmp_path / "hidden.png"
+    secret = "private verify-only sentinel text 84739"
+    hide = _call({"cmd": "hide", "carrier_path": str(EXAMPLE_CARRIER), "output_path": str(hidden),
+                  "password": PASSWORD, "text": secret})
+    assert hide["ok"] is True
+    env = dict(os.environ)
+    env["PYTHONPATH"] = str(SRC)
+    proc = subprocess.run(  # noqa: S603
+        [sys.executable, "-m", "phantom.bridge"],
+        input=json.dumps({"cmd": "extract", "carrier_path": str(hidden), "password": PASSWORD,
+                          "mode": "verify"}) + "\n",
+        capture_output=True, text=True, env=env, timeout=120.0, check=False,
+    )
+    assert proc.returncode == 0
+    assert json.loads(proc.stdout)["verified"] is True
+    assert PASSWORD not in proc.stdout + proc.stderr
+    assert secret not in proc.stdout + proc.stderr
+    assert [p.name for p in tmp_path.iterdir()] == ["hidden.png"]
