@@ -38,6 +38,19 @@ def detect_format(head: bytes) -> MediaFormat | None:
     return None
 
 
+def read_head(path: str, size: int = 64) -> bytes:
+    """The first bytes of a file — enough to tell the format, nothing more.
+
+    The shell asks the core where a cleaned copy will go before it opens the save
+    dialog, and that answer must not cost a full read of a 24 MP carrier.
+    """
+    try:
+        with open(path, "rb") as handle:
+            return handle.read(size)
+    except OSError as exc:
+        raise PhantomIOError("cannot read the file", detail=str(exc)) from exc
+
+
 def read_file(path: str, *, cancel: threading.Event | None = None) -> bytes:
     """Read a whole file, refusing anything the parsers cannot handle."""
     try:

@@ -27,6 +27,7 @@ vi.mock("../bridge", async (importOriginal) => {
       saveFile: vi.fn(),
       metadataInspect: vi.fn(),
       metadataPlan: vi.fn(),
+      metadataOutputPath: vi.fn(),
       metadataClean: vi.fn(),
       revealPath: vi.fn(),
     },
@@ -37,6 +38,7 @@ const pickFileMock = vi.mocked(bridge.pickFile);
 const saveFileMock = vi.mocked(bridge.saveFile);
 const inspectMock = vi.mocked(bridge.metadataInspect);
 const planMock = vi.mocked(bridge.metadataPlan);
+const targetMock = vi.mocked(bridge.metadataOutputPath);
 const cleanMock = vi.mocked(bridge.metadataClean);
 
 const RU = dictionaries.ru;
@@ -156,6 +158,7 @@ beforeEach(() => {
   saveFileMock.mockReset();
   inspectMock.mockReset();
   planMock.mockReset();
+  targetMock.mockReset();
   cleanMock.mockReset();
   pickFileMock.mockResolvedValue({ path: "/home/ada/Holiday.png", name: "Holiday.png", sizeBytes: 2048 });
   inspectMock.mockResolvedValue(inspection());
@@ -164,6 +167,11 @@ beforeEach(() => {
     report: makeReport(),
     plan: defaultPlan(),
   });
+  targetMock.mockImplementation(async ({ path, outputPath }) => ({
+    ok: true,
+    source: path,
+    output: outputPath,
+  }));
 });
 
 afterEach(() => {
@@ -235,12 +243,16 @@ describe("MetadataScreen — inspect, preview, clean", () => {
     fireEvent.click(screen.getByRole("button", { name: RU["meta.save"] }));
 
     await screen.findByText(RU["meta.result.title"]);
-    expect(saveFileMock).toHaveBeenCalledWith("Holiday-clean.png", "metadata");
+    expect(saveFileMock).toHaveBeenCalledWith("Holiday-clean.png", "metadata", undefined);
+    expect(targetMock).toHaveBeenCalledWith({
+      path: "/home/ada/Holiday.png",
+      outputPath: "/home/ada/Holiday-clean.png",
+    });
     expect(cleanMock).toHaveBeenCalledWith({
       sourcePath: "/home/ada/Holiday.png",
       outputPath: "/home/ada/Holiday-clean.png",
       selection: REMOVE_KEYS,
-      overwrite: true,
+      overwrite: false,
     });
     expect(screen.getByText(RU["meta.result.pixels"])).toBeTruthy();
     expect(screen.getByText(RU["meta.result.source_unchanged"].replace("{digest}", "a".repeat(16)))).toBeTruthy();
@@ -251,14 +263,102 @@ describe("MetadataScreen — inspect, preview, clean", () => {
 
   it("refuses to write over the source with a clear message and never calls the core", async () => {
     await openFile();
-    saveFileMock.mockResolvedValue("/home/ada/Holiday.png");
+    saveFileMock.mockResolvedValue("/home/ada/Holiday.wav");
+    targetMock.mockResolvedValue({
+      ok: false,
+      error: {
+        code: "source_overwrite",
+        message: "the cleaned copy must not replace the original",
+        detail: "/home/ada/Holiday.png",
+        params: { source: "/home/ada/Holiday.png", output: "/home/ada/Holiday.png" },
+      },
+    });
 
     fireEvent.click(screen.getByRole("button", { name: RU["meta.save"] }));
 
     await waitFor(() => expect(screen.getByRole("alert")).toBeTruthy());
-    expect(screen.getByText(RU["meta.error.source_overwrite"])).toBeTruthy();
+    // The message names the path the copy would really get, not the .wav typed.
+    expect(
+      screen.getByText(
+        RU["meta.error.source_overwrite"].replace("{path}", "/home/ada/Holiday.png"),
+      ),
+    ).toBeTruthy();
     expect(cleanMock).not.toHaveBeenCalled();
     expect(screen.queryByText(RU["meta.result.title"])).toBeNull();
+  });
+
+  it("refuses when the resolved destination already exists", async () => {
+    await openFile();
+    saveFileMock.mockResolvedValue("/home/ada/existing.wav");
+    targetMock.mockResolvedValue({
+      ok: false,
+      error: {
+        code: "output_exists",
+        message: "the destination already exists",
+        detail: "/home/ada/existing.png",
+        params: { path: "/home/ada/existing.png" },
+      },
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: RU["meta.save"] }));
+
+    await waitFor(() => expect(screen.getByRole("alert")).toBeTruthy());
+    expect(
+      screen.getByText(
+        RU["meta.error.output_exists"].replace("{path}", "/home/ada/existing.png"),
+      ),
+    ).toBeTruthy();
+    expect(cleanMock).not.toHaveBeenCalled();
+    expect(screen.queryByText(RU["meta.result.title"])).toBeNull();
+  });
+
+  it("re-opens the dialog so it confirms the exact path that will be written", async () => {
+    await openFile();
+    saveFileMock
+      .mockResolvedValueOnce("/home/ada/Holiday-clean")
+      .mockResolvedValueOnce("/home/ada/Holiday-clean.png");
+    targetMock
+      .mockResolvedValueOnce({
+        ok: true,
+        source: "/home/ada/Holiday.png",
+        output: "/home/ada/Holiday-clean.png",
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        source: "/home/ada/Holiday.png",
+        output: "/home/ada/Holiday-clean.png",
+      });
+    cleanMock.mockResolvedValue({
+      ok: true,
+      source: "/home/ada/Holiday.png",
+      output: "/home/ada/Holiday-clean.png",
+      removed: FIELDS.filter((item) => REMOVE_KEYS.includes(item.key)),
+      kept: KEEP_FIELDS,
+      verified: true,
+      checksumOk: true,
+      sourceSha256: "a".repeat(64),
+      outputSha256: "b".repeat(64),
+      content: { identical: true, checked: true, differences: [], source: "c".repeat(64), output: "c".repeat(64) },
+      warnings: [],
+      reportAfter: { ...makeReport(KEEP_FIELDS), path: "/home/ada/Holiday-clean.png", counts: { ...makeReport().counts, total: 4, personal: 0, removable: 0 } },
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: RU["meta.save"] }));
+
+    await screen.findByText(RU["meta.result.title"]);
+    expect(saveFileMock).toHaveBeenNthCalledWith(1, "Holiday-clean.png", "metadata", undefined);
+    expect(saveFileMock).toHaveBeenNthCalledWith(
+      2,
+      "Holiday-clean.png",
+      "metadata",
+      "/home/ada/",
+    );
+    expect(cleanMock).toHaveBeenCalledWith({
+      sourcePath: "/home/ada/Holiday.png",
+      outputPath: "/home/ada/Holiday-clean.png",
+      selection: REMOVE_KEYS,
+      overwrite: false,
+    });
   });
 
   it("shows the core's signed-media refusal before any save", async () => {

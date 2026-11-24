@@ -261,9 +261,19 @@ it.
 Before anything is written you get a pre-report: what will be removed, what will
 be kept, and what you asked for but is protected. The cleaned copy is always a
 **new file** — the source is never modified, and a path that resolves to the
-source is refused. Publishing is atomic: the copy is written to a staged sibling,
-verified, and only then renamed onto the destination; on any failure the staged
-file is discarded and the destination is untouched.
+source is refused.
+
+The destination is resolved *after* the content format is known: `photo.wav` for
+a PNG becomes `photo.png`, and the source and existence checks apply to that final
+name, through symlinks and hard links as well. A destination that already exists
+is refused (`output_exists`) unless overwriting that very name was requested; an
+extension-rewritten name is never replaced, because the file it would hit was
+never shown to the user. In PHANTOM Desktop the save dialog is reopened with the
+resolved path, so what the dialog confirms is exactly what is written.
+
+Publishing is atomic: the copy is written to a staged sibling, verified, and only
+then renamed onto the destination; on any failure the staged file is discarded
+and the destination is untouched.
 
 Verification after cleaning is mandatory, not advisory:
 

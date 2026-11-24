@@ -37,6 +37,28 @@ All notable changes to PHANTOM are recorded here. The format follows
   frozen bridge; the 980×720 layout check covers the grouped list, the preview,
   the sticky save button, the overwrite refusal and the credential refusal.
 
+### Fixed — a cleaned copy could replace the wrong file
+
+- The cleaner replaced the requested extension with the real format's only
+  *after* the source and existence checks. `photo.png` cleaned into
+  `photo.wav` quietly became `photo.png` and replaced the source, and
+  `existing.wav` replaced an unrelated, already existing `existing.png`. The
+  destination is now resolved as soon as the content format is known, and every
+  check — absolute path, `realpath`, `samefile` for symlinks and hard links,
+  `lexists`, and "this is a directory" — runs against that exact final path.
+- `overwrite` only covers the name the caller asked for: an extension-rewritten
+  destination is refused when it exists even with `overwrite=True`, because that
+  file was never shown to the user. The check is repeated immediately before
+  the rename.
+- New typed refusal `output_exists`, translated in Ukrainian, Russian and
+  English; the Tk panel explains it instead of showing a bare metadata error.
+- PHANTOM Desktop asks the core where the copy would go
+  (`metadata_output_path`) and reopens the system save dialog when the typed
+  name is not the resolved one, so the dialog confirms exactly the path that is
+  written. It no longer passes `overwrite: true` to `clean`.
+- Regressions for both reproduced cases at the core, through the bridge
+  contract, in the UI and in the packaged-bridge cycle (now 39 checks).
+
 ### Fixed — browser demo verification
 
 - Verification is unavailable in the browser demo instead of reporting a

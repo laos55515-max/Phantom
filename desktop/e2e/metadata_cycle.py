@@ -406,6 +406,73 @@ def main() -> int:
         check("FLAC tags are gone and the title stays",
               "flac.vorbis.COMMENT" not in flac_after and "flac.vorbis.TITLE" in flac_after)
 
+        # --- 7. resolved destinations: the two reproduced overwrite cases -----
+        cases = work / "destinations"
+        cases.mkdir()
+        photo = png_with_gps(cases / "photo.png")
+        photo_before = sha256_hex(photo)
+        wrong_name = bridge.call(
+            {
+                "cmd": "metadata_clean",
+                "path": str(photo),
+                "output_path": str(cases / "photo.wav"),
+                "selection": default_selection,
+            }
+        )
+        check(
+            "photo.png cleaned into photo.wav is refused",
+            wrong_name.get("ok") is False
+            and wrong_name.get("error", {}).get("code") == "source_overwrite",
+            str(wrong_name.get("error", "")),
+        )
+        check(
+            "the refusal names the resolved source path",
+            wrong_name.get("error", {}).get("params", {}).get("output")
+            == str(cases / "photo.png"),
+            str(wrong_name.get("error", {}).get("params", {})),
+        )
+        check(
+            "the source stays byte-identical and photo.wav is not created",
+            sha256_hex(photo) == photo_before and not (cases / "photo.wav").exists(),
+        )
+
+        existing = cases / "existing.png"
+        existing.write_bytes(b"someone else's pixels")
+        existing_before = sha256_hex(existing)
+        occupied = bridge.call(
+            {
+                "cmd": "metadata_clean",
+                "path": str(photo),
+                "output_path": str(cases / "existing.wav"),
+                "selection": default_selection,
+                "overwrite": False,
+            }
+        )
+        check(
+            "existing.wav for a PNG is refused when existing.png is there",
+            occupied.get("ok") is False
+            and occupied.get("error", {}).get("code") == "output_exists",
+            str(occupied.get("error", "")),
+        )
+        check(
+            "the existing PNG is untouched and nothing is written to existing.wav",
+            sha256_hex(existing) == existing_before
+            and existing.read_bytes() == b"someone else's pixels"
+            and not (cases / "existing.wav").exists(),
+        )
+        resolved = bridge.call(
+            {
+                "cmd": "metadata_output_path",
+                "path": str(photo),
+                "output_path": str(cases / "copy.wav"),
+            }
+        )
+        check(
+            "the packaged bridge resolves the copy's real extension",
+            resolved.get("ok") is True and resolved.get("output") == str(cases / "copy.png"),
+            str(resolved.get("error", resolved.get("output"))),
+        )
+
         # --- 7. unsupported content ------------------------------------------
         disguised = work / "photo.png"
         disguised.write_text("not a PNG, only a misleading name\n", encoding="utf-8")

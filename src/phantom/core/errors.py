@@ -25,6 +25,7 @@ class ErrorCode(Enum):
     INVALID_UNICODE = "invalid_unicode"
     IO = "io"
     OUTPUT_IS_CARRIER = "output_is_carrier"
+    OUTPUT_EXISTS = "output_exists"
     SOURCE_OVERWRITE = "source_overwrite"
     UNSAFE_PATH = "unsafe_path"
     WIPE_FAILED = "wipe_failed"
@@ -121,6 +122,12 @@ class SourceOverwriteError(PhantomError):
     """The output path would replace the very file the user hid in it."""
 
     code = ErrorCode.SOURCE_OVERWRITE
+
+
+class OutputExistsError(PhantomError):
+    """The destination already exists and the caller did not ask to replace it."""
+
+    code = ErrorCode.OUTPUT_EXISTS
 
 
 class WipeError(PhantomError):

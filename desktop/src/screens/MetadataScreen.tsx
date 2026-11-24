@@ -27,6 +27,8 @@ import {
   defaultSelection,
   fieldReason,
   fieldValue,
+  fileName,
+  folderName,
   groupByCategory,
   planSelection,
   samePath,
@@ -36,10 +38,19 @@ import {
 type Status = "empty" | "inspecting" | "ready" | "failed" | "cleaning" | "done";
 
 /** The refusal the core explains, translated in the user's language. */
-function errorExplanation(error: BridgeError, t: (key: string) => string): string | null {
+function errorExplanation(
+  error: BridgeError,
+  t: (key: string, params?: Record<string, string | number>) => string,
+): string | null {
+  const named = typeof error.params?.path === "string" ? error.params.path : null;
+  const path = named ?? error.detail ?? "";
   switch (error.code) {
     case "source_overwrite":
-      return t("meta.error.source_overwrite");
+      return t("meta.error.source_overwrite", { path });
+    case "output_exists":
+      return t("meta.error.output_exists", { path });
+    case "output_path":
+      return t("meta.error.extension", { path });
     case "signed_media":
       return t("meta.error.signed");
     case "metadata_conflict":
@@ -233,30 +244,68 @@ export function MetadataScreen() {
 
     const generationAtCall = generation.current;
     setStatus("cleaning");
-    let output: string | null = null;
-    try {
-      output = await bridge.saveFile(
-        suggestedCleanName(report.path || file.path, report.format),
-        "metadata",
-      );
-    } catch {
-      if (generationAtCall !== generation.current) return;
-      setError({ code: "io", message: "the save dialog failed", detail: null });
-      setStatus("ready");
-      return;
-    }
+    const choose = async (name: string, directory?: string): Promise<string | null> => {
+      try {
+        return await bridge.saveFile(name, "metadata", directory);
+      } catch {
+        if (generationAtCall !== generation.current) return null;
+        setError({ code: "io", message: "the save dialog failed", detail: null });
+        setStatus("ready");
+        return null;
+      }
+    };
+
+    let output = await choose(suggestedCleanName(report.path || file.path, report.format));
     if (generationAtCall !== generation.current) return;
     if (!output) {
       setStatus("ready"); // the user cancelled: nothing chosen, nothing written
       return;
     }
-    if (samePath(output, file.path)) {
-      // Answered here as well as in the core: the user sees it before any read.
+    // The format is already known, so the extension in the dialog can be wrong
+    // for the file. Ask the core where the copy would really go, then make the
+    // dialog confirm exactly that path before anything is written.
+    let target = await bridge.metadataOutputPath({ path: file.path, outputPath: output });
+    if (generationAtCall !== generation.current) return;
+    if (!target.ok) {
+      setError(target.error);
+      setStatus("ready");
+      return;
+    }
+    if (!samePath(target.output, output)) {
+      const resolved = target.output;
+      output = await choose(fileName(resolved), folderName(resolved));
+      if (generationAtCall !== generation.current) return;
+      if (!output) {
+        setStatus("ready");
+        return;
+      }
+      target = await bridge.metadataOutputPath({ path: file.path, outputPath: output });
+      if (generationAtCall !== generation.current) return;
+      if (!target.ok) {
+        setError(target.error);
+        setStatus("ready");
+        return;
+      }
+      if (!samePath(target.output, output)) {
+        setError({
+          code: "output_path",
+          message: "the copy must keep the source format's extension",
+          detail: target.output,
+          params: { path: target.output },
+        });
+        setStatus("ready");
+        return;
+      }
+    }
+    const finalPath = target.output;
+    if (samePath(finalPath, file.path)) {
+      // The core refuses this too; here it is answered before a single byte of
+      // the source is read, which is what the user expects from a dialog.
       setError({
         code: "source_overwrite",
         message: "the cleaned copy must not replace the original",
-        detail: output,
-        params: { source: file.path, output },
+        detail: finalPath,
+        params: { source: file.path, output: finalPath },
       });
       setStatus("ready");
       return;
@@ -265,10 +314,11 @@ export function MetadataScreen() {
     try {
       response = await bridge.metadataClean({
         sourcePath: file.path,
-        outputPath: output,
+        outputPath: finalPath,
         selection: [...selection],
-        // The native dialog has already asked about an existing destination.
-        overwrite: true,
+        // Never silently replace a file that appeared at the resolved path:
+        // the dialog confirmed this name, not "this name or whatever exists".
+        overwrite: false,
       });
     } catch {
       if (generationAtCall !== generation.current) return;

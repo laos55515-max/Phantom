@@ -59,12 +59,22 @@ Requests
     selection would remove, keep or refuse to touch.  Re-reading keeps the
     preview and the later clean on exactly the same bytes.
 
+``{"cmd": "metadata_output_path", "path", "output_path", "overwrite"?: bool}``
+    → :func:`phantom.metadata.output_path`: detects the source's real format
+    from its bytes, puts that format's extension on the requested name, and
+    answers where a clean would write — or refuses with ``source_overwrite``
+    (the final path is the source, directly or through a link) or
+    ``output_exists`` (something already lives there and ``overwrite`` is
+    false).  The shell asks this *before* the save dialog so the path the
+    dialog confirms is the path that will be written.
+
 ``{"cmd": "metadata_clean", "path", "output_path", "selection": [str],
    "overwrite"?: bool}``
     → :func:`phantom.metadata.clean`: the source is only read, the result is
     staged, its decoded pixels or PCM samples are compared with the source and
     the copy is published only when they are identical.  An ``output_path``
-    that resolves to the source is refused with ``source_overwrite``; a file
+    that resolves to the source is refused with ``source_overwrite``; an
+    existing destination without ``overwrite`` with ``output_exists``; a file
     carrying a content credential is refused with ``signed_media``.
 """
 
@@ -93,7 +103,6 @@ from phantom.core.errors import (
     InvalidInput,
     InvalidPassword,
     PhantomError,
-    SourceOverwriteError,
 )
 from phantom.core.files import ensure_distinct, sanitise_filename, write_bytes_verified
 from phantom.core.kdf import KdfProfile
@@ -613,11 +622,14 @@ def cmd_metadata_plan(request: dict[str, Any]) -> dict[str, Any]:
     )
 
 
-def _same_file(left: str, right: str) -> bool:
-    try:
-        return os.path.samefile(left, right)
-    except OSError:
-        return False
+def cmd_metadata_output_path(request: dict[str, Any]) -> dict[str, Any]:
+    source = _require_str(request, "path")
+    output = _require_str(request, "output_path")
+    overwrite = request.get("overwrite", False)
+    if not isinstance(overwrite, bool):
+        raise InvalidInput("overwrite must be a boolean")
+    target = metadata_mod.output_path(source, output, overwrite=overwrite)
+    return _ok(source=source, output=target)
 
 
 def cmd_metadata_clean(request: dict[str, Any]) -> dict[str, Any]:
@@ -627,12 +639,6 @@ def cmd_metadata_clean(request: dict[str, Any]) -> dict[str, Any]:
     overwrite = request.get("overwrite", False)
     if not isinstance(overwrite, bool):
         raise InvalidInput("overwrite must be a boolean")
-    # The core refuses this too; saying it here means the shell never has to read
-    # a 24 MP file to learn that the destination is the file it just opened.
-    if _same_file(source, output):
-        raise SourceOverwriteError(
-            "the cleaned copy must not replace the original", detail=output
-        ).with_params(source=source, output=output)
     outcome = metadata_mod.clean(
         source,
         output,
@@ -653,6 +659,7 @@ _COMMANDS = {
     "select_carrier": cmd_select_carrier,
     "metadata_inspect": cmd_metadata_inspect,
     "metadata_plan": cmd_metadata_plan,
+    "metadata_output_path": cmd_metadata_output_path,
     "metadata_clean": cmd_metadata_clean,
 }
 

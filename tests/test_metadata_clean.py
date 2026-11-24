@@ -19,6 +19,7 @@ from phantom.core.errors import (
     MetadataConflictError,
     MetadataError,
     OperationCancelled,
+    OutputExistsError,
     PhantomError,
     SignedMediaError,
     SourceOverwriteError,
@@ -254,7 +255,7 @@ def test_an_existing_output_needs_explicit_permission(tmp_path: Path) -> None:
     output = tmp_path / "exists-clean.png"
     output.write_bytes(b"do not lose me")
 
-    with pytest.raises(MetadataError, match="already exists"):
+    with pytest.raises(OutputExistsError, match="already exists"):
         cleaner.clean(str(source), str(output), frozenset({"png.text.tEXt.Comment"}))
     assert output.read_bytes() == b"do not lose me"
 
@@ -266,6 +267,96 @@ def test_an_existing_output_needs_explicit_permission(tmp_path: Path) -> None:
     )
     assert outcome.verified is True
     assert output.stat().st_size > 20
+
+
+def test_a_wrong_extension_cannot_make_the_destination_the_source(tmp_path: Path) -> None:
+    """Reproduced: photo.png cleaned into "photo.wav" used to rewrite photo.png."""
+    source = samples.personal_png(tmp_path / "photo.png")
+    before = _sha(source)
+
+    with pytest.raises(SourceOverwriteError) as caught:
+        cleaner.clean(
+            str(source),
+            str(tmp_path / "photo.wav"),
+            frozenset({"png.text.tEXt.Comment"}),
+        )
+
+    assert caught.value.detail == str(tmp_path / "photo.png")
+    assert _sha(source) == before, "the source must not change by a single byte"
+    assert not (tmp_path / "photo.wav").exists()
+    assert _staged_siblings(tmp_path) == []
+
+
+def test_a_wrong_extension_cannot_replace_an_existing_file_of_the_real_format(
+    tmp_path: Path,
+) -> None:
+    """Reproduced: "existing.wav" for a PNG used to overwrite existing.png."""
+    source = samples.personal_png(tmp_path / "photo.png")
+    existing = tmp_path / "existing.png"
+    existing.write_bytes(b"someone else's pixels")
+    before = _sha(existing)
+
+    with pytest.raises(OutputExistsError) as caught:
+        cleaner.clean(
+            str(source),
+            str(tmp_path / "existing.wav"),
+            frozenset({"png.text.tEXt.Comment"}),
+        )
+
+    assert caught.value.detail == str(existing)
+    assert _sha(existing) == before
+    assert not (tmp_path / "existing.wav").exists()
+    assert _staged_siblings(tmp_path) == []
+
+
+def test_the_source_cannot_be_reached_through_a_symlink_with_another_extension(
+    tmp_path: Path,
+) -> None:
+    source = samples.personal_png(tmp_path / "photo.png")
+    link = tmp_path / "alias.png"
+    try:
+        link.symlink_to(source)
+    except (OSError, NotImplementedError):  # pragma: no cover - Windows without privilege
+        pytest.skip("symlinks are unavailable here")
+    before = _sha(source)
+
+    with pytest.raises(SourceOverwriteError) as caught:
+        cleaner.clean(
+            str(source),
+            str(tmp_path / "alias.wav"),
+            frozenset({"png.text.tEXt.Comment"}),
+        )
+
+    assert caught.value.detail == str(link)
+    assert _sha(source) == before
+    assert link.is_symlink(), "the link itself must survive too"
+
+
+def test_overwrite_does_not_cover_a_path_the_caller_never_named(tmp_path: Path) -> None:
+    source = samples.personal_png(tmp_path / "photo.png")
+    existing = tmp_path / "existing.png"
+    existing.write_bytes(b"someone else's pixels")
+
+    with pytest.raises(OutputExistsError):
+        cleaner.clean(
+            str(source),
+            str(tmp_path / "existing.wav"),
+            frozenset({"png.text.tEXt.Comment"}),
+            overwrite=True,
+        )
+
+    assert existing.read_bytes() == b"someone else's pixels"
+
+
+def test_output_path_resolves_the_extension_before_any_check(tmp_path: Path) -> None:
+    source = samples.personal_png(tmp_path / "photo.png")
+
+    assert cleaner.output_path(str(source), str(tmp_path / "copy")) == str(tmp_path / "copy.png")
+    assert cleaner.output_path(str(source), str(tmp_path / "copy.WAV")) == str(tmp_path / "copy.png")
+    assert cleaner.output_path(str(source), str(tmp_path / "copy.PNG")) == str(tmp_path / "copy.PNG")
+
+    with pytest.raises(SourceOverwriteError):
+        cleaner.output_path(str(source), str(tmp_path / "photo.wav"))
 
 
 def test_cleaning_nothing_is_an_error(tmp_path: Path) -> None:
@@ -417,7 +508,7 @@ def test_a_rewrite_that_drops_a_protected_field_is_never_published(
 
 def test_the_output_extension_follows_the_real_format(tmp_path: Path) -> None:
     source = samples.personal_png(tmp_path / "extension.png")
-    requested = tmp_path / "extension.wav"
+    requested = tmp_path / "extension-copy.wav"
 
     outcome = cleaner.clean(
         str(source),
@@ -425,7 +516,7 @@ def test_the_output_extension_follows_the_real_format(tmp_path: Path) -> None:
         frozenset({"png.text.tEXt.Comment"}),
     )
 
-    assert outcome.output.endswith(".png")
+    assert outcome.output == str(tmp_path / "extension-copy.png")
     assert Path(outcome.output).exists()
     assert not requested.exists()
 
@@ -486,7 +577,7 @@ def test_the_library_refuses_to_publish_over_a_directory(tmp_path: Path) -> None
     target = tmp_path / "occupied"
     target.mkdir()
 
-    with pytest.raises(MetadataError):
+    with pytest.raises(OutputExistsError):
         cleaner.clean(str(source), str(target), frozenset({"png.text.tEXt.Comment"}))
 
 

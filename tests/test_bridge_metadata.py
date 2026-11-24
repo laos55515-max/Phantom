@@ -1,6 +1,6 @@
 """The metadata tab's side of the bridge: inspect, plan, clean — and the refusals.
 
-The desktop shell reaches the cleaner only through these three commands, so the
+The desktop shell reaches the cleaner only through these commands, so the
 contract is pinned here the same way the hide/extract contract is: the report
 shape the interface renders, the safe default selection, the preview the user
 confirms, the untouched source, and the typed errors the UI explains instead of
@@ -17,6 +17,7 @@ import sys
 from pathlib import Path
 
 import numpy as np
+import pytest
 import soundfile
 from PIL import Image
 
@@ -206,8 +207,120 @@ def test_cleaning_refuses_an_existing_destination_without_overwrite(tmp_path: Pa
     )
 
     assert response["ok"] is False
-    assert response["error"]["code"] == "metadata"
+    assert response["error"]["code"] == "output_exists"
+    assert response["error"]["params"]["path"] == str(output)
     assert _sha(output) == before
+
+
+def test_photo_png_cleaned_into_photo_wav_cannot_touch_the_source(tmp_path: Path) -> None:
+    """Regression: the extension was rewritten after the only source check.
+
+    ``photo.wav`` became ``photo.png`` — the source — and the publish replaced it.
+    """
+    source = samples.rich_exif_png(tmp_path / "photo.png")
+    before = _sha(source)
+
+    response = _call(
+        {
+            "cmd": "metadata_clean",
+            "path": str(source),
+            "output_path": str(tmp_path / "photo.wav"),
+            "selection": ["png.gps.0x0002"],
+        }
+    )
+
+    assert response["ok"] is False
+    error = response["error"]
+    assert error["code"] == "source_overwrite"
+    assert error["detail"] == str(tmp_path / "photo.png")
+    assert error["params"]["output"] == str(tmp_path / "photo.png")
+    assert _sha(source) == before, "not a single byte of the source may change"
+    assert not (tmp_path / "photo.wav").exists()
+    assert not [item for item in tmp_path.iterdir() if item.name.startswith(".")]
+
+
+def test_existing_wav_destination_cannot_replace_an_existing_png(tmp_path: Path) -> None:
+    """Regression: ``existing.png`` was overwritten although overwrite was false."""
+    source = samples.rich_exif_png(tmp_path / "photo.png")
+    existing = tmp_path / "existing.png"
+    existing.write_bytes(b"someone else's pixels")
+    before = _sha(existing)
+
+    response = _call(
+        {
+            "cmd": "metadata_clean",
+            "path": str(source),
+            "output_path": str(tmp_path / "existing.wav"),
+            "selection": ["png.gps.0x0002"],
+            "overwrite": False,
+        }
+    )
+
+    assert response["ok"] is False
+    error = response["error"]
+    assert error["code"] == "output_exists"
+    assert error["params"]["path"] == str(existing)
+    assert _sha(existing) == before
+    assert not (tmp_path / "existing.wav").exists()
+
+
+def test_output_path_resolves_the_destination_before_the_dialog(tmp_path: Path) -> None:
+    source = samples.rich_exif_png(tmp_path / "photo.png")
+
+    resolved = _call(
+        {
+            "cmd": "metadata_output_path",
+            "path": str(source),
+            "output_path": str(tmp_path / "copy.wav"),
+        }
+    )
+    assert resolved["ok"] is True
+    assert resolved["output"] == str(tmp_path / "copy.png")
+
+    collision = _call(
+        {
+            "cmd": "metadata_output_path",
+            "path": str(source),
+            "output_path": str(tmp_path / "photo.wav"),
+        }
+    )
+    assert collision["ok"] is False
+    assert collision["error"]["code"] == "source_overwrite"
+
+    existing = tmp_path / "existing.png"
+    existing.write_bytes(b"keep me")
+    occupied = _call(
+        {
+            "cmd": "metadata_output_path",
+            "path": str(source),
+            "output_path": str(tmp_path / "existing.wav"),
+        }
+    )
+    assert occupied["ok"] is False
+    assert occupied["error"]["code"] == "output_exists"
+    assert occupied["error"]["params"]["path"] == str(existing)
+    assert existing.read_bytes() == b"keep me"
+
+
+def test_the_source_cannot_be_reached_through_a_link(tmp_path: Path) -> None:
+    source = samples.rich_exif_png(tmp_path / "photo.png")
+    link = tmp_path / "alias.png"
+    try:
+        link.symlink_to(source)
+    except (OSError, NotImplementedError):  # pragma: no cover - Windows without privilege
+        pytest.skip("symlinks are unavailable here")
+
+    response = _call(
+        {
+            "cmd": "metadata_output_path",
+            "path": str(source),
+            "output_path": str(tmp_path / "alias.wav"),
+        }
+    )
+
+    assert response["ok"] is False
+    assert response["error"]["code"] == "source_overwrite"
+    assert response["error"]["params"]["output"] == str(link)
 
 
 def test_a_signed_png_is_inspected_but_refused_with_a_reason(tmp_path: Path) -> None:

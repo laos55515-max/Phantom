@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import type { MetadataFieldInfo, MetadataReportInfo } from "./bridge";
 import {
   defaultSelection,
+  fileName,
+  folderName,
   fieldReason,
   fieldValue,
   groupByCategory,
@@ -104,5 +106,16 @@ describe("metadata helpers — the core's policy, mirrored for the preview", () 
       "meta.reason.kept_by_policy",
     );
     expect(fieldReason(field({ key: "orientation", reason: "kept by policy" }), t)).toBe("kept by policy");
+  });
+});
+
+describe("paths of the cleaned copy", () => {
+  it("splits a path into the name the dialog shows and its folder", () => {
+    expect(fileName("/home/ada/Holiday.png")).toBe("Holiday.png");
+    expect(fileName("C:\\Users\\ada\\Holiday.png")).toBe("Holiday.png");
+    expect(fileName("/tmp/folder/")).toBe("folder");
+    expect(folderName("/home/ada/Holiday.png")).toBe("/home/ada/");
+    expect(folderName("C:\\Users\\ada\\Holiday.png")).toBe("C:\\Users\\ada\\");
+    expect(folderName("Holiday.png")).toBe("");
   });
 });

@@ -37,11 +37,12 @@ desktop/
 
 The Python side of the contract lives in `src/phantom/bridge.py` — a stdio
 JSON-lines protocol, one request per line, one response per line. The Metadata
-tab uses three commands: `metadata_inspect` (report + safe default selection +
-plan), `metadata_plan` (re-reads the file, then previews a selection) and
-`metadata_clean` (writes a staged, verified copy and refuses to replace the
-source with `source_overwrite`, or a credential-bearing file with
-`signed_media`).
+tab uses four commands: `metadata_inspect` (report + safe default selection +
+plan), `metadata_plan` (re-reads the file, then previews a selection),
+`metadata_output_path` (detects the format from the bytes and resolves the exact
+destination, refusing `source_overwrite` or `output_exists`) and
+`metadata_clean` (writes a staged, verified copy and repeats those refusals
+before publishing; a credential-bearing file is refused with `signed_media`).
 
 ### Security rules (enforced in code)
 
@@ -54,8 +55,14 @@ source with `source_overwrite`, or a credential-bearing file with
   never via a temp file in the clear.
 - The metadata source is only ever opened for reading. The cleaned copy is
   staged next to the destination, its pixels or PCM samples are compared with
-  the source, and it is published with one rename; a path that resolves to the
-  source is refused before anything is read, in the shell and again in the core.
+  the source, and it is published with one rename.
+- The metadata destination is resolved **after** the content format is known:
+  the copy's own extension comes from the real format, and the source/existing
+  checks (symlinks and hard links included) apply to that final path. The shell
+  asks the core for it and reopens the save dialog with it, so the dialog
+  confirms exactly the path that will be written. An existing file is refused
+  unless overwriting that very name was requested; an extension-rewritten name
+  is never replaced, because the user never confirmed it.
 - The UI wipes the password from component state after the hide/save job
   completes; it is never persisted anywhere.  Screens stay mounted (they are
   only hidden), so anything typed or picked survives a trip to Settings or a
@@ -110,9 +117,11 @@ Expected: every step `PASS`, including
 python desktop/e2e/metadata_cycle.py --bridge dist/phantom-bridge --out metadata.json
 ```
 
-Expected: `33/33 checks passed` — a PNG with GPS and orientation, a WAV and a
+Expected: `39/39 checks passed` — a PNG with GPS and orientation, a WAV and a
 FLAC with tags, the source byte-identical after every clean, identical pixels and
-PCM samples, a refused source overwrite and a refused C2PA-signed file. If the
+PCM samples, a refused source overwrite, a refused existing destination, the two
+reproduced extension cases (`photo.png` → `photo.wav`, `existing.wav` with
+`existing.png` present) and a refused C2PA-signed file. If the
 sidecar was frozen without `phantom.metadata`, the first inspect fails: that is
 the check that the module really ships.
 

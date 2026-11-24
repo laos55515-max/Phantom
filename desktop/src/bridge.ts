@@ -233,6 +233,11 @@ export interface PhantomBridge {
     path: string;
     selection: string[];
   }): Promise<BridgeResult<{ report: MetadataReportInfo; plan: CleaningPlanInfo }>>;
+  metadataOutputPath(args: {
+    path: string;
+    outputPath: string;
+    overwrite?: boolean;
+  }): Promise<BridgeResult<{ source: string; output: string }>>;
   metadataClean(args: {
     sourcePath: string;
     outputPath: string;
@@ -246,6 +251,7 @@ export interface PhantomBridge {
   saveFile(
     suggestedName: string,
     kind: "image" | "audio" | "text" | "file" | "metadata",
+    suggestedDir?: string,
   ): Promise<string | null>;
   revealPath(path: string): Promise<void>;
   appInfo(): Promise<AppInfo>;
@@ -622,6 +628,20 @@ export const tauriBridge: PhantomBridge = {
     if (raw.ok !== true) return { ok: false, error: asError(raw) };
     return { ok: true, report: mapMetadataReport(raw.report), plan: mapPlan(raw.plan) };
   },
+  async metadataOutputPath({ path, outputPath, overwrite }) {
+    const request: Record<string, unknown> = {
+      cmd: "metadata_output_path",
+      path,
+      output_path: outputPath,
+    };
+    if (overwrite !== undefined) request.overwrite = overwrite;
+    const raw = await callBridge(request);
+    if (raw.ok !== true) return { ok: false, error: asError(raw) };
+    if (typeof raw.output !== "string" || typeof raw.source !== "string") {
+      return { ok: false, error: { code: "internal", message: "invalid target response", detail: null } };
+    }
+    return { ok: true, source: raw.source, output: raw.output };
+  },
   async metadataClean({ sourcePath, outputPath, selection, overwrite }) {
     const request: Record<string, unknown> = {
       cmd: "metadata_clean",
@@ -648,8 +668,12 @@ export const tauriBridge: PhantomBridge = {
       sizeBytes: typeof size === "number" && Number.isSafeInteger(size) && size >= 0 ? size : null,
     };
   },
-  async saveFile(suggestedName, kind) {
-    return (await invoke("save_file", { suggestedName, kind })) as string | null;
+  async saveFile(suggestedName, kind, suggestedDir) {
+    return (await invoke("save_file", {
+      suggestedName,
+      kind,
+      suggestedDir: suggestedDir ?? null,
+    })) as string | null;
   },
   async revealPath(path) {
     await invoke("reveal_path", { path });
@@ -680,6 +704,21 @@ function demoUnsupported(name: string): BridgeError {
 const DEMO_TEXT =
   "PHANTOM browser demo — this is simulated text.\nIn the desktop app the payload is AES-256-GCM decrypted on this device, byte-for-byte.";
 const DEMO_SHA = "78d88af9d5e83f782f545ed8915b9a390b5d216c01c92df55f7f8eca0c16c9ed";
+function demoFinalPath(path: string, format: "png" | "wav" | "flac"): string {
+  const extension = `.${format}`;
+  const slash = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
+  const folder = slash >= 0 ? path.slice(0, slash + 1) : "";
+  const name = slash >= 0 ? path.slice(slash + 1) : path;
+  const dot = name.lastIndexOf(".");
+  const stem = dot > 0 ? name.slice(0, dot) : name;
+  return name.toLowerCase().endsWith(extension) ? path : `${folder}${stem}${extension}`;
+}
+
+function demoSamePath(left: string, right: string): boolean {
+  return left.replace(/\\/g, "/").replace(/\/+$/, "") ===
+    right.replace(/\\/g, "/").replace(/\/+$/, "");
+}
+
 // The demo "cleaned" copy has a different whole-file hash and the same decoded
 // content hash, exactly like the core: that is the difference the UI explains.
 const DEMO_CLEAN_SHA = "1c40b9d2e6a17f38b0d5c4a92f6e8d37a15b0ce4f92d68a7b3c51e0d9f42a6b8";
@@ -1013,6 +1052,25 @@ const demoBridge: PhantomBridge = {
     if (!format) return { ok: false, error: demoUnsupported(name) };
     const report = demoMetadataReport(path, format, /signed|c2pa|provenance/i.test(name));
     return { ok: true, report, plan: demoMetadataPlan(report, selection) };
+  },
+  async metadataOutputPath({ path, outputPath: requested }) {
+    await demoSleep(60);
+    const name = path.split(/[\\/]/).pop() ?? path;
+    const format = demoMetadataFormat(name);
+    if (!format) return { ok: false, error: demoUnsupported(name) };
+    const final = demoFinalPath(requested, format);
+    if (demoSamePath(path, final)) {
+      return {
+        ok: false,
+        error: {
+          code: "source_overwrite",
+          message: "the cleaned copy must not replace the original",
+          detail: final,
+          params: { source: path, output: final },
+        },
+      };
+    }
+    return { ok: true, source: path, output: final };
   },
   async metadataClean({ sourcePath, outputPath, selection, overwrite: _overwrite }) {
     await demoSleep(900);

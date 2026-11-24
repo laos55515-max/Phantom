@@ -318,9 +318,16 @@ for (const theme of ["dark", "light"]) {
       invoke: async (command, args) => {
         if (command === "app_info") return { app: "2.1.0", core: "2.1.0", name: "PHANTOM" };
         if (command === "pick_file") return { path: "/mock/holiday.png", name: "holiday.png", size_bytes: 2048 };
-        if (command === "save_file") return "/mock/holiday.png"; // the user picks the original
+        if (command === "save_file") return "/mock/holiday.wav"; // a name the core must resolve
         if (command === "bridge_call") {
           window.__META_CALLS__.push(args.request);
+          if (args.request.cmd === "metadata_output_path") {
+            // The real format is PNG, so "holiday.wav" resolves to the source.
+            return { ok: false, error: { code: "source_overwrite",
+              message: "the cleaned copy must not replace the original",
+              detail: "/mock/holiday.png",
+              params: { source: "/mock/holiday.png", output: "/mock/holiday.png" } } };
+          }
           if (args.request.cmd === "metadata_inspect") {
             return { ok: true, report: fixture.report, default_selection: fixture.defaultSelection,
               plan: { allowed: true, reason: "", remove: fixture.report.fields.filter((f) => fixture.defaultSelection.includes(f.key)),
@@ -343,7 +350,7 @@ for (const theme of ["dark", "light"]) {
   const save = page.getByRole("button", { name: "Сохранить очищенную копию…" });
   await save.click();
   await page.getByRole("alert").waitFor();
-  const refused = await page.getByText(/Выходной файл совпадает с оригиналом/).count();
+  const refused = await page.getByText(/Копия была бы записана как \/mock\/holiday\.png/).count();
   const calls = await page.evaluate(() => window.__META_CALLS__.map((request) => request.cmd));
   const box = await save.boundingBox();
   if (refused !== 1) results.push({ name: "metadata-overwrite", ok: false, detail: "refusal message missing" });
@@ -351,6 +358,55 @@ for (const theme of ["dark", "light"]) {
   else if (!box || box.y + box.height > VIEWPORT.height) results.push({ name: "metadata-overwrite", ok: false, detail: "save button clipped" });
   else results.push({ name: "metadata-overwrite", ok: true, detail: `refused before clean; calls=${calls.join(",")}` });
   await page.screenshot({ path: `${arg("out", "screenshots")}/layout-metadata-overwrite.png` });
+  await context.close();
+}
+
+// Real code path, second reproduced case: "existing.wav" for a PNG resolves to
+// "existing.png", which already exists. The UI must refuse and not call clean.
+{
+  const context = await browser.newContext({ viewport: VIEWPORT });
+  await context.addInitScript((fixture) => {
+    window.localStorage.setItem("phantom.settings.draft", JSON.stringify({ language: "ru", theme: "dark" }));
+    window.__META_CALLS__ = [];
+    window.__TAURI_INTERNALS__ = {
+      metadata: { currentWindow: { label: "main" }, currentWebview: { label: "main" } },
+      transformCallback: () => 1,
+      unregisterCallback: () => undefined,
+      invoke: async (command, args) => {
+        if (command === "app_info") return { app: "2.1.0", core: "2.1.0", name: "PHANTOM" };
+        if (command === "pick_file") return { path: "/mock/photo.png", name: "photo.png", size_bytes: 2048 };
+        if (command === "save_file") return "/mock/existing.wav";
+        if (command === "bridge_call") {
+          window.__META_CALLS__.push(args.request);
+          if (args.request.cmd === "metadata_output_path") {
+            return { ok: false, error: { code: "output_exists",
+              message: "the destination already exists", detail: "/mock/existing.png",
+              params: { path: "/mock/existing.png" } } };
+          }
+          if (args.request.cmd === "metadata_inspect") {
+            return { ok: true, report: fixture.report, default_selection: fixture.defaultSelection,
+              plan: { allowed: true, reason: "", remove: fixture.report.fields.filter((f) => fixture.defaultSelection.includes(f.key)),
+                keep: fixture.report.fields.filter((f) => !fixture.defaultSelection.includes(f.key)), blocked: [], warnings: [] } };
+          }
+          if (args.request.cmd === "metadata_clean") return { ok: false, error: { code: "internal", message: "must not be called", detail: null } };
+        }
+        return 1;
+      },
+    };
+  }, { report: METADATA_REPORT, defaultSelection: METADATA_DEFAULT });
+  const page = await context.newPage();
+  await page.goto(base, { waitUntil: "networkidle" });
+  await page.getByRole("button", { name: "Метаданные" }).click();
+  await page.getByRole("button", { name: "Открыть файл…" }).click();
+  await page.getByRole("heading", { name: "Перед сохранением" }).waitFor();
+  await page.getByRole("button", { name: "Сохранить очищенную копию…" }).click();
+  await page.getByRole("alert").waitFor();
+  const explained = await page.getByText(/\/mock\/existing\.png/).count();
+  const calls = await page.evaluate(() => window.__META_CALLS__.map((request) => request.cmd));
+  if (explained < 1) results.push({ name: "metadata-exists", ok: false, detail: "resolved existing path missing" });
+  else if (calls.includes("metadata_clean")) results.push({ name: "metadata-exists", ok: false, detail: "clean was called" });
+  else results.push({ name: "metadata-exists", ok: true, detail: "existing.png named, clean not called" });
+  await page.screenshot({ path: `${arg("out", "screenshots")}/layout-metadata-exists.png` });
   await context.close();
 }
 

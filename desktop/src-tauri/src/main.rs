@@ -194,11 +194,20 @@ async fn pick_file(kind: String, media: String) -> Result<Option<Value>, String>
 }
 
 /// System save dialog.  `kind`: `image` (PNG), `audio` (WAV/FLAC), `text` or
-/// `file` (any).  Returns the chosen path or `null` when the user cancels.
+/// `file` (any).  `suggested_dir` re-opens the dialog in the folder the core
+/// resolved, so the confirmed name and the written name are the same path.
+/// Returns the chosen path or `null` when the user cancels.
 #[tauri::command]
-async fn save_file(suggested_name: String, kind: String) -> Result<Option<String>, String> {
+async fn save_file(
+    suggested_name: String,
+    kind: String,
+    suggested_dir: Option<String>,
+) -> Result<Option<String>, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let mut dialog = rfd::FileDialog::new().set_file_name(&suggested_name);
+        if let Some(dir) = suggested_dir.filter(|dir| !dir.is_empty()) {
+            dialog = dialog.set_directory(dir);
+        }
         dialog = match kind.as_str() {
             "image" => dialog.add_filter("PNG image", &["png"]),
             "audio" => dialog.add_filter("WAV / FLAC audio", &["wav", "flac"]),

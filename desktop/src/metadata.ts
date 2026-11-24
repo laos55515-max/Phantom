@@ -122,3 +122,16 @@ export function fieldReason(
   if (field.reasonKey) return t(field.reasonKey, field.reasonParams);
   return field.reason;
 }
+
+/** The file name part of a path, for both separator conventions. */
+export function fileName(path: string): string {
+  const trimmed = path.replace(/[\\/]+$/, "");
+  const cut = Math.max(trimmed.lastIndexOf("/"), trimmed.lastIndexOf("\\"));
+  return cut >= 0 ? trimmed.slice(cut + 1) : trimmed;
+}
+
+/** The folder part of a path, with its trailing separator, or "". */
+export function folderName(path: string): string {
+  const cut = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
+  return cut >= 0 ? path.slice(0, cut + 1) : "";
+}
