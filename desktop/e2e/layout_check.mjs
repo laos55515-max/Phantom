@@ -457,7 +457,11 @@ await browser.close();
 let failed = 0;
 for (const row of results) {
   console.log(`${row.ok ? "PASS" : "FAIL"}  ${row.name}  ${row.detail}`);
-  if (!row.ok) failed += 1;
+  if (!row.ok) {
+    failed += 1;
+    // An annotation is readable from the Checks API even when the job log is not.
+    console.log(`::error title=layout ${row.name}::${row.detail}`);
+  }
 }
 if (failed > 0) {
   console.error(`\n${failed} layout check(s) failed`);
