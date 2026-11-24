@@ -25,3 +25,35 @@ are unchanged between those two modes. Thus these runs test capture's influence
 on this diagnostic workload, not necessarily on an uninstrumented application.
 The original gate still uses its original push behavior. Compare distributions,
 not just maxima, and do not infer causation from one noisy runner.
+
+## First comparison (CI 45428259255)
+
+[Run and complete raw artifact](https://github.com/laos55515-max/Phantom/actions/runs/45428259255).
+All 12 launches completed; raw JSON contains every gap and its timestamped stack
+samples. GitHub exposed only ten measurement annotations for the step; the two
+remaining rows are in the artifact. The table below transcribes those ten
+annotations (times in ms from process measurement start; paint is unknown without
+capture). Each interval is the longest heartbeat gap in that launch.
+
+| Tree / mode / launch | First visible capture | Gap start | Gap end | Gap duration |
+|---|---:|---:|---:|---:|
+| base capture 1 | 2395.0 | 3880.6 | 5823.4 | 1942.8 |
+| base capture 2 | 678.3 | 1481.2 | 3102.2 | 1621.0 |
+| base capture 3 | 989.4 | 1847.3 | 3709.0 | 1861.7 |
+| merge capture 1 | 1218.2 | 2277.8 | 4499.6 | 2221.8 |
+| merge capture 2 | 823.7 | 1989.0 | 3561.7 | 1572.6 |
+| merge capture 3 | 909.0 | 1697.5 | 3445.8 | 1748.3 |
+| base no capture 1 | unknown | 1294.2 | 2064.1 | 769.9 |
+| base no capture 2 | unknown | 1374.6 | 2373.4 | 998.7 |
+| merge no capture 1 | unknown | 1515.6 | 2592.9 | 1077.3 |
+| merge no capture 2 | unknown | 1307.0 | 2375.4 | 1068.4 |
+
+The merge launch 1 reproduces a >2000 ms gap after the first visible capture.
+Its seven watchdog samples during 2586.2–4293.0 ms all show the Python main
+thread in `CTk.mainloop -> tkinter.mainloop`. This does not identify the native
+cause. Most other longest gaps show the same Python stack; merge capture 2 also
+has one sample in a CTk textbox canvas coordinate update. The visible no-capture
+runs have shorter gaps than the capture runs, consistent with measurement
+interference, but this small sample and the Python-only stacks do **not** prove
+what caused it. No product or gate fix is justified from these observations
+alone; obtain native stacks and isolate capture/PNG decoding before proposing one.
