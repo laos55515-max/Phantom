@@ -36,17 +36,19 @@ def test_select_carrier_for_text_and_pdf_and_cycle_variant() -> None:
     assert text_res["carrier"]["builtin"] is True
     assert text_res["carrier"]["capacity_bytes"] >= text_res["required_bytes"]
 
-    # Cycling ("Другой вариант") picks a different suitable built-in PNG
+    # Cycling ("Другой вариант") picks a different suitable built-in PNG by stable builtin_id
+    first_id = text_res["carrier"]["builtin_id"]
+    assert first_id
     alt_res = _call(
         {
             "cmd": "select_carrier",
             "text": "Hello PHANTOM offline carrier",
-            "exclude_path": text_res["carrier"]["path"],
+            "exclude_id": first_id,
         }
     )
     assert alt_res["ok"] is True
     assert alt_res["fits"] is True
-    assert alt_res["carrier"]["path"] != text_res["carrier"]["path"]
+    assert alt_res["carrier"]["builtin_id"] != first_id
 
     # Auto-selection for a real PDF
     pdf_res = _call({"cmd": "select_carrier", "secret_path": str(EXAMPLE_PDF)})
@@ -74,15 +76,17 @@ def test_select_carrier_when_payload_exceeds_all_builtin_pngs() -> None:
 def test_builtin_png_hide_and_extract_pdf_byte_identical(tmp_path: Path) -> None:
     sel = _call({"cmd": "select_carrier", "secret_path": str(EXAMPLE_PDF)})
     assert sel["ok"] is True and sel["fits"] is True
-    carrier_path = sel["carrier"]["path"]
+    builtin_id = sel["carrier"]["builtin_id"]
+    assert builtin_id
 
     container = tmp_path / "container.png"
     extracted = tmp_path / "extracted.pdf"
 
+    # Resolve built-in carrier strictly by stable builtin_carrier_id
     hide_res = _call(
         {
             "cmd": "hide",
-            "carrier_path": carrier_path,
+            "builtin_carrier_id": builtin_id,
             "output_path": str(container),
             "secret_path": str(EXAMPLE_PDF),
             "password": TEST_PASSWORD,
@@ -91,6 +95,33 @@ def test_builtin_png_hide_and_extract_pdf_byte_identical(tmp_path: Path) -> None
     assert hide_res["ok"] is True
     assert hide_res["verified"] is True
     assert container.is_file()
+
+    # Unknown or traversal builtin_carrier_id is rejected
+    bad_id = _call(
+        {
+            "cmd": "hide",
+            "builtin_carrier_id": "../example_carrier.png",
+            "output_path": str(tmp_path / "bad.png"),
+            "secret_path": str(EXAMPLE_PDF),
+            "password": TEST_PASSWORD,
+        }
+    )
+    assert bad_id["ok"] is False
+    assert bad_id["error"]["code"] == "invalid_input"
+
+    # Passing both carrier_path and builtin_carrier_id is rejected
+    both = _call(
+        {
+            "cmd": "hide",
+            "carrier_path": sel["carrier"]["path"],
+            "builtin_carrier_id": builtin_id,
+            "output_path": str(tmp_path / "both.png"),
+            "secret_path": str(EXAMPLE_PDF),
+            "password": TEST_PASSWORD,
+        }
+    )
+    assert both["ok"] is False
+    assert both["error"]["code"] == "invalid_input"
 
     save_res = _call(
         {

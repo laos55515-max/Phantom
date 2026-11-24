@@ -128,9 +128,24 @@ describe("HideScreen — built-in carriers & auto-selection", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Выбрать свой файл" }));
     await waitFor(() => expect(screen.getByText("custom.png")).toBeTruthy());
+    expect(pickFileMock).toHaveBeenLastCalledWith("carrier", "any");
     expect(probeMock).toHaveBeenCalledWith(
       expect.objectContaining({ path: "/tmp/custom.png", displayName: "custom.png" }),
     );
+  });
+
+  it("keeps audio (WAV/FLAC) carrier selection available after built-in PNG auto-selection", async () => {
+    pickFileMock.mockResolvedValueOnce({
+      path: "/tmp/report.pdf",
+      name: "report.pdf",
+      sizeBytes: 5_000,
+    });
+    renderScreen();
+    fireEvent.click(screen.getByRole("button", { name: /^Файл/ }));
+    await waitFor(() => expect(screen.getByText("01_horizon_320x240.png")).toBeTruthy());
+
+    fireEvent.click(screen.getByRole("button", { name: /Аудио/ }));
+    await waitFor(() => expect(screen.getByText(/WAV\/FLAC/)).toBeTruthy());
   });
 
   it("suggests choosing a larger carrier when no built-in PNG fits the attachment", async () => {

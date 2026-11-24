@@ -91,9 +91,10 @@ for (const theme of ["dark", "light"]) {
       page.getByRole("button", { name: /^Файл/ }).click(),
     ]);
     await chooser.setFiles(`${repoRoot}/src/phantom/resources/example_payload.pdf`);
+    await page.waitForTimeout(400);
     const [carrierChooser] = await Promise.all([
       page.waitForEvent("filechooser"),
-      page.getByRole("button", { name: /Выбрать файл/ }).click(),
+      page.getByRole("button", { name: /Выбрать свой файл/ }).click(),
     ]);
     await carrierChooser.setFiles(`${repoRoot}/src/phantom/resources/example_carrier.png`);
     await page.waitForTimeout(600);
@@ -104,9 +105,10 @@ for (const theme of ["dark", "light"]) {
     await page.getByPlaceholder(/Впишите или вставьте текст/).fill(
       "Квартальный отчёт — демо\nбез реальных данных\nтретья строка для проверки компоновки",
     );
+    await page.waitForTimeout(400);
     const [carrierChooser] = await Promise.all([
       page.waitForEvent("filechooser"),
-      page.getByRole("button", { name: /Выбрать файл/ }).click(),
+      page.getByRole("button", { name: /Выбрать свой файл/ }).click(),
     ]);
     await carrierChooser.setFiles(`${repoRoot}/src/phantom/resources/example_carrier.png`);
     await page.waitForTimeout(600);

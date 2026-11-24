@@ -241,7 +241,19 @@ def cmd_probe(request: dict[str, Any]) -> dict[str, Any]:
 
 
 def cmd_hide(request: dict[str, Any]) -> dict[str, Any]:
-    carrier = _require_str(request, "carrier_path")
+    carrier_path = request.get("carrier_path")
+    builtin_id = request.get("builtin_carrier_id")
+    has_path = isinstance(carrier_path, str) and bool(carrier_path)
+    has_builtin = isinstance(builtin_id, str) and bool(builtin_id)
+    if has_path == has_builtin:
+        raise InvalidInput("provide exactly one of carrier_path or builtin_carrier_id")
+    if has_builtin:
+        assert isinstance(builtin_id, str)
+        carrier = builtin_carriers.resolve_builtin_carrier(builtin_id).path
+    else:
+        assert isinstance(carrier_path, str)
+        carrier = carrier_path
+
     output = _require_str(request, "output_path")
     password = _check_password(request.get("password"))
     profile = _resolve_kdf(request)
@@ -400,9 +412,17 @@ def cmd_example_hide(request: dict[str, Any]) -> dict[str, Any]:
     )
 
 
+def _builtin_carrier_fields(probe: api.CarrierProbe) -> dict[str, Any]:
+    return {
+        **_carrier_fields(probe),
+        "builtin": True,
+        "builtin_id": builtin_carriers.builtin_carrier_id(probe),
+    }
+
+
 def cmd_builtin_carriers(_: dict[str, Any]) -> dict[str, Any]:
     probes = builtin_carriers.list_builtin_carriers()
-    items = [{**_carrier_fields(p), "builtin": True} for p in probes]
+    items = [_builtin_carrier_fields(p) for p in probes]
     max_cap = max((p.capacity.payload_bytes for p in probes), default=0)
     return _ok(count=len(items), max_capacity_bytes=max_cap, carriers=items)
 
@@ -421,6 +441,10 @@ def cmd_select_carrier(request: dict[str, Any]) -> dict[str, Any]:
     ):
         raise InvalidInput("required_bytes must be an integer")
 
+    exclude_id = request.get("exclude_id")
+    if exclude_id is not None and not isinstance(exclude_id, str):
+        raise InvalidInput("exclude_id must be a string")
+
     exclude_path = request.get("exclude_path")
     if exclude_path is not None and not isinstance(exclude_path, str):
         raise InvalidInput("exclude_path must be a string")
@@ -436,11 +460,12 @@ def cmd_select_carrier(request: dict[str, Any]) -> dict[str, Any]:
     )
     selection = builtin_carriers.select_builtin_carrier(
         required_bytes=req_bytes,
+        exclude_id=exclude_id,
         exclude_path=exclude_path,
         offset=offset,
     )
     carrier_payload = (
-        {**_carrier_fields(selection.carrier), "builtin": True}
+        _builtin_carrier_fields(selection.carrier)
         if selection.carrier is not None
         else None
     )

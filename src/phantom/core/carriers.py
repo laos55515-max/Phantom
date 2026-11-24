@@ -77,17 +77,34 @@ def list_builtin_carriers() -> tuple[api.CarrierProbe, ...]:
     return tuple(probes)
 
 
+def builtin_carrier_id(probe: api.CarrierProbe) -> str:
+    """Return the stable cross-process identifier for a built-in PNG carrier."""
+    return os.path.basename(probe.path)
+
+
+def resolve_builtin_carrier(builtin_id: str) -> api.CarrierProbe:
+    """Resolve a stable built-in carrier identifier against bundled resources only."""
+    if not builtin_id or "/" in builtin_id or "\\" in builtin_id:
+        raise InvalidInput("unknown builtin carrier", detail=builtin_id)
+    for probe in list_builtin_carriers():
+        if builtin_carrier_id(probe) == builtin_id:
+            return probe
+    raise InvalidInput("unknown builtin carrier", detail=builtin_id)
+
+
 def select_builtin_carrier(
     *,
     required_bytes: int,
+    exclude_id: str | None = None,
     exclude_path: str | None = None,
     offset: int = 0,
 ) -> BuiltinCarrierSelection:
     """Pick a built-in PNG carrier that fits ``required_bytes``.
 
-    When ``exclude_path`` matches one of the suitable carriers and there are
-    multiple suitable options, advances to the next suitable carrier so the
-    "Another option" action always rotates through valid choices.
+    When ``exclude_id`` (or legacy ``exclude_path``) matches one of the suitable
+    carriers and there are multiple suitable options, advances to the next
+    suitable carrier so the "Another option" action always rotates through valid
+    choices.
     """
     if required_bytes < 0:
         raise InvalidInput("required_bytes must be non-negative")
@@ -105,6 +122,19 @@ def select_builtin_carrier(
             suitable_count=0,
             index=0,
         )
+
+    if exclude_id is not None:
+        for idx, candidate in enumerate(suitable):
+            if builtin_carrier_id(candidate) == exclude_id:
+                chosen_idx = (idx + 1) % len(suitable)
+                return BuiltinCarrierSelection(
+                    carrier=suitable[chosen_idx],
+                    fits=True,
+                    required_bytes=required_bytes,
+                    max_capacity_bytes=max_capacity,
+                    suitable_count=len(suitable),
+                    index=chosen_idx,
+                )
 
     if exclude_path is not None:
         norm_exclude = os.path.abspath(exclude_path)

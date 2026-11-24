@@ -1,13 +1,18 @@
 #!/usr/bin/env python3
 """Offline packaged-build check for built-in PNG carriers and auto-selection.
 
-Verifies against a frozen ``phantom-bridge`` binary (without any network access):
-1. ``builtin_carriers`` lists 8-12 bundled PNG carriers of different sizes.
+Every ``call_bridge`` spawns a fresh ``phantom-bridge`` process (matching Tauri's
+one-process-per-action lifecycle) so PyInstaller's temporary extraction directory
+changes on every call.  Verifies without any network access:
+
+1. ``builtin_carriers`` lists 8-12 bundled PNG carriers with stable ``builtin_id``s.
 2. ``select_carrier`` auto-selects a carrier for text and for a PDF.
-3. ``select_carrier`` with ``exclude_path`` switches to another built-in PNG.
+3. ``select_carrier`` with ``exclude_id`` switches to a different ``builtin_id``.
 4. ``select_carrier`` with an oversized payload returns ``fits=False``.
-5. ``hide`` with the auto-selected built-in PNG saves and self-verifies a container.
-6. ``extract`` (``save_file``) recovers the PDF byte-for-byte (SHA-256 match).
+5. ``hide`` with ``builtin_carrier_id`` (separate bridge process) saves and
+   self-verifies a container.
+6. ``extract`` (``save_file``, separate bridge process) recovers the PDF
+   byte-for-byte (SHA-256 match).
 """
 
 from __future__ import annotations
@@ -69,14 +74,21 @@ def main() -> int:
     listed = call_bridge(binary, {"cmd": "builtin_carriers"})
     count = int(listed.get("count", 0))
     max_cap = int(listed.get("max_capacity_bytes", 0))
-    record("bundled 8-12 offline PNG carriers", listed.get("ok") is True and 8 <= count <= 12, f"count={count} max_cap={max_cap}")
+    carriers = listed.get("carriers") or []
+    ids = [c.get("builtin_id") for c in carriers if isinstance(c, dict)]
+    record(
+        "bundled 8-12 offline PNG carriers with stable builtin_ids",
+        listed.get("ok") is True and 8 <= count <= 12 and len(set(ids)) == count and all(ids),
+        f"count={count} max_cap={max_cap}",
+    )
 
     text_sel = call_bridge(binary, {"cmd": "select_carrier", "text": "Offline test message"})
     text_carrier = text_sel.get("carrier") or {}
+    text_id = text_carrier.get("builtin_id")
     record(
         "auto-select built-in PNG for text",
-        text_sel.get("ok") is True and text_sel.get("fits") is True and bool(text_carrier.get("builtin")),
-        f"carrier={text_carrier.get('name')}",
+        text_sel.get("ok") is True and text_sel.get("fits") is True and bool(text_id),
+        f"builtin_id={text_id}",
     )
 
     alt_sel = call_bridge(
@@ -84,16 +96,18 @@ def main() -> int:
         {
             "cmd": "select_carrier",
             "text": "Offline test message",
-            "exclude_path": text_carrier.get("path", ""),
+            "exclude_id": text_id or "",
         },
     )
     alt_carrier = alt_sel.get("carrier") or {}
+    alt_id = alt_carrier.get("builtin_id")
     record(
-        "switch to another built-in PNG",
+        "switch to another built-in PNG (different builtin_id)",
         alt_sel.get("ok") is True
         and alt_sel.get("fits") is True
-        and alt_carrier.get("path") != text_carrier.get("path"),
-        f"alt={alt_carrier.get('name')}",
+        and bool(alt_id)
+        and alt_id != text_id,
+        f"{text_id} -> {alt_id}",
     )
 
     overflow = call_bridge(binary, {"cmd": "select_carrier", "required_bytes": max_cap + 4096})
@@ -105,10 +119,11 @@ def main() -> int:
 
     pdf_sel = call_bridge(binary, {"cmd": "select_carrier", "secret_path": str(EXAMPLE_PDF)})
     pdf_carrier = pdf_sel.get("carrier") or {}
+    pdf_builtin_id = pdf_carrier.get("builtin_id")
     record(
         "auto-select built-in PNG for PDF",
-        pdf_sel.get("ok") is True and pdf_sel.get("fits") is True and bool(pdf_carrier.get("builtin")),
-        f"carrier={pdf_carrier.get('name')}",
+        pdf_sel.get("ok") is True and pdf_sel.get("fits") is True and bool(pdf_builtin_id),
+        f"builtin_id={pdf_builtin_id}",
     )
 
     with tempfile.TemporaryDirectory(prefix="phantom-builtin-e2e-") as tmp_raw:
@@ -116,22 +131,24 @@ def main() -> int:
         container = tmp / "builtin-container.png"
         extracted = tmp / "extracted.pdf"
 
+        # Separate bridge process resolves builtin_carrier_id internally
         hide = call_bridge(
             binary,
             {
                 "cmd": "hide",
-                "carrier_path": pdf_carrier.get("path", ""),
+                "builtin_carrier_id": pdf_builtin_id,
                 "output_path": str(container),
                 "secret_path": str(EXAMPLE_PDF),
                 "password": TEST_PASSWORD,
             },
         )
         record(
-            "hide PDF into built-in PNG (offline, self-verified)",
+            "hide PDF using builtin_carrier_id (separate process, self-verified)",
             hide.get("ok") is True and hide.get("verified") is True and container.is_file(),
             f"verified={hide.get('verified')}",
         )
 
+        # Separate bridge process extracts and verifies the PDF
         save = call_bridge(
             binary,
             {

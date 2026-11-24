@@ -41,6 +41,7 @@ export interface ProbeInfo {
   usableBits: number;
   notices: string[];
   builtin?: boolean;
+  builtinId?: string;
   image?: { width: number; height: number; mode: string };
   audio?: { frames: number; channels: number; bits: number; sampleRate: number };
 }
@@ -107,11 +108,12 @@ export interface PhantomBridge {
     secretPath?: string;
     text?: string;
     requiredBytes?: number;
-    excludePath?: string;
+    excludeId?: string;
     offset?: number;
   }): Promise<BridgeResult<BuiltinCarrierSelection>>;
   hide(args: {
-    carrierPath: string;
+    carrierPath?: string;
+    builtinCarrierId?: string;
     outputPath: string;
     password: string;
     secretPath?: string;
@@ -190,6 +192,12 @@ function mapProbe(raw: Record<string, unknown>): ProbeInfo {
     usableBits: Number(raw.usable_bits ?? raw.usableBits ?? 0),
     notices: Array.isArray(raw.notices) ? raw.notices.map(String) : [],
     builtin: raw.builtin === true ? true : undefined,
+    builtinId:
+      typeof raw.builtin_id === "string"
+        ? raw.builtin_id
+        : typeof raw.builtinId === "string"
+          ? raw.builtinId
+          : undefined,
     image,
     audio,
   };
@@ -302,12 +310,12 @@ export const tauriBridge: PhantomBridge = {
     if (raw.ok !== true) return { ok: false, error: asError(raw) };
     return { ok: true, ...mapProbe(raw) };
   },
-  async selectBuiltinCarrier({ secretPath, text, requiredBytes, excludePath, offset }) {
+  async selectBuiltinCarrier({ secretPath, text, requiredBytes, excludeId, offset }) {
     const req: Record<string, unknown> = { cmd: "select_carrier" };
     if (secretPath !== undefined) req.secret_path = secretPath;
     else if (text !== undefined) req.text = text;
     else if (requiredBytes !== undefined) req.required_bytes = requiredBytes;
-    if (excludePath !== undefined) req.exclude_path = excludePath;
+    if (excludeId !== undefined) req.exclude_id = excludeId;
     if (offset !== undefined) req.offset = offset;
     const raw = await callBridge(req);
     if (raw.ok !== true) return { ok: false, error: asError(raw) };
@@ -322,16 +330,16 @@ export const tauriBridge: PhantomBridge = {
       carrier,
     };
   },
-  async hide({ carrierPath, outputPath, password, secretPath, text, example }) {
-    const request = example
+  async hide({ carrierPath, builtinCarrierId, outputPath, password, secretPath, text, example }) {
+    const request: Record<string, unknown> = example
       ? { cmd: "example_hide", output_path: outputPath, password }
       : {
           cmd: "hide",
-          carrier_path: carrierPath,
           output_path: outputPath,
           password,
           secret_path: secretPath,
           text,
+          ...(builtinCarrierId ? { builtin_carrier_id: builtinCarrierId } : { carrier_path: carrierPath }),
         };
     const raw = await callBridge(request);
     if (raw.ok !== true) return { ok: false, error: asError(raw) };
@@ -401,16 +409,16 @@ const DEMO_TEXT =
 const DEMO_SHA = "78d88af9d5e83f782f545ed8915b9a390b5d216c01c92df55f7f8eca0c16c9ed";
 
 const DEMO_BUILTIN_CARRIERS: ProbeInfo[] = [
-  { kind: "image", path: "builtin://01_horizon_320x240.png", name: "01_horizon_320x240.png", sizeBytes: 31_802, description: "320x240 RGB", capacityBytes: 28_680, usableBits: 230_400, notices: [], builtin: true, image: { width: 320, height: 240, mode: "RGB" } },
-  { kind: "image", path: "builtin://02_ember_400x300.png", name: "02_ember_400x300.png", sizeBytes: 42_769, description: "400x300 RGB", capacityBytes: 44_880, usableBits: 360_000, notices: [], builtin: true, image: { width: 400, height: 300, mode: "RGB" } },
-  { kind: "image", path: "builtin://03_fjord_640x480.png", name: "03_fjord_640x480.png", sizeBytes: 94_661, description: "640x480 RGB", capacityBytes: 115_080, usableBits: 921_600, notices: [], builtin: true, image: { width: 640, height: 480, mode: "RGB" } },
-  { kind: "image", path: "builtin://04_aurora_800x600.png", name: "04_aurora_800x600.png", sizeBytes: 122_090, description: "800x600 RGB", capacityBytes: 179_880, usableBits: 1_440_000, notices: [], builtin: true, image: { width: 800, height: 600, mode: "RGB" } },
-  { kind: "image", path: "builtin://05_dunes_1024x768.png", name: "05_dunes_1024x768.png", sizeBytes: 155_360, description: "1024x768 RGB", capacityBytes: 294_792, usableBits: 2_359_296, notices: [], builtin: true, image: { width: 1024, height: 768, mode: "RGB" } },
-  { kind: "image", path: "builtin://06_canopy_1280x720.png", name: "06_canopy_1280x720.png", sizeBytes: 174_083, description: "1280x720 RGB", capacityBytes: 345_480, usableBits: 2_764_800, notices: [], builtin: true, image: { width: 1280, height: 720, mode: "RGB" } },
-  { kind: "image", path: "builtin://07_glacier_1600x900.png", name: "07_glacier_1600x900.png", sizeBytes: 264_633, description: "1600x900 RGB", capacityBytes: 539_880, usableBits: 4_320_000, notices: [], builtin: true, image: { width: 1600, height: 900, mode: "RGB" } },
-  { kind: "image", path: "builtin://08_nebula_1920x1080.png", name: "08_nebula_1920x1080.png", sizeBytes: 320_045, description: "1920x1080 RGB", capacityBytes: 777_480, usableBits: 6_220_800, notices: [], builtin: true, image: { width: 1920, height: 1080, mode: "RGB" } },
-  { kind: "image", path: "builtin://09_canyon_2400x1600.png", name: "09_canyon_2400x1600.png", sizeBytes: 440_112, description: "2400x1600 RGB", capacityBytes: 1_439_880, usableBits: 11_520_000, notices: [], builtin: true, image: { width: 2400, height: 1600, mode: "RGB" } },
-  { kind: "image", path: "builtin://10_alpine_3200x2000.png", name: "10_alpine_3200x2000.png", sizeBytes: 711_548, description: "3200x2000 RGB", capacityBytes: 2_399_880, usableBits: 19_200_000, notices: [], builtin: true, image: { width: 3200, height: 2000, mode: "RGB" } },
+  { kind: "image", path: "builtin://01_horizon_320x240.png", name: "01_horizon_320x240.png", builtinId: "01_horizon_320x240.png", sizeBytes: 31_802, description: "320x240 RGB", capacityBytes: 28_680, usableBits: 230_400, notices: [], builtin: true, image: { width: 320, height: 240, mode: "RGB" } },
+  { kind: "image", path: "builtin://02_ember_400x300.png", name: "02_ember_400x300.png", builtinId: "02_ember_400x300.png", sizeBytes: 42_769, description: "400x300 RGB", capacityBytes: 44_880, usableBits: 360_000, notices: [], builtin: true, image: { width: 400, height: 300, mode: "RGB" } },
+  { kind: "image", path: "builtin://03_fjord_640x480.png", name: "03_fjord_640x480.png", builtinId: "03_fjord_640x480.png", sizeBytes: 94_661, description: "640x480 RGB", capacityBytes: 115_080, usableBits: 921_600, notices: [], builtin: true, image: { width: 640, height: 480, mode: "RGB" } },
+  { kind: "image", path: "builtin://04_aurora_800x600.png", name: "04_aurora_800x600.png", builtinId: "04_aurora_800x600.png", sizeBytes: 122_090, description: "800x600 RGB", capacityBytes: 179_880, usableBits: 1_440_000, notices: [], builtin: true, image: { width: 800, height: 600, mode: "RGB" } },
+  { kind: "image", path: "builtin://05_dunes_1024x768.png", name: "05_dunes_1024x768.png", builtinId: "05_dunes_1024x768.png", sizeBytes: 155_360, description: "1024x768 RGB", capacityBytes: 294_792, usableBits: 2_359_296, notices: [], builtin: true, image: { width: 1024, height: 768, mode: "RGB" } },
+  { kind: "image", path: "builtin://06_canopy_1280x720.png", name: "06_canopy_1280x720.png", builtinId: "06_canopy_1280x720.png", sizeBytes: 174_083, description: "1280x720 RGB", capacityBytes: 345_480, usableBits: 2_764_800, notices: [], builtin: true, image: { width: 1280, height: 720, mode: "RGB" } },
+  { kind: "image", path: "builtin://07_glacier_1600x900.png", name: "07_glacier_1600x900.png", builtinId: "07_glacier_1600x900.png", sizeBytes: 264_633, description: "1600x900 RGB", capacityBytes: 539_880, usableBits: 4_320_000, notices: [], builtin: true, image: { width: 1600, height: 900, mode: "RGB" } },
+  { kind: "image", path: "builtin://08_nebula_1920x1080.png", name: "08_nebula_1920x1080.png", builtinId: "08_nebula_1920x1080.png", sizeBytes: 320_045, description: "1920x1080 RGB", capacityBytes: 777_480, usableBits: 6_220_800, notices: [], builtin: true, image: { width: 1920, height: 1080, mode: "RGB" } },
+  { kind: "image", path: "builtin://09_canyon_2400x1600.png", name: "09_canyon_2400x1600.png", builtinId: "09_canyon_2400x1600.png", sizeBytes: 440_112, description: "2400x1600 RGB", capacityBytes: 1_439_880, usableBits: 11_520_000, notices: [], builtin: true, image: { width: 2400, height: 1600, mode: "RGB" } },
+  { kind: "image", path: "builtin://10_alpine_3200x2000.png", name: "10_alpine_3200x2000.png", builtinId: "10_alpine_3200x2000.png", sizeBytes: 711_548, description: "3200x2000 RGB", capacityBytes: 2_399_880, usableBits: 19_200_000, notices: [], builtin: true, image: { width: 3200, height: 2000, mode: "RGB" } },
 ];
 
 const demoBridge: PhantomBridge = {
@@ -448,7 +456,7 @@ const demoBridge: PhantomBridge = {
       audio: isAudio ? { frames: 96_000, channels: 2, bits: 16, sampleRate: 48_000 } : undefined,
     };
   },
-  async selectBuiltinCarrier({ text, requiredBytes, excludePath, offset = 0 }) {
+  async selectBuiltinCarrier({ text, requiredBytes, excludeId, offset = 0 }) {
     const rawBytes = requiredBytes ?? (text !== undefined ? new TextEncoder().encode(text).length + 63 : 1024);
     const maxCapacityBytes = DEMO_BUILTIN_CARRIERS[DEMO_BUILTIN_CARRIERS.length - 1].capacityBytes;
     const suitable = DEMO_BUILTIN_CARRIERS.filter((c) => c.capacityBytes >= rawBytes);
@@ -464,8 +472,8 @@ const demoBridge: PhantomBridge = {
       };
     }
     let idx = offset % suitable.length;
-    if (excludePath) {
-      const current = suitable.findIndex((c) => c.path === excludePath);
+    if (excludeId) {
+      const current = suitable.findIndex((c) => c.builtinId === excludeId);
       if (current >= 0) idx = (current + 1) % suitable.length;
     }
     return {

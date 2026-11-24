@@ -118,8 +118,9 @@ describe("App — in-memory draft survives a trip to Settings and a language swi
     fireEvent.click(screen.getByRole("button", { name: /^Файл/ }));
     await waitFor(() => expect(screen.getByText(FILE_SENTINEL)).toBeTruthy());
 
-    // built-in carrier is auto-selected and capacity bar is shown
-    await waitFor(() => expect(screen.getByRole("progressbar")).toBeTruthy());
+    // no capacity verdict before the carrier is probed
+    expect(screen.queryByRole("progressbar")).toBeNull();
+    expect(screen.getByText("Выберите картинку или аудио")).toBeTruthy();
 
     fireEvent.click(screen.getByRole("button", { name: /Настройки/ }));
     fireEvent.click(screen.getByRole("radio", { name: /English/ }));

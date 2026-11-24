@@ -76,17 +76,16 @@ function renderScreen() {
 }
 
 describe("HideScreen — carrier selection gate", () => {
-  it("auto-selects a suitable built-in carrier and shows capacity when a PDF is picked", async () => {
+  it("shows the «Выберите картинку или аудио» hint instead of the capacity bar until a carrier is probed", async () => {
     seedDraft("ru");
     pickFileMock.mockResolvedValue({ path: "/tmp/договор.pdf", name: "договор.pdf", sizeBytes: 204_800 });
     renderScreen();
 
     fireEvent.click(screen.getByRole("button", { name: /Файл/ }));
     await waitFor(() => expect(screen.getByText("договор.pdf")).toBeTruthy());
-    await waitFor(() => expect(screen.getByRole("progressbar")).toBeTruthy());
 
-    expect(screen.getByRole("button", { name: "Другой вариант" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Выбрать свой файл" })).toBeTruthy();
+    expect(screen.getByText("Выберите картинку или аудио")).toBeTruthy();
+    expect(screen.queryByRole("progressbar")).toBeNull();
     expect(screen.queryByText(/Не вмещается/)).toBeNull();
   });
 
@@ -118,9 +117,12 @@ describe("HideScreen — carrier selection gate", () => {
       target: { value: "A".repeat(4_000) },
     });
 
-    await waitFor(() => expect(screen.getByRole("button", { name: "Выбрать свой файл" })).toBeTruthy());
-    fireEvent.click(screen.getByRole("button", { name: "Выбрать свой файл" }));
-    await waitFor(() => expect(screen.getByText("tiny.png")).toBeTruthy());
+    // still no capacity verdict before the carrier is known
+    expect(screen.queryByRole("progressbar")).toBeNull();
+    expect(screen.queryByText(/Не вмещается/)).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: /Выбрать файл/ }));
+    await waitFor(() => expect(screen.getByRole("progressbar")).toBeTruthy());
 
     expect(screen.getByText(/Не вмещается/)).toBeTruthy();
     expect(screen.getByRole("button", { name: /Спрятать/ })).toHaveProperty("disabled", true);
