@@ -30,7 +30,9 @@ import measure_startup_frame as M  # noqa: E402 - after the path insert above
 Colour = tuple[int, int, int]
 
 
-def _png(width: int, height: int, pixels: list[list[Colour]], filters: list[int] | None = None) -> bytes:
+def _png(
+    width: int, height: int, pixels: list[list[Colour]], filters: list[int] | None = None
+) -> bytes:
     """A minimal 8-bit RGB PNG, one filter type per row (``0`` unless asked)."""
     channels = 3
     stride = width * channels
@@ -111,11 +113,12 @@ def test_every_png_filter_type_decodes_to_the_same_pixels(
     tmp_path: pathlib.Path, kind: int
 ) -> None:
     """Sub, Up, Average and Paeth are what a real screenshot is full of."""
+    pixels = [[(index * 7 + row * 13) % 256 for index in range(9)] or [] for row in range(4)]
     pixels = [
-        [(index * 7 + row * 13) % 256 for index in range(9)] or [] for row in range(4)
-    ]
-    pixels = [
-        [((index * 7 + row * 13) % 256, (index * 3 + row) % 256, (index + row * 29) % 256) for index in range(9)]
+        [
+            ((index * 7 + row * 13) % 256, (index * 3 + row) % 256, (index + row * 29) % 256)
+            for index in range(9)
+        ]
         for row in range(4)
     ]
     image = M.decode_png(_write(tmp_path, _png(9, 4, pixels, filters=[kind] * 4)))
@@ -193,3 +196,16 @@ def test_a_png_this_decoder_cannot_read_is_named_as_such(tmp_path: pathlib.Path)
     data = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", header) + chunk(b"IEND", b"")
     with pytest.raises(ValueError, match="unsupported PNG"):
         M.decode_png(_write(tmp_path, data))
+
+
+def test_gap_samples_are_selected_by_timestamp_not_by_first_stalls():
+    gaps = [{"start_ms": 1000.0, "end_ms": 3000.0, "duration_ms": 2000.0}]
+    samples = [
+        {"at_ms": 500.0, "stack": "build"},
+        {"at_ms": 1000.0, "stack": "boundary"},
+        {"at_ms": 1200.0, "stack": "inside one"},
+        {"at_ms": 2800.0, "stack": "inside two"},
+        {"at_ms": 3000.0, "stack": "end"},
+    ]
+    M.attach_gap_samples(gaps, samples)
+    assert [item["stack"] for item in gaps[0]["stack_samples"]] == ["inside one", "inside two"]

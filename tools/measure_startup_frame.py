@@ -269,10 +269,20 @@ def first_paint(capture: Capture) -> float | None:
     return None
 
 
+def attach_gap_samples(gaps: list[dict[str, Any]], samples: list[dict[str, Any]]) -> None:
+    """Retain only watchdog samples taken strictly inside each heartbeat gap."""
+    for gap in gaps:
+        gap["stack_samples"] = [
+            item for item in samples if gap["start_ms"] < item["at_ms"] < gap["end_ms"]
+        ]
+
+
 # ---------------------------------------------------------------------------
 # one run
 # ---------------------------------------------------------------------------
-def run(label: str, watch: float) -> dict[str, Any]:
+def run(
+    label: str, watch: float, *, diagnostic: bool = False, capture_enabled: bool = True
+) -> dict[str, Any]:
     import tkinter as tk
 
     import customtkinter as ctk
@@ -295,6 +305,8 @@ def run(label: str, watch: float) -> dict[str, Any]:
     worst_gap_at_ms = [0.0]
     beats = [0]
     stalls: list[str] = []
+    stack_samples: list[dict[str, Any]] = []
+    gaps: list[dict[str, Any]] = []
     done_flag = [False]
 
     def watchdog() -> None:
@@ -304,7 +316,7 @@ def run(label: str, watch: float) -> dict[str, Any]:
                 break
             now = time.perf_counter()
             gap = now - last_beat[0]
-            if gap >= 0.30 and len(stalls) < 8:
+            if gap >= 0.30 and (diagnostic or len(stalls) < 8):
                 frame = sys._current_frames().get(main_tid)
                 where = "unknown"
                 if frame is not None:
@@ -314,9 +326,18 @@ def run(label: str, watch: float) -> dict[str, Any]:
                         f"{pathlib.Path(item.filename).name}:{item.lineno}({item.name})"
                         for item in tail
                     )
-                stalls.append(
-                    f"at={now - started:.2f}s phase={phase[0]} gap={gap:.2f}s stack={where}"
-                )
+                if diagnostic:
+                    stack_samples.append(
+                        {
+                            "at_ms": round((now - started) * 1000, 1),
+                            "phase": phase[0],
+                            "stack": where,
+                        }
+                    )
+                elif len(stalls) < 8:
+                    stalls.append(
+                        f"at={now - started:.2f}s phase={phase[0]} gap={gap:.2f}s stack={where}"
+                    )
 
     dog = threading.Thread(target=watchdog, daemon=True)
     dog.start()
@@ -400,6 +421,14 @@ def run(label: str, watch: float) -> dict[str, Any]:
     def beat() -> None:
         now = time.perf_counter()
         gap_ms = (now - last_beat[0]) * 1000.0
+        if diagnostic and gap_ms >= 300:
+            gaps.append(
+                {
+                    "start_ms": round((last_beat[0] - started) * 1000, 1),
+                    "end_ms": round((now - started) * 1000, 1),
+                    "duration_ms": round(gap_ms, 1),
+                }
+            )
         if gap_ms > worst_gap_ms[0]:
             worst_gap_ms[0] = gap_ms
             worst_gap_at_ms[0] = (now - started) * 1000.0
@@ -425,8 +454,11 @@ def run(label: str, watch: float) -> dict[str, Any]:
     result["refresh_ms"] = round((time.perf_counter() - refreshed) * 1000.0, 1)
 
     capture.screen = (root.winfo_screenwidth(), root.winfo_screenheight())
-    sampler = threading.Thread(target=capture.run, args=(started + watch,), daemon=True)
-    sampler.start()
+    if capture_enabled:
+        sampler = threading.Thread(target=capture.run, args=(started + watch,), daemon=True)
+        sampler.start()
+    else:
+        capture.reason = "disabled for diagnostic comparison"
 
     pushed: dict[str, Any] = {}
 
@@ -447,7 +479,10 @@ def run(label: str, watch: float) -> dict[str, Any]:
         else:
             pushed["skipped"] = (time.perf_counter() - started) * 1000.0
 
-    root.after(int(PUSH_AT * 1000), to_push)
+    # In diagnostic mode keep workloads identical with and without capture.
+    # Otherwise the no-capture run would always push the window.
+    if not diagnostic:
+        root.after(int(PUSH_AT * 1000), to_push)
 
     clicks: dict[str, Any] = {}
 
@@ -516,11 +551,8 @@ def run(label: str, watch: float) -> dict[str, Any]:
         done_flag[0] = True
 
     painted = first_paint(capture)
-    stages = [
-        f"{name}={delta:.1f}ms"
-        for name, _at, delta in trace.marks
-        if delta >= 15.0
-    ]
+    attach_gap_samples(gaps, stack_samples)
+    stages = [f"{name}={delta:.1f}ms" for name, _at, delta in trace.marks if delta >= 15.0]
     result.update(
         {
             "pre_mainloop_ms": round(marks.get("pre_mainloop", -1), 1),
@@ -542,6 +574,9 @@ def run(label: str, watch: float) -> dict[str, Any]:
             "worst_gap_ms": round(worst_gap_ms[0], 1),
             "worst_gap_at_ms": round(worst_gap_at_ms[0], 1),
             "stalls": stalls,
+            "diagnostic_gaps": gaps,
+            "diagnostic_stack_samples": stack_samples,
+            "capture_enabled": capture_enabled,
             "slow_stages": stages,
             "refit_passes": app._refit_passes,
             "resize_events": app._resize_events,
@@ -640,10 +675,20 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--label", default="run", help="name for this run in the report")
     parser.add_argument("--watch", type=float, default=WATCH_SECONDS, help="seconds to watch")
     parser.add_argument("--json", help="write the raw numbers here")
+    parser.add_argument(
+        "--diagnostic", action="store_true", help="sample stacks throughout heartbeat gaps"
+    )
+    parser.add_argument(
+        "--no-capture", action="store_true", help="disable screenshots (diagnostic mode only)"
+    )
     args = parser.parse_args(argv)
+    if args.no_capture and not args.diagnostic:
+        parser.error("--no-capture requires --diagnostic")
 
     try:
-        result = run(args.label, args.watch)
+        result = run(
+            args.label, args.watch, diagnostic=args.diagnostic, capture_enabled=not args.no_capture
+        )
     except Exception as exc:  # noqa: BLE001 - a measurement reports, it never raises
         say(f"label={args.label} error={type(exc).__name__}: {exc}")
         return 1
