@@ -11,7 +11,9 @@ The order of operations is the safety property:
 5. decode both files and compare the pixels or the PCM samples;
 6. re-scan the staged file and confirm that the selected fields are gone and the
    protected ones are still there;
-7. publish the staged file onto the destination with one rename, or discard it.
+7. publish the staged file with one conditional operation — a rename when the
+   caller explicitly asked to replace that name, a create/link that cannot
+   replace anything otherwise — or discard it.
 
 A failure at any step leaves the destination exactly as it was, which is the only
 version of this feature worth shipping.
@@ -30,6 +32,7 @@ from phantom.core import files as fsutil
 from phantom.core.errors import (
     MetadataConflictError,
     MetadataError,
+    OutputExistsError,
     PhantomError,
     SignedMediaError,
     SourceOverwriteError,
@@ -188,12 +191,76 @@ def _rewrite(data: bytes, fmt: MediaFormat, keys: frozenset[str]) -> bytes:
 
 
 def _same_file(left: str, right: str) -> bool:
+    """Identity of two paths, including symlinks and hard links.
+
+    ``abspath`` catches the plain "same name" case, ``realpath`` catches a
+    symlinked parent or a symlink that does not exist yet, and ``samefile``
+    catches hard links and a symlink that does exist.  Checking only the string
+    the user typed missed all of them.
+    """
     if os.path.abspath(left) == os.path.abspath(right):
+        return True
+    if os.path.realpath(left) == os.path.realpath(right):
         return True
     try:
         return os.path.samefile(left, right)
     except OSError:
         return False
+
+
+def final_output_path(output: str, fmt: MediaFormat) -> str:
+    """The name the copy really gets: the chosen one, with the real format's extension.
+
+    ``photo.wav`` for a PNG is not a destination the cleaner can honour, and
+    silently writing ``photo.png`` instead made every check below look at the
+    wrong file.  The extension is therefore decided once, here, before anything
+    is compared or written.
+    """
+    stem, extension = os.path.splitext(output)
+    if extension.lower() == fmt.extension:
+        return output
+    return f"{stem}{fmt.extension}"
+
+
+def resolve_output(
+    source: str, output: str, fmt: MediaFormat, *, overwrite: bool = False
+) -> str:
+    """The exact path :func:`clean` will write, or a typed refusal.
+
+    Both questions are asked about the *final* path, after the extension has been
+    replaced by the one the detected format uses: is it the source (directly, via
+    a symlink, or via a hard link), and does something already live there.
+
+    ``overwrite`` only covers the name the caller asked for.  When the extension
+    had to be rewritten (``existing.wav`` → ``existing.png``), the caller has
+    never been shown the file that would be replaced, so it is refused even with
+    ``overwrite=True``.
+    """
+    final = final_output_path(output, fmt)
+    if _same_file(source, final):
+        raise SourceOverwriteError(
+            "the cleaned copy must not replace the original", detail=final
+        ).with_params(source=source, output=final)
+    # A directory is not a file we may publish onto, and an extension rewrite
+    # must not quietly turn "occupied/" into "occupied.png".
+    for candidate in dict.fromkeys((output, final)):
+        if os.path.isdir(candidate):
+            raise OutputExistsError(
+                "the destination is a directory", detail=candidate
+            ).with_params(path=candidate)
+    if os.path.lexists(final) and (final != output or not overwrite):
+        raise OutputExistsError(
+            "the destination already exists", detail=final
+        ).with_params(path=final)
+    return final
+
+
+def output_path(source: str, output: str, *, overwrite: bool = False) -> str:
+    """Answer where a clean would write, without writing: format first, then path."""
+    fmt = inspector.detect_format(inspector.read_head(source))
+    if fmt is None:
+        raise UnsupportedFormat("only PNG, WAV and FLAC containers are cleaned")
+    return resolve_output(source, output, fmt, overwrite=overwrite)
 
 
 def clean(
@@ -206,18 +273,19 @@ def clean(
     progress: ProgressFn = noop_progress,
 ) -> CleaningOutcome:
     """Remove the selected fields into ``output``; the source is only ever read."""
-    if _same_file(source, output):
-        raise SourceOverwriteError(
-            "the cleaned copy must not replace the original", detail=output
-        )
-    output = _natural_extension(output)
-    if os.path.exists(output) and not overwrite:
-        raise MetadataError("the output file already exists", detail=output)
     progress(Stage.SCANNING, 0, 4)
     data = inspector.read_file(source, cancel=cancel)
     fmt = inspector.detect_format(data[:16])
     if fmt is None:
         raise UnsupportedFormat("only PNG, WAV and FLAC containers are cleaned")
+    # Resolution happens after the format is known: checking the path the user
+    # typed (``photo.wav``) is not checking the path that would be written
+    # (``photo.png``), and that difference used to destroy the source.
+    requested = output
+    output = resolve_output(source, output, fmt, overwrite=overwrite)
+    # Replacing is allowed only for the exact name the caller asked to replace;
+    # an extension-rewritten destination is published exclusively.
+    may_replace = overwrite and output == requested
     before = inspector.report_from_bytes(source, data, fmt)
     progress(Stage.SCANNING, 1, 4)
     if before.provenance.detected:
@@ -230,7 +298,6 @@ def clean(
         raise MetadataError("no removable field was selected")
     check_cancel(cancel)
     progress(Stage.CLEANING, 2, 4)
-    output = _with_extension(output, fmt)
     cleaned = _rewrite(data, fmt, decision.remove_keys)
     after = inspector.report_from_bytes(source, cleaned, fmt)
     _confirm_removal(decision, after)
@@ -247,7 +314,12 @@ def clean(
             raise MetadataError("the rewritten PNG fails its own CRC check")
     check_cancel(cancel)
     progress(Stage.VERIFYING, 3, 4)
-    published = _publish(output, cleaned)
+    # Ask again immediately before publishing: a file created while the copy was
+    # being verified must not be replaced, and a hard link created meanwhile must
+    # not turn the destination into the source.  Even this check can lose a race,
+    # so the publication itself is conditional (see ``_publish``).
+    output = resolve_output(source, output, fmt, overwrite=overwrite)
+    published = _publish(output, cleaned, replace=may_replace)
     # ``after`` describes the bytes that now live in ``published``: reporting it
     # under the source name made "analysis" and "file" name different files in the
     # same card, and the user could not tell which one carried the numbers.
@@ -315,17 +387,30 @@ def _confirm_removal(decision: CleaningPlan, after: MetadataReport) -> None:
         )
 
 
-def _publish(output: str, cleaned: bytes) -> str:
-    """Write the staged file, then rename it into place — or leave nothing behind."""
+def _publish(output: str, cleaned: bytes, *, replace: bool) -> str:
+    """Write the staged file, then publish it — or leave nothing behind.
+
+    With ``replace=False`` the publication is conditional at the filesystem
+    level, so two cleans that reach this point together cannot both succeed and
+    neither can replace a file that appeared while it was verifying.
+    """
     staged = fsutil.staged_path(output, suffix=".metadata")
+    published = fsutil.published_path(output, staged)
     try:
         with open(staged, "wb") as handle:
             handle.write(cleaned)
             handle.flush()
             os.fsync(handle.fileno())
-        published = fsutil.published_path(output, staged)
-        fsutil.publish_staged(staged, published)
+        if replace:
+            fsutil.publish_staged(staged, published)
+        else:
+            fsutil.publish_staged_exclusive(staged, published)
         return published
+    except FileExistsError as exc:
+        _discard_quietly(staged)
+        raise OutputExistsError(
+            "the destination already exists", detail=published
+        ).with_params(path=published) from exc
     except PhantomError:
         _discard_quietly(staged)
         raise
@@ -343,15 +428,3 @@ def _discard_quietly(staged: str) -> None:
         LOGGER.warning("cannot remove the staged copy %s: %s", staged, exc)
 
 
-def _with_extension(path: str, fmt: MediaFormat) -> str:
-    """The output path with the extension of the real format, not of the file name."""
-    stem, extension = os.path.splitext(path)
-    if extension.lower() == fmt.extension:
-        return path
-    return f"{stem}{fmt.extension}"
-
-
-def _natural_extension(path: str) -> str:
-    """Lower-case the extension so ``PHOTO.PNG`` and ``photo.png`` are one name."""
-    stem, extension = os.path.splitext(path)
-    return f"{stem}{extension.lower()}" if extension else path

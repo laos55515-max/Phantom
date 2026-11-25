@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import os
 import shutil
@@ -14,12 +15,15 @@ import soundfile
 from PIL import Image
 
 import metadata_samples as samples
+from phantom.core import files as fsutil
 from phantom.core.errors import (
     ErrorCode,
     MetadataConflictError,
     MetadataError,
     OperationCancelled,
+    OutputExistsError,
     PhantomError,
+    PublishUnavailableError,
     SignedMediaError,
     SourceOverwriteError,
     UnsupportedFormat,
@@ -254,7 +258,7 @@ def test_an_existing_output_needs_explicit_permission(tmp_path: Path) -> None:
     output = tmp_path / "exists-clean.png"
     output.write_bytes(b"do not lose me")
 
-    with pytest.raises(MetadataError, match="already exists"):
+    with pytest.raises(OutputExistsError, match="already exists"):
         cleaner.clean(str(source), str(output), frozenset({"png.text.tEXt.Comment"}))
     assert output.read_bytes() == b"do not lose me"
 
@@ -266,6 +270,96 @@ def test_an_existing_output_needs_explicit_permission(tmp_path: Path) -> None:
     )
     assert outcome.verified is True
     assert output.stat().st_size > 20
+
+
+def test_a_wrong_extension_cannot_make_the_destination_the_source(tmp_path: Path) -> None:
+    """Reproduced: photo.png cleaned into "photo.wav" used to rewrite photo.png."""
+    source = samples.personal_png(tmp_path / "photo.png")
+    before = _sha(source)
+
+    with pytest.raises(SourceOverwriteError) as caught:
+        cleaner.clean(
+            str(source),
+            str(tmp_path / "photo.wav"),
+            frozenset({"png.text.tEXt.Comment"}),
+        )
+
+    assert caught.value.detail == str(tmp_path / "photo.png")
+    assert _sha(source) == before, "the source must not change by a single byte"
+    assert not (tmp_path / "photo.wav").exists()
+    assert _staged_siblings(tmp_path) == []
+
+
+def test_a_wrong_extension_cannot_replace_an_existing_file_of_the_real_format(
+    tmp_path: Path,
+) -> None:
+    """Reproduced: "existing.wav" for a PNG used to overwrite existing.png."""
+    source = samples.personal_png(tmp_path / "photo.png")
+    existing = tmp_path / "existing.png"
+    existing.write_bytes(b"someone else's pixels")
+    before = _sha(existing)
+
+    with pytest.raises(OutputExistsError) as caught:
+        cleaner.clean(
+            str(source),
+            str(tmp_path / "existing.wav"),
+            frozenset({"png.text.tEXt.Comment"}),
+        )
+
+    assert caught.value.detail == str(existing)
+    assert _sha(existing) == before
+    assert not (tmp_path / "existing.wav").exists()
+    assert _staged_siblings(tmp_path) == []
+
+
+def test_the_source_cannot_be_reached_through_a_symlink_with_another_extension(
+    tmp_path: Path,
+) -> None:
+    source = samples.personal_png(tmp_path / "photo.png")
+    link = tmp_path / "alias.png"
+    try:
+        link.symlink_to(source)
+    except (OSError, NotImplementedError):  # pragma: no cover - Windows without privilege
+        pytest.skip("symlinks are unavailable here")
+    before = _sha(source)
+
+    with pytest.raises(SourceOverwriteError) as caught:
+        cleaner.clean(
+            str(source),
+            str(tmp_path / "alias.wav"),
+            frozenset({"png.text.tEXt.Comment"}),
+        )
+
+    assert caught.value.detail == str(link)
+    assert _sha(source) == before
+    assert link.is_symlink(), "the link itself must survive too"
+
+
+def test_overwrite_does_not_cover_a_path_the_caller_never_named(tmp_path: Path) -> None:
+    source = samples.personal_png(tmp_path / "photo.png")
+    existing = tmp_path / "existing.png"
+    existing.write_bytes(b"someone else's pixels")
+
+    with pytest.raises(OutputExistsError):
+        cleaner.clean(
+            str(source),
+            str(tmp_path / "existing.wav"),
+            frozenset({"png.text.tEXt.Comment"}),
+            overwrite=True,
+        )
+
+    assert existing.read_bytes() == b"someone else's pixels"
+
+
+def test_output_path_resolves_the_extension_before_any_check(tmp_path: Path) -> None:
+    source = samples.personal_png(tmp_path / "photo.png")
+
+    assert cleaner.output_path(str(source), str(tmp_path / "copy")) == str(tmp_path / "copy.png")
+    assert cleaner.output_path(str(source), str(tmp_path / "copy.WAV")) == str(tmp_path / "copy.png")
+    assert cleaner.output_path(str(source), str(tmp_path / "copy.PNG")) == str(tmp_path / "copy.PNG")
+
+    with pytest.raises(SourceOverwriteError):
+        cleaner.output_path(str(source), str(tmp_path / "photo.wav"))
 
 
 def test_cleaning_nothing_is_an_error(tmp_path: Path) -> None:
@@ -417,7 +511,7 @@ def test_a_rewrite_that_drops_a_protected_field_is_never_published(
 
 def test_the_output_extension_follows_the_real_format(tmp_path: Path) -> None:
     source = samples.personal_png(tmp_path / "extension.png")
-    requested = tmp_path / "extension.wav"
+    requested = tmp_path / "extension-copy.wav"
 
     outcome = cleaner.clean(
         str(source),
@@ -425,7 +519,7 @@ def test_the_output_extension_follows_the_real_format(tmp_path: Path) -> None:
         frozenset({"png.text.tEXt.Comment"}),
     )
 
-    assert outcome.output.endswith(".png")
+    assert outcome.output == str(tmp_path / "extension-copy.png")
     assert Path(outcome.output).exists()
     assert not requested.exists()
 
@@ -463,6 +557,162 @@ def test_a_long_unicode_output_name_works(tmp_path: Path) -> None:
     assert os.path.basename(outcome.output) == name
 
 
+def test_exclusive_publish_never_replaces_an_existing_file(tmp_path: Path) -> None:
+    staged = tmp_path / "staged.bin"
+    staged.write_bytes(b"the verified copy")
+    target = tmp_path / "target.bin"
+    target.write_bytes(b"someone else's file")
+
+    with pytest.raises(FileExistsError):
+        fsutil.publish_staged_exclusive(str(staged), str(target))
+
+    assert target.read_bytes() == b"someone else's file"
+    assert staged.read_bytes() == b"the verified copy", "the caller still owns the staged copy"
+
+    target.unlink()
+    fsutil.publish_staged_exclusive(str(staged), str(target))
+
+    assert target.read_bytes() == b"the verified copy"
+    assert not staged.exists()
+
+
+def _no_hard_links(*_args: object, **_kwargs: object) -> None:
+    raise OSError(errno.EOPNOTSUPP, "operation not supported")
+
+
+def test_without_hard_links_the_atomic_rename_still_publishes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No hard links: renameat2/renamex_np moves the verified file into place."""
+    if os.name == "nt":  # pragma: no cover - Windows renames natively
+        pytest.skip("Windows publishes with os.rename; hard links are not the fallback")
+    source = samples.personal_png(tmp_path / "photo.png")
+    target = tmp_path / "copy.png"
+    before = _sha(source)
+    monkeypatch.setattr(os, "link", _no_hard_links)
+
+    outcome = cleaner.clean(
+        str(source), str(target), frozenset({"png.text.tEXt.Comment"})
+    )
+
+    assert outcome.verified is True
+    assert outcome.output == str(target)
+    assert target.is_file()
+    assert _sha(target) == outcome.output_sha256
+    assert np.array_equal(_pixels(target), _pixels(source))
+    assert _sha(source) == before
+    assert _staged_siblings(tmp_path) == []
+
+
+def test_without_hard_links_or_atomic_rename_the_copy_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No primitive at all: refuse, and never leave a file under the final name."""
+    source = samples.personal_png(tmp_path / "photo.png")
+    target = tmp_path / "copy.png"
+    before = _sha(source)
+    monkeypatch.setattr(os, "link", _no_hard_links)
+    monkeypatch.setattr(fsutil, "_rename_no_replace", lambda staged, destination: False)
+
+    with pytest.raises(PublishUnavailableError) as caught:
+        cleaner.clean(str(source), str(target), frozenset({"png.text.tEXt.Comment"}))
+
+    assert not target.exists(), "a refused publication must not create the file"
+    assert _staged_siblings(tmp_path) == []
+    assert _sha(source) == before
+    assert caught.value.detail == str(target)
+    assert caught.value.params["path"] == str(target)
+    assert "another folder" in caught.value.message
+
+
+def test_without_hard_links_an_existing_destination_is_refused_untouched(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = samples.personal_png(tmp_path / "photo.png")
+    target = tmp_path / "copy.png"
+    target.write_bytes(b"someone else's file")
+    before = _sha(target)
+    monkeypatch.setattr(os, "link", _no_hard_links)
+
+    with pytest.raises(OutputExistsError):
+        cleaner.clean(str(source), str(target), frozenset({"png.text.tEXt.Comment"}))
+
+    assert _sha(target) == before
+    assert _staged_siblings(tmp_path) == []
+
+
+def test_two_cleans_publishing_to_one_path_have_exactly_one_winner(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two verified copies racing for the same free name: one success, one refusal.
+
+    The barrier is inside the publication primitive, after both cleans have
+    passed every earlier check and verified their rewrite — the exact moment the
+    old unconditional rename let both of them replace the file, and the loser
+    still looked successful.
+    """
+    first = tmp_path / "first.png"
+    first.write_bytes(
+        samples.png_bytes(text={"Comment": "first"}, pixels=samples.texture(seed=1))
+    )
+    second = tmp_path / "second.png"
+    second.write_bytes(
+        samples.png_bytes(text={"Comment": "second"}, pixels=samples.texture(seed=2))
+    )
+    originals = {first: _sha(first), second: _sha(second)}
+    target = tmp_path / "shared.png"
+    barrier = threading.Barrier(2, timeout=30)
+    publish = fsutil.publish_staged_exclusive
+
+    def synchronized(staged: str, destination: str) -> None:
+        barrier.wait()  # both cleans are one call away from publishing
+        publish(staged, destination)
+
+    monkeypatch.setattr(fsutil, "publish_staged_exclusive", synchronized)
+
+    outcomes: list[cleaner.CleaningOutcome] = []
+    refusals: list[OutputExistsError] = []
+    unexpected: list[Exception] = []
+
+    def clean_one(source: Path) -> None:
+        try:
+            outcomes.append(
+                cleaner.clean(
+                    str(source),
+                    str(target),
+                    frozenset({"png.text.tEXt.Comment"}),
+                )
+            )
+        except OutputExistsError as exc:
+            refusals.append(exc)
+        except Exception as exc:  # noqa: BLE001 - collected to report the real cause
+            unexpected.append(exc)
+
+    threads = [
+        threading.Thread(target=clean_one, args=(first,)),
+        threading.Thread(target=clean_one, args=(second,)),
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=60)
+
+    assert not any(thread.is_alive() for thread in threads)
+    assert unexpected == []
+    assert len(outcomes) == 1, f"expected exactly one success, got {len(outcomes)}"
+    assert len(refusals) == 1, f"expected exactly one output_exists, got {len(refusals)}"
+
+    winner = outcomes[0]
+    assert winner.output == str(target)
+    assert _sha(target) == winner.output_sha256, "the published bytes are the winner's"
+    assert np.array_equal(_pixels(target), _pixels(Path(winner.source)))
+    assert refusals[0].detail == str(target)
+    assert refusals[0].params["path"] == str(target)
+    for source, digest in originals.items():
+        assert _sha(source) == digest, "neither source may change"
+    assert _staged_siblings(tmp_path) == []
+
+
 def test_a_second_pass_finds_nothing_personal_left(tmp_path: Path) -> None:
     """The default selection is complete: running it twice changes nothing more."""
     source = samples.personal_png(tmp_path / "twice.png")
@@ -486,7 +736,7 @@ def test_the_library_refuses_to_publish_over_a_directory(tmp_path: Path) -> None
     target = tmp_path / "occupied"
     target.mkdir()
 
-    with pytest.raises(MetadataError):
+    with pytest.raises(OutputExistsError):
         cleaner.clean(str(source), str(target), frozenset({"png.text.tEXt.Comment"}))
 
 

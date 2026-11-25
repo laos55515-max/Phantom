@@ -27,6 +27,11 @@ hiddenimports = (
     collect_submodules("phantom.core")
     + collect_submodules("phantom.stego")
     + collect_submodules("phantom.audio")
+    # The Metadata tab reads PNG, WAV and FLAC containers through this package.
+    # It was excluded while the shell had no metadata surface; the frozen bridge
+    # now ships it, and the submodule collector keeps the lazy imports inside
+    # ``phantom.metadata.integrity`` (Pillow, soundfile) in the graph.
+    + collect_submodules("phantom.metadata")
 )
 # soundfile is a single module and ships its libsndfile wheel payload in the
 # separate ``_soundfile_data`` package, which the default hook misses.
@@ -44,7 +49,7 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=["phantom.ui", "phantom.metadata", "customtkinter", "tkinter", "pytest"],
+    excludes=["phantom.ui", "customtkinter", "tkinter", "pytest"],
     noarchive=False,
     optimize=0,
 )

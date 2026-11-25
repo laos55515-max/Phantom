@@ -6,6 +6,97 @@ All notable changes to PHANTOM are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added — metadata inspection and cleaning in PHANTOM Desktop (Tauri)
+
+- A fourth tab, **Metadata**, opens PNG, WAV and FLAC files through the
+  existing `phantom.metadata` policy: every field is grouped by category
+  (personal, descriptive, technical, rights, provenance, unknown), with derived
+  views marked and protected rows carrying the reason they stay.
+- The safe personal selection is the core's `default_selection`; the preview
+  before saving is the core's `plan`, re-read from the file, listing what will
+  be removed, what will be kept and what was selected but is protected.
+- Saving goes through the system dialog and calls `clean`. The source is only
+  read: the copy is staged, its decoded pixels or PCM samples are compared with
+  the source, the chunk CRCs are checked for PNG, and the copy is published with
+  one rename. The tab shows the result, the untouched source hash, the removed
+  and kept counts, and the decoded-content verdict.
+- A destination that resolves to the source is refused with
+  `source_overwrite` in the shell and again in the core. A file carrying a
+  C2PA/JUMBF content credential is inspected but never rewritten: the tab
+  explains the `signed_media` refusal instead of failing after the dialog.
+- Three bridge commands (`metadata_inspect`, `metadata_plan`,
+  `metadata_clean`) keep the shell thin; the PyInstaller sidecar now collects
+  `phantom.metadata` instead of excluding it, so the packaged app really has
+  the cleaner.
+- Texts in Ukrainian, Russian and English, including the core's `meta.*`
+  reason/value/category keys, with a test enforcing that every key exists in
+  all three languages.
+- Automated checks: bridge tests for a PNG with GPS and orientation, WAV and
+  FLAC with tags, source immutability, identical pixels/samples and both
+  refusals; `desktop/e2e/metadata_cycle.py` runs the same scenario through a
+  frozen bridge; the 980×720 layout check covers the grouped list, the preview,
+  the sticky save button, the overwrite refusal and the credential refusal.
+
+### Fixed — the fallback never copies into the final file
+
+- The previous fallback created the destination with `O_EXCL` and copied into
+  it, so a failure in the middle left a partial file under the final name (and
+  readers could see it while it was being written). That path is gone.
+- When hard links are unavailable, publication now uses the platform's atomic
+  no-replace rename: `renameat2(RENAME_NOREPLACE)` on Linux and
+  `renamex_np(RENAME_EXCL)` on macOS move the fully written, verified staged
+  file into place in one step. `os.rename` does the same on Windows.
+- A folder that supports neither is refused with the new
+  `publish_unavailable` error, translated in Ukrainian, Russian and English and
+  phrased as a request to choose another folder; the source and any existing
+  file are untouched, and nothing appears under the final name.
+- Regressions: hard links disabled → the atomic rename still publishes the
+  complete copy; hard links and atomic rename disabled → the clean is refused,
+  no final file exists, no staged sibling is left and the source hash is
+  unchanged; an existing destination is still refused with `output_exists`
+  while hard links are disabled. The two-parallel-saves test is unchanged.
+
+### Fixed — two cleans could publish over each other
+
+- Publication used an unconditional `os.replace`: two verified copies racing for
+  the same free name could each replace the other, and the loser was still
+  reported as a success. With `overwrite=False` the staged copy is now published
+  with one conditional filesystem operation — `link(2)` where hard links exist
+  (fails with `EEXIST`), the platform's atomic no-replace rename elsewhere
+  (`renameat2(..., RENAME_NOREPLACE)` on Linux, `renamex_np(..., RENAME_EXCL)`
+  on macOS, `os.rename` on Windows). The target appears complete, an occupied
+  name raises `output_exists`, and the existing file keeps its bytes.
+- `overwrite=True` still uses the unconditional rename, but only for the exact
+  name the caller asked to replace; an extension-rewritten destination is
+  published exclusively.
+- Regression: two cleans of different PNGs are synchronized inside the
+  publication primitive. Exactly one succeeds, the other returns
+  `output_exists`, the file on disk matches the winner's verified copy, both
+  sources are unchanged. The packaged-bridge cycle runs the same race across two
+  processes and now has 42 checks.
+
+### Fixed — a cleaned copy could replace the wrong file
+
+- The cleaner replaced the requested extension with the real format's only
+  *after* the source and existence checks. `photo.png` cleaned into
+  `photo.wav` quietly became `photo.png` and replaced the source, and
+  `existing.wav` replaced an unrelated, already existing `existing.png`. The
+  destination is now resolved as soon as the content format is known, and every
+  check — absolute path, `realpath`, `samefile` for symlinks and hard links,
+  `lexists`, and "this is a directory" — runs against that exact final path.
+- `overwrite` only covers the name the caller asked for: an extension-rewritten
+  destination is refused when it exists even with `overwrite=True`, because that
+  file was never shown to the user. The check is repeated immediately before
+  the rename.
+- New typed refusal `output_exists`, translated in Ukrainian, Russian and
+  English; the Tk panel explains it instead of showing a bare metadata error.
+- PHANTOM Desktop asks the core where the copy would go
+  (`metadata_output_path`) and reopens the system save dialog when the typed
+  name is not the resolved one, so the dialog confirms exactly the path that is
+  written. It no longer passes `overwrite: true` to `clean`.
+- Regressions for both reproduced cases at the core, through the bridge
+  contract, in the UI and in the packaged-bridge cycle (now 39 checks).
+
 ### Fixed — browser demo verification
 
 - Verification is unavailable in the browser demo instead of reporting a

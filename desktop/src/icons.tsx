@@ -43,6 +43,15 @@ export const IconExtract = makeIcon(
     <path d="M13 10l2 2" />
   </>,
 );
+export const IconMetadata = makeIcon(
+  <>
+    <path d="M4 7h10" />
+    <path d="M4 12h7" />
+    <path d="M4 17h5" />
+    <path d="M16.2 13.2l4.6 4.6-3 3-4.6-4.6v-3z" />
+    <circle cx="16.8" cy="7.2" r="1.6" />
+  </>,
+);
 export const IconSettings = makeIcon(
   <>
     <circle cx="12" cy="12" r="3.2" />

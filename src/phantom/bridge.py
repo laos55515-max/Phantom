@@ -47,6 +47,36 @@ Requests
 ``{"cmd": "example_info"}`` / ``{"cmd": "example_hide", "output_path", "password"}``
     → the bundled demo: a tiny example PDF hidden in the bundled example
     carrier, so a first run can be verified without any real data.
+
+``{"cmd": "metadata_inspect", "path"}``
+    → the whole :func:`phantom.metadata.inspect_path` report (fields grouped by
+    category, counts, structure, provenance), the safe
+    :func:`phantom.metadata.default_selection`, and the cleaning plan that
+    selection would produce.  Nothing is written.
+
+``{"cmd": "metadata_plan", "path", "selection": [str]}``
+    → re-reads the file and answers what :func:`phantom.metadata.plan` says the
+    selection would remove, keep or refuse to touch.  Re-reading keeps the
+    preview and the later clean on exactly the same bytes.
+
+``{"cmd": "metadata_output_path", "path", "output_path", "overwrite"?: bool}``
+    → :func:`phantom.metadata.output_path`: detects the source's real format
+    from its bytes, puts that format's extension on the requested name, and
+    answers where a clean would write — or refuses with ``source_overwrite``
+    (the final path is the source, directly or through a link) or
+    ``output_exists`` (something already lives there and ``overwrite`` is
+    false).  The shell asks this *before* the save dialog so the path the
+    dialog confirms is the path that will be written.
+
+``{"cmd": "metadata_clean", "path", "output_path", "selection": [str],
+   "overwrite"?: bool}``
+    → :func:`phantom.metadata.clean`: the source is only read, the result is
+    staged, its decoded pixels or PCM samples are compared with the source and
+    the copy is published only when they are identical.  An ``output_path``
+    that resolves to the source is refused with ``source_overwrite``; an
+    existing destination without ``overwrite`` with ``output_exists``; a folder
+    that cannot publish a new file atomically with ``publish_unavailable``; a
+    file carrying a content credential is refused with ``signed_media``.
 """
 
 from __future__ import annotations
@@ -65,6 +95,7 @@ from typing import Any
 from PIL import Image, ImageOps
 
 from phantom import __version__
+from phantom import metadata as metadata_mod
 from phantom.core import api
 from phantom.core import carriers as builtin_carriers
 from phantom.core import constants as C
@@ -77,6 +108,8 @@ from phantom.core.errors import (
 from phantom.core.files import ensure_distinct, sanitise_filename, write_bytes_verified
 from phantom.core.kdf import KdfProfile
 from phantom.core.payload import ExtractedPayload, Payload, PayloadKind
+from phantom.metadata.cleaner import CleaningOutcome, CleaningPlan
+from phantom.metadata.models import MetadataField, MetadataReport
 
 PROTOCOL = 1
 
@@ -479,6 +512,143 @@ def cmd_select_carrier(request: dict[str, Any]) -> dict[str, Any]:
     )
 
 
+# --------------------------------------------------------------- metadata tab
+
+#: The interface is not a report writer: it renders the same field objects the
+#: Python panel does, so the two surfaces cannot disagree about what a field is.
+#: These serialisers add the locale keys and their placeholder values that the
+#: core keeps out of ``to_dict`` (the JSON export is deliberately flat).
+
+
+def _params(pairs: tuple[tuple[str, str], ...]) -> dict[str, str]:
+    return dict(pairs)
+
+
+def _metadata_field_dict(item: MetadataField) -> dict[str, Any]:
+    body = item.to_dict()
+    body.update(
+        reason_params=_params(item.reason_params),
+        value_params=_params(item.value_params),
+        protected=item.protected,
+        sensitive=item.sensitive,
+        category_rank=item.category.rank,
+    )
+    return body
+
+
+def _metadata_report_dict(report: MetadataReport) -> dict[str, Any]:
+    # ``sorted_fields`` is category order first, so the interface can render
+    # groups in the order the model defines instead of re-sorting them.
+    return {
+        "path": report.path,
+        "format": report.fmt.value,
+        "size_bytes": report.size_bytes,
+        "sha256": report.sha256,
+        "counts": report.counts.to_dict(),
+        "derived_counts": report.derived_counts.to_dict(),
+        "technical": report.technical,
+        "technical_summary": metadata_mod.technical_summary(report),
+        "checksum_ok": report.checksum_ok,
+        "warnings": list(report.warnings),
+        "fields": [_metadata_field_dict(item) for item in report.sorted_fields()],
+        "chunks": [chunk.to_dict() for chunk in report.chunks],
+        "provenance": report.provenance.to_dict(),
+        "removable": sorted(report.removable_keys),
+    }
+
+
+def _metadata_plan_dict(decision: CleaningPlan) -> dict[str, Any]:
+    return {
+        "allowed": decision.allowed,
+        "reason": decision.reason,
+        "remove": [_metadata_field_dict(item) for item in decision.remove],
+        "keep": [_metadata_field_dict(item) for item in decision.keep],
+        "blocked": [_metadata_field_dict(item) for item in decision.blocked],
+        "warnings": list(decision.warnings),
+    }
+
+
+def _metadata_outcome_dict(outcome: CleaningOutcome) -> dict[str, Any]:
+    return {
+        "source": outcome.source,
+        "output": outcome.output,
+        "removed": [_metadata_field_dict(item) for item in outcome.removed],
+        "kept": [_metadata_field_dict(item) for item in outcome.kept],
+        "verified": outcome.verified,
+        "checksum_ok": outcome.checksum_ok,
+        "source_sha256": outcome.source_sha256,
+        "output_sha256": outcome.output_sha256,
+        "content": outcome.comparison.to_dict(),
+        "warnings": list(outcome.warnings),
+        "report_after": _metadata_report_dict(outcome.report_after),
+    }
+
+
+def _metadata_selection(request: dict[str, Any]) -> frozenset[str]:
+    """The keys the user ticked; anything but a list of strings is a bad request."""
+    raw = request.get("selection", [])
+    if not isinstance(raw, list):
+        raise InvalidInput("selection must be a list of keys")
+    keys: set[str] = set()
+    for entry in raw:
+        if not isinstance(entry, str) or not entry:
+            raise InvalidInput("selection must contain non-empty strings")
+        keys.add(entry)
+    return frozenset(keys)
+
+
+def cmd_metadata_inspect(request: dict[str, Any]) -> dict[str, Any]:
+    path = _require_str(request, "path")
+    report = metadata_mod.inspect_path(path)
+    selection = metadata_mod.default_selection(report)
+    # The plan is computed here, not in the shell, so the first preview the user
+    # sees is the core's answer rather than a second implementation of the policy.
+    decision = metadata_mod.plan(report, selection)
+    return _ok(
+        report=_metadata_report_dict(report),
+        default_selection=sorted(selection),
+        plan=_metadata_plan_dict(decision),
+    )
+
+
+def cmd_metadata_plan(request: dict[str, Any]) -> dict[str, Any]:
+    path = _require_str(request, "path")
+    selection = _metadata_selection(request)
+    report = metadata_mod.inspect_path(path)
+    decision = metadata_mod.plan(report, selection)
+    return _ok(
+        report=_metadata_report_dict(report),
+        selection=sorted(selection),
+        plan=_metadata_plan_dict(decision),
+    )
+
+
+def cmd_metadata_output_path(request: dict[str, Any]) -> dict[str, Any]:
+    source = _require_str(request, "path")
+    output = _require_str(request, "output_path")
+    overwrite = request.get("overwrite", False)
+    if not isinstance(overwrite, bool):
+        raise InvalidInput("overwrite must be a boolean")
+    target = metadata_mod.output_path(source, output, overwrite=overwrite)
+    return _ok(source=source, output=target)
+
+
+def cmd_metadata_clean(request: dict[str, Any]) -> dict[str, Any]:
+    source = _require_str(request, "path")
+    output = _require_str(request, "output_path")
+    selection = _metadata_selection(request)
+    overwrite = request.get("overwrite", False)
+    if not isinstance(overwrite, bool):
+        raise InvalidInput("overwrite must be a boolean")
+    outcome = metadata_mod.clean(
+        source,
+        output,
+        selection,
+        overwrite=overwrite,
+    )
+    return _ok(**_metadata_outcome_dict(outcome))
+
+
 _COMMANDS = {
     "version": cmd_version,
     "probe": cmd_probe,
@@ -488,6 +658,10 @@ _COMMANDS = {
     "example_hide": cmd_example_hide,
     "builtin_carriers": cmd_builtin_carriers,
     "select_carrier": cmd_select_carrier,
+    "metadata_inspect": cmd_metadata_inspect,
+    "metadata_plan": cmd_metadata_plan,
+    "metadata_output_path": cmd_metadata_output_path,
+    "metadata_clean": cmd_metadata_clean,
 }
 
 def _log_line(cmd: str, ok: bool, code: str | None = None) -> None:

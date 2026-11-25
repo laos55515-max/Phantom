@@ -11,6 +11,7 @@ Public surface
 ``detect_format``         format from the first bytes, never the extension
 ``plan``                  what a selection would remove, before writing anything
 ``default_selection``     the personal fields the cleaner can remove
+``output_path``           where a clean would write, after the format is known
 ``clean``                 write a cleaned copy, verify it, publish it atomically
 ``report_text``/``report_json``  the two exports
 
@@ -35,6 +36,7 @@ from phantom.metadata.cleaner import (
     CleaningPlan,
     clean,
     default_selection,
+    output_path,
     plan,
 )
 from phantom.metadata.inspector import detect_format, inspect_path, technical_summary
@@ -76,6 +78,7 @@ __all__ = [
     "detect_format",
     "inspect_path",
     "inspection_text",
+    "output_path",
     "plan",
     "report_json",
     "summary_line",
