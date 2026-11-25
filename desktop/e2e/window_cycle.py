@@ -394,10 +394,18 @@ def main() -> int:
                 stderr=subprocess.STDOUT,
                 env=env,
             )
+            def log_tail() -> str:
+                try:
+                    lines = driver_log.read_text(encoding="utf-8", errors="replace").splitlines()
+                    tail = [line.strip() for line in lines if line.strip()][-5:]
+                    return " | ".join(tail)[:800] if tail else "(empty log)"
+                except OSError as error:
+                    return f"(log unreadable: {error})"
+
             if not wait_port(WEBDRIVER_HOST, WEBDRIVER_PORT, timeout=30.0):
                 code = blocker(
-                    f"tauri-driver did not listen on {WEBDRIVER_URL} within 30s "
-                    f"(see {driver_log}); exit={driver_process.poll()}"
+                    f"tauri-driver did not listen on {WEBDRIVER_URL} within 30s; "
+                    f"exit={driver_process.poll()}; log: {log_tail()}"
                 )
                 write_report(args.out, app=str(app), work={k: str(v) for k, v in work.items()})
                 return code
@@ -411,7 +419,10 @@ def main() -> int:
             try:
                 driver = webdriver.Remote(command_executor=WEBDRIVER_URL, options=options)
             except Exception as error:  # noqa: BLE001 - session failure is a blocker
-                code = blocker(f"WebDriver session failed to start against {app}: {error}")
+                code = blocker(
+                    f"WebDriver session failed to start against {app}: {error}; "
+                    f"tauri-driver log: {log_tail()}"
+                )
                 write_report(args.out, app=str(app), work={k: str(v) for k, v in work.items()})
                 return code
 

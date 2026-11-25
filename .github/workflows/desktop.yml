@@ -466,6 +466,37 @@ jobs:
           xvfb-run -a -s "-screen 0 1280x1024x24" \
             python desktop/e2e/window_cycle.py --app "$APP_BIN" \
               --out window-cycle.json --shots window-e2e-shots
+      - name: Window report (annotations)
+        if: always()
+        run: |
+          python - <<'PY'
+          import json
+          import pathlib
+
+          report_path = pathlib.Path("window-cycle.json")
+          if not report_path.exists():
+              print("::error::window: no window-cycle.json was written")
+          else:
+              report = json.loads(report_path.read_text(encoding="utf-8"))
+              if report.get("blocker"):
+                  print(f"::error::window blocker: {report['blocker'][:2000]}")
+              for row in report.get("checks", []):
+                  level = "notice" if row.get("ok") else "error"
+                  print(f"::{level}::window {row.get('name')}: {str(row.get('detail', ''))[:900]}")
+              print(
+                  f"::notice::window: {report.get('passed')}/{report.get('passed', 0) + report.get('failed', 0)} "
+                  f"checks passed, {report.get('duration_seconds')}s"
+              )
+          log_path = pathlib.Path("window-e2e-shots/tauri-driver.log")
+          if log_path.exists():
+              lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
+              tail = [line.strip() for line in lines if line.strip()][-8:]
+              if tail:
+                  print(f"::warning::tauri-driver: {' | '.join(tail)[:3000]}")
+              print(f"::notice::tauri-driver.log: {len(lines)} lines")
+          else:
+              print("::warning::tauri-driver.log: missing")
+          PY
       - name: Collect window artifacts
         if: always()
         run: |
