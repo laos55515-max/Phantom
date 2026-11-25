@@ -6,6 +6,18 @@ All notable changes to PHANTOM are recorded here. The format follows
 
 ## [Unreleased]
 
+### Fixed — WAV credentials and metadata explanations
+
+- WAV inspection recognises both `C2PA` and `c2pa` RIFF chunks as provenance
+  data with an unverified signature. Both trigger the existing `signed_media`
+  refusal: cleaning leaves the source byte-identical and creates no copy.
+- The desktop and Tk metadata tabs distinguish an empty field list from a list
+  containing only protected fields. ICC hints explain that the profile helps
+  display colours correctly and that removing it may change the appearance.
+- Russian, Ukrainian and English translations and regressions cover both WAV
+  chunk IDs, an unsigned WAV comment cleaned without changing PCM samples,
+  protected/empty interface states, and the ICC explanation.
+
 ### Added — metadata inspection and cleaning in PHANTOM Desktop (Tauri)
 
 - A fourth tab, **Metadata**, opens PNG, WAV and FLAC files through the

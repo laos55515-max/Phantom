@@ -28,7 +28,7 @@ from phantom.core.errors import (
     SourceOverwriteError,
     UnsupportedFormat,
 )
-from phantom.metadata import cleaner, inspector
+from phantom.metadata import cleaner, inspector, wav
 
 
 def _sha(path: Path) -> str:
@@ -224,11 +224,45 @@ def test_a_signed_file_is_refused_and_nothing_is_written(tmp_path: Path) -> None
     assert _staged_siblings(tmp_path) == []
 
 
-def test_a_signed_wav_is_refused_too(tmp_path: Path) -> None:
-    source = samples.signed_wav(tmp_path / "signed.wav")
+@pytest.mark.parametrize("chunk_id", [b"C2PA", b"c2pa"])
+def test_a_signed_wav_is_refused_too(tmp_path: Path, chunk_id: bytes) -> None:
+    source = samples.signed_wav(tmp_path / "signed.wav", chunk_id)
+    before = source.read_bytes()
+    output = tmp_path / "out.wav"
+    found = inspector.inspect_path(str(source))
+    assert found.provenance.detected
+    assert found.provenance.state.value == "unverified"
+    assert found.find(f"wav.chunk.{chunk_id.decode()}") is not None
+    assert cleaner.plan(found, frozenset({"wav.info.ICMT"})).reason == "signed_media"
 
-    with pytest.raises(SignedMediaError):
-        cleaner.clean(str(source), str(tmp_path / "out.wav"), frozenset({"wav.info.ICMT"}))
+    with pytest.raises(SignedMediaError) as error:
+        cleaner.clean(str(source), str(output), frozenset({"wav.info.ICMT"}))
+
+    assert error.value.code is ErrorCode.SIGNED_MEDIA
+    assert source.read_bytes() == before
+    assert not output.exists()
+    assert set(tmp_path.iterdir()) == {source}, "no copy or staged output may remain"
+
+
+def test_an_unsigned_wav_comment_is_cleaned_in_a_copy(tmp_path: Path) -> None:
+    source = tmp_path / "comment.wav"
+    source.write_bytes(samples.wav_bytes(info={"ICMT": "private comment"}))
+    before = source.read_bytes()
+    output = tmp_path / "comment-clean.wav"
+    found = inspector.inspect_path(str(source))
+    assert not found.provenance.detected
+
+    outcome = cleaner.clean(str(source), str(output), frozenset({"wav.info.ICMT"}))
+
+    assert outcome.verified
+    assert source.read_bytes() == before
+    assert inspector.inspect_path(str(output)).find("wav.info.ICMT") is None
+    original_pcm = next(chunk.data for chunk in wav.iter_chunks(before) if chunk.cid == "data")
+    cleaned_pcm = next(
+        chunk.data for chunk in wav.iter_chunks(output.read_bytes()) if chunk.cid == "data"
+    )
+    assert original_pcm == cleaned_pcm
+    assert set(tmp_path.iterdir()) == {source, output}
 
 
 def test_the_output_may_not_be_the_source(tmp_path: Path) -> None:

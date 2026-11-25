@@ -450,3 +450,64 @@ describe("MetadataScreen — inspect, preview, clean", () => {
     expect(screen.queryByRole("button", { name: RU["meta.save"] })).toBeNull();
   });
 });
+
+
+describe.each(["ru", "uk", "en"] as const)("Metadata hints (%s)", (language) => {
+  const dictionary = dictionaries[language];
+  async function showReport(report: MetadataReportInfo) {
+    window.localStorage.setItem("phantom.settings.draft", JSON.stringify({ language, theme: "dark" }));
+    inspectMock.mockResolvedValue(inspection({
+      report,
+      defaultSelection: report.fields.filter((item) => item.removable).map((item) => item.key),
+      plan: { allowed: !report.provenance.detected, reason: report.provenance.detected ? "signed_media" : "",
+        remove: [], keep: report.fields, blocked: [], warnings: [] },
+    }));
+    render(<I18nProvider><MetadataScreen /></I18nProvider>);
+    fireEvent.click(screen.getByRole("button", { name: dictionary["meta.choose_file"] }));
+    await screen.findByRole("heading", { name: dictionary["meta.preview.title"] });
+  }
+
+  it("distinguishes an empty report from protected fields", async () => {
+    await showReport(makeReport([]));
+    expect(screen.getByText(dictionary["meta.fields.empty"])).toBeTruthy();
+    expect(screen.queryByText(dictionary["meta.fields.protected"])).toBeNull();
+    expect(screen.queryAllByRole("checkbox")).toHaveLength(0);
+    expect((screen.getByRole("button", { name: dictionary["meta.save"] }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("explains protected-only fields and the ICC profile without hiding them", async () => {
+    await showReport(makeReport([field({
+      key: "png.iccp", label: "ICC colour profile", category: "technical", container: "iCCP",
+      removable: false, reasonKey: "meta.reason.colour_profile",
+    })]));
+    expect(screen.getByText(dictionary["meta.fields.protected"])).toBeTruthy();
+    expect(screen.queryByText(dictionary["meta.fields.empty"])).toBeNull();
+    expect(screen.getByText(dictionary["meta.reason.colour_profile"])).toBeTruthy();
+    expect((screen.getByRole("checkbox", { name: "ICC colour profile (iCCP)" }) as HTMLInputElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: dictionary["meta.save"] }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("does not call removable metadata protected when selection is cleared", async () => {
+    await showReport(makeReport());
+    fireEvent.click(screen.getByRole("button", { name: dictionary["meta.toolbar.clear"] }));
+    expect(screen.queryByText(dictionary["meta.fields.empty"])).toBeNull();
+    expect(screen.queryByText(dictionary["meta.fields.protected"])).toBeNull();
+  });
+
+  it.each(["C2PA", "c2pa"])("reports WAV %s provenance as unverified and blocks saving", async (chunk) => {
+    const report = makeReport([field({
+      key: "wav.info.ICMT", label: "Comment", category: "personal", container: "LIST/INFO/ICMT",
+    }), field({
+      key: `wav.chunk.${chunk}`, label: `Content credential block (${chunk})`, category: "provenance",
+      container: chunk, removable: false,
+    })]);
+    report.format = "wav";
+    report.provenance = { detected: true, state: "unverified", signed: true, manifests: [], details: [] };
+    await showReport(report);
+    expect(screen.getByText(dictionary["meta.prov.unverified"])).toBeTruthy();
+    expect(screen.getByText(dictionary["meta.refusal.signed"])).toBeTruthy();
+    expect((screen.getByRole("button", { name: dictionary["meta.save"] }) as HTMLButtonElement).disabled).toBe(true);
+    expect(cleanMock).not.toHaveBeenCalled();
+    expect(screen.queryByText(dictionary["meta.fields.protected"])).toBeNull();
+  });
+});

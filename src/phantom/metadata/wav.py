@@ -109,7 +109,7 @@ _ID3_PERSONAL: Final[frozenset[str]] = frozenset(
         _ID3_USER_URL,
     }
 )
-_SIGNATURE_CHUNKS: Final[frozenset[str]] = frozenset({"jumb", "jumbf", "c2pa"})
+_SIGNATURE_CHUNKS: Final[frozenset[str]] = frozenset({"jumb", "jumbf", "C2PA", "c2pa"})
 _TEXT_CHUNK_IDS: Final[frozenset[str]] = frozenset({"ID3 ", "id3 ", "iXML", "IXML"})
 
 
