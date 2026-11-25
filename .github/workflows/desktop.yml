@@ -405,3 +405,78 @@ jobs:
           path: artifacts
           if-no-files-found: warn
           retention-days: 14
+
+  window-linux:
+    # Window E2E through the *installed* app: Metadata (open GPS PNG, save the
+    # cleaned copy) → Hide (cleaned copy as carrier, hide a test file) →
+    # Extract (recover it), then automatic checks (GPS gone, source intact,
+    # extracted bytes match).  Linux/Xvfb is the one platform where CI can
+    # stably control the installed window: tauri-driver + WebKitWebDriver
+    # (webkit2gtk-driver) under xvfb-run.  macOS has no WKWebView WebDriver
+    # (Apple ships no driver) and Windows needs an Edge Driver version-matched
+    # to the runner's Edge — both are documented blockers, not scenario
+    # failures.  The driver (`desktop/e2e/window_cycle.py`) reports a blocker
+    # (exit 2) separately from a failed check (exit 1).
+    #
+    # This job reuses the .deb built by `build-linux` (needs) instead of
+    # rebuilding: it tests the exact package users install.
+    name: window E2E (installed app, Linux Xvfb)
+    runs-on: ubuntu-24.04
+    needs: [frontend, build-linux]
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements.txt
+      - uses: actions/download-artifact@v4
+        with:
+          name: linux-x64-packages
+          path: window-artifact
+      - name: Install the .deb built by build-linux
+        run: |
+          ls -R window-artifact
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends xvfb webkit2gtk-driver
+          sudo apt-get install -y ./window-artifact/deb/*.deb
+          APP_BIN="$(find /usr/bin -maxdepth 1 -name 'phantom*' -type f ! -name 'phantom-bridge*' | head -n1)"
+          echo "installed app: $APP_BIN"
+          test -n "$APP_BIN"
+          ls -l "$APP_BIN"
+          which WebKitWebDriver
+      - name: Python dependencies for the driver
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt selenium
+          python -c "import selenium; print('selenium', selenium.__version__)"
+      - name: Rust toolchain for tauri-driver
+        uses: dtolnay/rust-toolchain@stable
+      - name: Cache the Rust registry
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/src-tauri
+      - name: Install tauri-driver
+        run: cargo install tauri-driver --locked
+      - name: Window scenario (installed app, Xvfb)
+        run: |
+          APP_BIN="$(find /usr/bin -maxdepth 1 -name 'phantom*' -type f ! -name 'phantom-bridge*' | head -n1)"
+          echo "driving: $APP_BIN"
+          xvfb-run -a -s "-screen 0 1280x1024x24" \
+            python desktop/e2e/window_cycle.py --app "$APP_BIN" \
+              --out window-cycle.json --shots window-e2e-shots
+      - name: Collect window artifacts
+        if: always()
+        run: |
+          mkdir -p window-artifacts
+          cp window-cycle.json window-artifacts/ 2>/dev/null || true
+          cp -R window-e2e-shots window-artifacts/ 2>/dev/null || true
+      - name: Upload window artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: window-e2e-linux
+          path: window-artifacts
+          if-no-files-found: warn
+          retention-days: 14
