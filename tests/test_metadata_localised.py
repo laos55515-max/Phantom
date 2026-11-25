@@ -167,3 +167,37 @@ def test_a_broken_locale_falls_back_to_english_instead_of_a_key(tmp_path: Path) 
 
     assert text.startswith("PHANTOM — metadata report")
     assert "report." not in text
+
+
+@pytest.mark.parametrize(
+    ("language", "expected"),
+    [
+        (
+            "ru",
+            "Профиль помогает правильно отображать цвета. "
+            "Без него изображение может выглядеть иначе",
+        ),
+        (
+            "uk",
+            "Профіль допомагає правильно відображати кольори. "
+            "Без нього зображення може виглядати інакше",
+        ),
+        (
+            "en",
+            "The profile helps display colours correctly. "
+            "Without it, the image may look different",
+        ),
+    ],
+)
+def test_icc_profile_explanation_is_localised_and_does_not_claim_a_certain_change(
+    tmp_path: Path, language: str, expected: str
+) -> None:
+    from PIL import Image, ImageCms
+
+    path = tmp_path / "profile.png"
+    profile = ImageCms.ImageCmsProfile(ImageCms.createProfile("sRGB")).tobytes()
+    Image.new("RGB", (4, 4)).save(path, icc_profile=profile)
+    report = inspector.inspect_path(str(path))
+    field = report.find("png.chunk.iCCP")
+    assert field is not None and not field.removable
+    assert meta_report.field_reason(field, I18n(language)) == expected

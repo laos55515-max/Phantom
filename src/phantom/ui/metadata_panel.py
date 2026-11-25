@@ -446,7 +446,6 @@ class MetadataPanel:
         binder = self.app.binder
         binder.bind(self.drop_title_label, "drop_meta_title")
         binder.bind(self.file_error_dismiss, "btn_dismiss")
-        binder.bind(self.no_removable_label, "meta_no_removable_banner")
         binder.bind(self.file_button, "meta_choose_file")
         binder.bind(self.reset_button, "meta_reset")
         binder.bind(self.drop_hint, "drop_meta_sub")
@@ -616,6 +615,9 @@ class MetadataPanel:
         self.summary_label.configure(text=summary)
         self._update_pills()
         if counts.removable == 0:
+            self.no_removable_label.configure(
+                text=self.t("meta_no_removable_banner" if report.fields else "meta_no_fields")
+            )
             self.no_removable_banner.pack(
                 fill="x", padx=18, pady=(0, 8), before=self.provenance_label
             )
@@ -766,6 +768,10 @@ class MetadataPanel:
             return
         if decision is not None and not decision.allowed:
             text = self.t("meta_plan_blocked")
+        elif not report.fields:
+            text = self.t("meta_no_fields")
+        elif not report.removable_keys and not self.vm.protected_personal():
+            text = self.t("meta_no_removable_banner")
         elif self.vm.personal_removable() == 0:
             # "Nothing to clean" is an answer, not an empty card: say why, and say
             # what else is on offer when the file has removable descriptive fields.

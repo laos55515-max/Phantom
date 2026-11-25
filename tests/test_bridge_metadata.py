@@ -352,6 +352,36 @@ def test_a_signed_png_is_inspected_but_refused_with_a_reason(tmp_path: Path) -> 
     assert _sha(source) == before
 
 
+@pytest.mark.parametrize("chunk_id", [b"C2PA", b"c2pa"])
+def test_wav_credentials_block_cleaning_without_changing_the_source(
+    tmp_path: Path, chunk_id: bytes
+) -> None:
+    source = samples.signed_wav(tmp_path / "credential.wav", chunk_id)
+    output = tmp_path / "credential-clean.wav"
+    before = source.read_bytes()
+    inspected = _call({"cmd": "metadata_inspect", "path": str(source)})
+    assert inspected["ok"] is True
+    assert inspected["report"]["provenance"]["state"] == "unverified"
+    assert inspected["report"]["provenance"]["detected"] is True
+    assert "wav.info.ICMT" in inspected["default_selection"]
+    assert inspected["plan"]["allowed"] is False
+    assert inspected["plan"]["reason"] == "signed_media"
+
+    response = _call(
+        {
+            "cmd": "metadata_clean",
+            "path": str(source),
+            "output_path": str(output),
+            "selection": ["wav.info.ICMT"],
+        }
+    )
+
+    assert response["ok"] is False
+    assert response["error"]["code"] == "signed_media"
+    assert source.read_bytes() == before
+    assert set(tmp_path.iterdir()) == {source}
+
+
 def test_wav_tags_are_removed_and_every_sample_survives(tmp_path: Path) -> None:
     source = samples.personal_wav(tmp_path / "take.wav")
     output = tmp_path / "take-clean.wav"

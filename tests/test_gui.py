@@ -3472,7 +3472,7 @@ def test_a_manifest_is_reported_as_a_manifest_not_as_authenticity(app, tmp_path:
 
     text = panel.provenance_label.cget("text")
     assert text == app.i18n.t("meta_provenance_unverified")
-    assert "not verified" in text or "не проверена" in text or "не перевірено" in text
+    assert any(phrase in text.casefold() for phrase in ("not verified", "не проверена", "не перевірено"))
 
 
 # ---------------------------------------------------------------------------
@@ -4500,3 +4500,67 @@ def test_an_edit_without_a_key_still_reaches_the_model(app) -> None:
     app.root.update()
     committed()
     assert app.embed_vm.text == ""
+
+
+@pytest.mark.parametrize("language", ["ru", "uk", "en"])
+@pytest.mark.parametrize("protected", [False, True])
+def test_metadata_distinguishes_empty_and_protected_fields(
+    app, tmp_path: Path, language: str, protected: bool
+) -> None:
+    import metadata_samples as samples
+
+    path = tmp_path / "metadata.wav"
+    path.write_bytes(samples.wav_bytes(info={"ICOP": "protected rights"} if protected else {}))
+    app._on_language_click(app._label_by_lang[language])
+    app._show_tab("metadata")
+    panel = app.metadata_panel
+    panel.load_file(str(path))
+    _pump(app)
+
+    key = "meta_no_removable_banner" if protected else "meta_no_fields"
+    assert panel.no_removable_label.cget("text") == app.i18n.t(key)
+    assert panel.no_removable_banner.winfo_manager() == "pack"
+    assert panel.plan_label.cget("text") == app.i18n.t(key)
+    assert str(panel.save_button.cget("state")) == "disabled"
+    assert bool(panel.vm.report.fields) is protected
+
+    # A language switch must not restore the old, static protected-only banner.
+    other = "en" if language != "en" else "ru"
+    app._on_language_click(app._label_by_lang[other])
+    assert panel.no_removable_label.cget("text") == app.i18n.t(key)
+
+
+@pytest.mark.parametrize("chunk_id", [b"C2PA", b"c2pa"])
+def test_wav_credentials_are_shown_as_unverified_and_cannot_be_cleaned(
+    app, tmp_path: Path, chunk_id: bytes
+) -> None:
+    import metadata_samples as samples
+
+    path = samples.signed_wav(tmp_path / "credentials.wav", chunk_id)
+    panel = app.metadata_panel
+    panel.load_file(str(path))
+    _pump(app)
+
+    for language in ("ru", "uk", "en"):
+        app._on_language_click(app._label_by_lang[language])
+        assert panel.provenance_label.cget("text") == app.i18n.t("meta_provenance_unverified")
+        assert panel.vm.plan().reason == "signed_media"
+        assert str(panel.save_button.cget("state")) == "disabled"
+
+
+def test_metadata_icc_profile_explanation_follows_the_interface_language(app, tmp_path: Path) -> None:
+    from PIL import Image, ImageCms
+
+    path = tmp_path / "profile.png"
+    profile = ImageCms.ImageCmsProfile(ImageCms.createProfile("sRGB")).tobytes()
+    Image.new("RGB", (4, 4)).save(path, icc_profile=profile)
+    panel = app.metadata_panel
+    panel.load_file(str(path))
+    _pump(app)
+    field = panel.vm.report.find("png.chunk.iCCP")
+    assert field is not None and not field.removable
+
+    for language in ("ru", "uk", "en"):
+        app._on_language_click(app._label_by_lang[language])
+        assert app.i18n.t("meta.reason.colour_profile") in panel._row_value(field)
+        assert panel.no_removable_label.cget("text") == app.i18n.t("meta_no_removable_banner")

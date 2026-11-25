@@ -288,9 +288,9 @@ def personal_wav(path: Path) -> Path:
     return path
 
 
-def signed_wav(path: Path) -> Path:
-    """A WAV with a c2pa chunk, which the cleaner must refuse to touch."""
-    path.write_bytes(wav_bytes(info={"ICMT": "signed"}, extra=((b"c2pa", b"c2pa.signature"),)))
+def signed_wav(path: Path, chunk_id: bytes = b"c2pa") -> Path:
+    """A WAV with ICMT and a credential chunk, which the cleaner must refuse to touch."""
+    path.write_bytes(wav_bytes(info={"ICMT": "signed"}, extra=((chunk_id, b"c2pa.signature"),)))
     return path
 
 

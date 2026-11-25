@@ -522,6 +522,12 @@ export function MetadataScreen() {
             </div>
           ) : null}
 
+          {report.fields.length === 0 ? (
+            <p className="hint meta-status" role="status">{t("meta.fields.empty")}</p>
+          ) : report.fields.every((field) => !field.removable) ? (
+            <p className="hint meta-status" role="status">{t("meta.fields.protected")}</p>
+          ) : null}
+
           <div className="meta-groups">
             {groups.map((group) => (
               <section className="card meta-group" key={group.category} aria-label={t(`meta.cat.${group.category}`)}>
