@@ -7,9 +7,11 @@ and then ``os.replace``d, so a crash or a full disk never leaves a half-written
 stego file and never destroys the original (D8).
 
 ``publish_staged_exclusive`` — publish only while the name is free: ``link(2)``
-on POSIX, ``rename`` on Windows, an ``O_EXCL`` copy elsewhere.  Two verified
-copies racing for one destination produce one file and one ``EEXIST``, never a
-silent replacement.
+where hard links exist, otherwise the platform's atomic no-replace rename
+(``renameat2(RENAME_NOREPLACE)`` on Linux, ``renamex_np(RENAME_EXCL)`` on macOS,
+``os.rename`` on Windows).  Two verified copies racing for one destination
+produce one file and one ``EEXIST``, never a silent replacement; a folder that
+offers neither primitive is refused rather than filled with a partial copy.
 
 ``staged_path``/``publish_staged`` — the same idea one level up, for the verify
 step: a writer that must be *checked* before it may replace anything writes into
@@ -25,12 +27,12 @@ snapshots or journaling: the UI says exactly that (D7).
 from __future__ import annotations
 
 import contextlib
+import ctypes
 import errno
 import hashlib
 import logging
 import os
 import secrets
-import shutil
 import stat
 import subprocess
 import sys
@@ -45,6 +47,7 @@ from phantom.core.errors import (
     IntegrityError,
     OutputIsCarrierError,
     PhantomIOError,
+    PublishUnavailableError,
     SourceOverwriteError,
     UnsafePathError,
     WipeError,
@@ -335,15 +338,24 @@ def publish_staged_exclusive(staged: str, target: str) -> None:
     "is it free?" decision is made by the filesystem, in the same operation that
     makes the file visible:
 
-    * POSIX: ``link(2)`` the staged file onto the target; it fails with
-      ``EEXIST`` instead of replacing, and the target appears with the complete
-      contents in one step;
-    * Windows: ``os.rename``, which refuses an existing destination;
-    * filesystems without hard links: a copy created with ``O_EXCL``, so the
-      name is still never taken from an existing file.
+    * POSIX with hard links: ``link(2)`` the staged file onto the target; it
+      fails with ``EEXIST`` instead of replacing, and the target appears with
+      the complete contents in one step;
+    * filesystems without hard links: the platform's atomic no-replace rename —
+      ``renameat2(..., RENAME_NOREPLACE)`` on Linux and
+      ``renamex_np(..., RENAME_EXCL)`` on macOS — moves the verified file into
+      place in one step;
+    * Windows: ``os.rename``, which refuses an existing destination.
 
-    Raises ``FileExistsError`` when the destination is occupied; the existing
-    file is untouched and the caller decides what to do with the staged copy.
+    A folder that offers none of these is refused with
+    :class:`PublishUnavailableError`: the user is asked to choose another folder,
+    and neither the source nor an existing file is touched.  There is no copy
+    into the destination, so a partially written file can never appear under the
+    final name.
+
+    Raises the built-in ``FileExistsError`` when the destination is occupied;
+    the existing file is untouched and the caller decides what to do with the
+    staged copy.
     """
     directory = os.path.dirname(os.path.abspath(target)) or "."
     try:
@@ -353,32 +365,114 @@ def publish_staged_exclusive(staged: str, target: str) -> None:
         else:
             try:
                 os.link(staged, target)
+            except FileExistsError:
+                raise
             except OSError as exc:
                 if exc.errno not in _NO_HARD_LINK:
                     raise
-                _copy_exclusive(staged, target)
+                if not _rename_no_replace(staged, target):
+                    raise PublishUnavailableError(
+                        "this folder cannot receive the copy atomically without "
+                        "replacing an existing file; choose another folder",
+                        detail=target,
+                    ).with_params(path=target) from exc
             else:
                 _unlink_staged_after_publish(staged)
-    except FileExistsError:
+    except (FileExistsError, PublishUnavailableError):
         raise
     except OSError as exc:
         raise PhantomIOError("cannot publish the output file", detail=str(exc)) from exc
     _fsync_dir(directory)
 
 
-def _copy_exclusive(staged: str, target: str) -> None:
-    """Fallback for filesystems without hard links; never replaces an existing file."""
-    descriptor = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o666)
+#: ``renameat2`` flags: fail instead of replacing an existing destination.
+_RENAME_NOREPLACE = 1
+#: ``renamex_np`` flag with the same meaning on macOS.
+_RENAME_EXCL = 4
+_AT_FDCWD = -100
+#: ``str`` so a type checker does not narrow this dispatch to one OS and call the
+#: other branches unreachable.
+_PLATFORM: str = sys.platform
+#: Errors that mean "this platform/filesystem does not support the operation"
+#: rather than "the operation failed".
+_RENAME_UNSUPPORTED: Final = frozenset(
+    {
+        errno.EINVAL,
+        errno.ENOSYS,
+        errno.EOPNOTSUPP,
+        getattr(errno, "ENOTSUP", errno.EOPNOTSUPP),
+    }
+)
+
+
+def _rename_no_replace(staged: str, target: str) -> bool:
+    """Rename ``staged`` onto ``target`` atomically, refusing an existing name.
+
+    Returns ``False`` when the platform or this filesystem has no such
+    operation, so the caller can refuse instead of leaving a partially written
+    copy under the final name.  Raises ``FileExistsError`` when the name is
+    taken.
+    """
+    if _PLATFORM.startswith("linux"):
+        return _linux_rename_no_replace(staged, target)
+    if _PLATFORM == "darwin":
+        return _macos_rename_no_replace(staged, target)
+    return False
+
+
+def _linux_rename_no_replace(staged: str, target: str) -> bool:
     try:
-        with os.fdopen(descriptor, "wb") as out, open(staged, "rb") as src:
-            shutil.copyfileobj(src, out, 1 << 20)
-            out.flush()
-            os.fsync(out.fileno())
-    except BaseException:
-        with contextlib.suppress(OSError):
-            os.unlink(target)
-        raise
-    _unlink_staged_after_publish(staged)
+        library = ctypes.CDLL(None, use_errno=True)
+    except OSError:  # pragma: no cover - no libc to talk to
+        return False
+    function = getattr(library, "renameat2", None)
+    if function is None:  # glibc < 2.28: the symbol is not exported
+        return False
+    function.argtypes = [
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_uint,
+    ]
+    function.restype = ctypes.c_int
+    if (
+        function(
+            _AT_FDCWD,
+            os.fsencode(staged),
+            _AT_FDCWD,
+            os.fsencode(target),
+            _RENAME_NOREPLACE,
+        )
+        == 0
+    ):
+        return True
+    return _rename_result(target)
+
+
+def _macos_rename_no_replace(staged: str, target: str) -> bool:
+    try:
+        library = ctypes.CDLL(None, use_errno=True)
+    except OSError:  # pragma: no cover - no libc to talk to
+        return False
+    function = getattr(library, "renamex_np", None)
+    if function is None:  # pragma: no cover - macOS always exports it
+        return False
+    function.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint]
+    function.restype = ctypes.c_int
+    if function(os.fsencode(staged), os.fsencode(target), _RENAME_EXCL) == 0:
+        return True
+    return _rename_result(target)
+
+
+def _rename_result(target: str) -> bool:
+    """Translate the platform rename's errno: taken, unsupported, or a real error."""
+    error = ctypes.get_errno()
+    if error == errno.EEXIST:
+        raise FileExistsError(error, os.strerror(error), target)
+    if error in _RENAME_UNSUPPORTED:
+        return False
+    raise OSError(error, os.strerror(error), target)
 
 
 def _unlink_staged_after_publish(staged: str) -> None:

@@ -26,6 +26,7 @@ class ErrorCode(Enum):
     IO = "io"
     OUTPUT_IS_CARRIER = "output_is_carrier"
     OUTPUT_EXISTS = "output_exists"
+    PUBLISH_UNAVAILABLE = "publish_unavailable"
     SOURCE_OVERWRITE = "source_overwrite"
     UNSAFE_PATH = "unsafe_path"
     WIPE_FAILED = "wipe_failed"
@@ -128,6 +129,12 @@ class OutputExistsError(PhantomError):
     """The destination already exists and the caller did not ask to replace it."""
 
     code = ErrorCode.OUTPUT_EXISTS
+
+
+class PublishUnavailableError(PhantomError):
+    """This folder cannot receive a new file atomically without replacing one."""
+
+    code = ErrorCode.PUBLISH_UNAVAILABLE
 
 
 class WipeError(PhantomError):

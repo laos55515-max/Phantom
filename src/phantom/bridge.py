@@ -74,8 +74,9 @@ Requests
     staged, its decoded pixels or PCM samples are compared with the source and
     the copy is published only when they are identical.  An ``output_path``
     that resolves to the source is refused with ``source_overwrite``; an
-    existing destination without ``overwrite`` with ``output_exists``; a file
-    carrying a content credential is refused with ``signed_media``.
+    existing destination without ``overwrite`` with ``output_exists``; a folder
+    that cannot publish a new file atomically with ``publish_unavailable``; a
+    file carrying a content credential is refused with ``signed_media``.
 """
 
 from __future__ import annotations

@@ -312,6 +312,31 @@ describe("MetadataScreen — inspect, preview, clean", () => {
     expect(screen.queryByText(RU["meta.result.title"])).toBeNull();
   });
 
+  it("asks for another folder when the filesystem cannot publish atomically", async () => {
+    await openFile();
+    saveFileMock.mockResolvedValue("/media/usb/copy.png");
+    targetMock.mockResolvedValue({
+      ok: false,
+      error: {
+        code: "publish_unavailable",
+        message: "this folder cannot receive the copy atomically",
+        detail: "/media/usb/copy.png",
+        params: { path: "/media/usb/copy.png" },
+      },
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: RU["meta.save"] }));
+
+    await waitFor(() => expect(screen.getByRole("alert")).toBeTruthy());
+    expect(
+      screen.getByText(
+        RU["meta.error.publish_unavailable"].replace("{path}", "/media/usb/copy.png"),
+      ),
+    ).toBeTruthy();
+    expect(cleanMock).not.toHaveBeenCalled();
+    expect(screen.queryByText(RU["meta.result.title"])).toBeNull();
+  });
+
   it("re-opens the dialog so it confirms the exact path that will be written", async () => {
     await openFile();
     saveFileMock

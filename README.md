@@ -273,9 +273,14 @@ resolved path, so what the dialog confirms is exactly what is written.
 
 Publishing is atomic and conditional: the copy is written to a staged sibling,
 verified, and only then published in one step that cannot replace an existing
-file (`link(2)` on POSIX, `rename` on Windows). If two cleans race for the same
-free name, exactly one publishes and the other reports `output_exists`; on any
-failure the staged file is discarded and the destination is untouched.
+file (`link(2)` where hard links exist; otherwise `renameat2(RENAME_NOREPLACE)`
+on Linux, `renamex_np(RENAME_EXCL)` on macOS, `rename` on Windows). If two
+cleans race for the same free name, exactly one publishes and the other reports
+`output_exists`; on any failure the staged file is discarded and the
+destination is untouched. A folder that cannot publish a new file atomically is
+refused with `publish_unavailable` and a request to choose another folder —
+there is no copy into the destination, so a partial file never gets the final
+name.
 
 Verification after cleaning is mandatory, not advisory:
 

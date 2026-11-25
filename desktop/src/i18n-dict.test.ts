@@ -77,6 +77,7 @@ describe("i18n dictionaries", () => {
       "io",
       "output_is_carrier",
       "output_exists",
+      "publish_unavailable",
       "source_overwrite",
       "unsafe_path",
       "audio_lossy",

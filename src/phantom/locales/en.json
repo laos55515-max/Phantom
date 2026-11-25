@@ -117,6 +117,7 @@
   "err.metadata_conflict": "Cleaning stopped because the result would have lost a protected field ({fields}). Your original file was not changed and no cleaned copy was created. This is a bug in the cleaning policy, not something you did — please report it with the file's container type.",
   "err.output_exists": "A file already exists at this path. Choose another name; nothing was overwritten:\n\n{path}",
   "err.output_is_carrier": "The output file would overwrite the carrier. Choose another name.",
+  "err.publish_unavailable": "This folder cannot receive the copy atomically without replacing an existing file. Choose another folder. The original was not changed:\n\n{path}",
   "err.signed_media": "The file is signed and its validity cannot be confirmed here, so cleaning is blocked: {details}",
   "err.source_overwrite": "The output file would overwrite the file you are hiding. Choose another name.",
   "err.title": "Error",

@@ -37,15 +37,35 @@ All notable changes to PHANTOM are recorded here. The format follows
   frozen bridge; the 980×720 layout check covers the grouped list, the preview,
   the sticky save button, the overwrite refusal and the credential refusal.
 
+### Fixed — the fallback never copies into the final file
+
+- The previous fallback created the destination with `O_EXCL` and copied into
+  it, so a failure in the middle left a partial file under the final name (and
+  readers could see it while it was being written). That path is gone.
+- When hard links are unavailable, publication now uses the platform's atomic
+  no-replace rename: `renameat2(RENAME_NOREPLACE)` on Linux and
+  `renamex_np(RENAME_EXCL)` on macOS move the fully written, verified staged
+  file into place in one step. `os.rename` does the same on Windows.
+- A folder that supports neither is refused with the new
+  `publish_unavailable` error, translated in Ukrainian, Russian and English and
+  phrased as a request to choose another folder; the source and any existing
+  file are untouched, and nothing appears under the final name.
+- Regressions: hard links disabled → the atomic rename still publishes the
+  complete copy; hard links and atomic rename disabled → the clean is refused,
+  no final file exists, no staged sibling is left and the source hash is
+  unchanged; an existing destination is still refused with `output_exists`
+  while hard links are disabled. The two-parallel-saves test is unchanged.
+
 ### Fixed — two cleans could publish over each other
 
 - Publication used an unconditional `os.replace`: two verified copies racing for
   the same free name could each replace the other, and the loser was still
   reported as a success. With `overwrite=False` the staged copy is now published
-  with one conditional filesystem operation — `link(2)` on POSIX (fails with
-  `EEXIST`), `os.rename` on Windows (refuses an existing name), and an `O_EXCL`
-  copy on filesystems without hard links. The target appears complete, an
-  occupied name raises `output_exists`, and the existing file keeps its bytes.
+  with one conditional filesystem operation — `link(2)` where hard links exist
+  (fails with `EEXIST`), the platform's atomic no-replace rename elsewhere
+  (`renameat2(..., RENAME_NOREPLACE)` on Linux, `renamex_np(..., RENAME_EXCL)`
+  on macOS, `os.rename` on Windows). The target appears complete, an occupied
+  name raises `output_exists`, and the existing file keeps its bytes.
 - `overwrite=True` still uses the unconditional rename, but only for the exact
   name the caller asked to replace; an extension-rewritten destination is
   published exclusively.

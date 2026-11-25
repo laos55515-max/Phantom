@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import os
 import shutil
@@ -22,6 +23,7 @@ from phantom.core.errors import (
     OperationCancelled,
     OutputExistsError,
     PhantomError,
+    PublishUnavailableError,
     SignedMediaError,
     SourceOverwriteError,
     UnsupportedFormat,
@@ -572,6 +574,71 @@ def test_exclusive_publish_never_replaces_an_existing_file(tmp_path: Path) -> No
 
     assert target.read_bytes() == b"the verified copy"
     assert not staged.exists()
+
+
+def _no_hard_links(*_args: object, **_kwargs: object) -> None:
+    raise OSError(errno.EOPNOTSUPP, "operation not supported")
+
+
+def test_without_hard_links_the_atomic_rename_still_publishes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No hard links: renameat2/renamex_np moves the verified file into place."""
+    if os.name == "nt":  # pragma: no cover - Windows renames natively
+        pytest.skip("Windows publishes with os.rename; hard links are not the fallback")
+    source = samples.personal_png(tmp_path / "photo.png")
+    target = tmp_path / "copy.png"
+    before = _sha(source)
+    monkeypatch.setattr(os, "link", _no_hard_links)
+
+    outcome = cleaner.clean(
+        str(source), str(target), frozenset({"png.text.tEXt.Comment"})
+    )
+
+    assert outcome.verified is True
+    assert outcome.output == str(target)
+    assert target.is_file()
+    assert _sha(target) == outcome.output_sha256
+    assert np.array_equal(_pixels(target), _pixels(source))
+    assert _sha(source) == before
+    assert _staged_siblings(tmp_path) == []
+
+
+def test_without_hard_links_or_atomic_rename_the_copy_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No primitive at all: refuse, and never leave a file under the final name."""
+    source = samples.personal_png(tmp_path / "photo.png")
+    target = tmp_path / "copy.png"
+    before = _sha(source)
+    monkeypatch.setattr(os, "link", _no_hard_links)
+    monkeypatch.setattr(fsutil, "_rename_no_replace", lambda staged, destination: False)
+
+    with pytest.raises(PublishUnavailableError) as caught:
+        cleaner.clean(str(source), str(target), frozenset({"png.text.tEXt.Comment"}))
+
+    assert not target.exists(), "a refused publication must not create the file"
+    assert _staged_siblings(tmp_path) == []
+    assert _sha(source) == before
+    assert caught.value.detail == str(target)
+    assert caught.value.params["path"] == str(target)
+    assert "another folder" in caught.value.message
+
+
+def test_without_hard_links_an_existing_destination_is_refused_untouched(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = samples.personal_png(tmp_path / "photo.png")
+    target = tmp_path / "copy.png"
+    target.write_bytes(b"someone else's file")
+    before = _sha(target)
+    monkeypatch.setattr(os, "link", _no_hard_links)
+
+    with pytest.raises(OutputExistsError):
+        cleaner.clean(str(source), str(target), frozenset({"png.text.tEXt.Comment"}))
+
+    assert _sha(target) == before
+    assert _staged_siblings(tmp_path) == []
 
 
 def test_two_cleans_publishing_to_one_path_have_exactly_one_winner(

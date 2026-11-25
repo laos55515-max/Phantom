@@ -51,6 +51,8 @@ function errorExplanation(
       return t("meta.error.output_exists", { path });
     case "output_path":
       return t("meta.error.extension", { path });
+    case "publish_unavailable":
+      return t("meta.error.publish_unavailable", { path });
     case "signed_media":
       return t("meta.error.signed");
     case "metadata_conflict":
