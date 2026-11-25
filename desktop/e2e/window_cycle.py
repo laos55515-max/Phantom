@@ -173,7 +173,7 @@ def find_tauri_driver() -> Path | None:
 
 
 # --------------------------------------------------------------------------- scenario
-def drive_window(driver, shots: Path, cleaned_name: str) -> None:
+def drive_window(driver, shots: Path, cleaned_name: str, extracted_name: str) -> None:
     """Click through the installed window.  Raises on timeout (test failure)."""
     from selenium.webdriver.common.by import By
     from selenium.webdriver.support import expected_conditions as EC
@@ -188,7 +188,8 @@ def drive_window(driver, shots: Path, cleaned_name: str) -> None:
             print(f"  screenshot {name} skipped: {error}", flush=True)
 
     def clickable_testid(testid: str):
-        return wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, f"[data-testid='{testid}']")))
+        selector = (By.CSS_SELECTOR, f"[data-testid='{testid}']")
+        return wait.until(EC.element_to_be_clickable(selector))
 
     def click_testid(testid: str) -> None:
         clickable_testid(testid).click()
@@ -241,7 +242,8 @@ def drive_window(driver, shots: Path, cleaned_name: str) -> None:
     password.clear()
     password.send_keys(TEST_PASSWORD)
     click_testid("hide-submit")  # save queue #2: hidden.png
-    wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "[data-testid='hide-open-extract']")))
+    hide_done = (By.CSS_SELECTOR, "[data-testid='hide-open-extract']")
+    wait.until(EC.presence_of_element_located(hide_done))
     shot("05-hide-done")
 
     # --- Extract: handoff from Hide success ---------------------------------
@@ -257,7 +259,11 @@ def drive_window(driver, shots: Path, cleaned_name: str) -> None:
     wait.until(EC.presence_of_element_located((By.XPATH, "//*[contains(., 'Found a file')]")))
     shot("07-extract-found")
     click_testid("extract-save-as")  # save queue #3: extracted.bin
-    wait.until(EC.presence_of_element_located((By.XPATH, "//*[contains(., 'Saved to')]")))
+    # "Saved to" alone is ambiguous: the Hide success panel (same words) stays
+    # mounted but hidden, so presence would match before the Extract save
+    # finishes.  Wait for the saved path itself, which only renders after the
+    # bridge has written the file.
+    wait.until(EC.presence_of_element_located((By.XPATH, f"//*[contains(., '{extracted_name}')]")))
     shot("08-extract-saved")
 
 
@@ -312,7 +318,9 @@ def main() -> int:
     parser.add_argument("--app", default=None, help="path to the installed PHANTOM binary")
     parser.add_argument("--out", default=None, help="where to write the JSON report")
     parser.add_argument("--shots", default="window-e2e-shots", help="screenshot directory")
-    parser.add_argument("--keep-work", action="store_true", help="keep the temp work dir (debugging)")
+    parser.add_argument(
+        "--keep-work", action="store_true", help="keep the temp work dir (debugging)"
+    )
     args = parser.parse_args()
 
     shots = Path(args.shots)
@@ -320,19 +328,26 @@ def main() -> int:
 
     app = find_app_binary(args.app)
     if app is None:
-        code = blocker(f"installed PHANTOM binary not found (looked for {args.app or '/usr/bin/phantom'})")
+        looked = args.app or "/usr/bin/phantom"
+        code = blocker(f"installed PHANTOM binary not found (looked for {looked})")
         write_report(args.out, app=None, work=None)
         return code
 
     tauri_driver = find_tauri_driver()
     if tauri_driver is None:
-        code = blocker("tauri-driver not found in PATH or ~/.cargo/bin (install: cargo install tauri-driver --locked)")
+        code = blocker(
+            "tauri-driver not found in PATH or ~/.cargo/bin "
+            "(install: cargo install tauri-driver --locked)"
+        )
         write_report(args.out, app=str(app), work=None)
         return code
 
     webkit_driver = shutil.which("WebKitWebDriver")
     if webkit_driver is None:
-        code = blocker("WebKitWebDriver not found in PATH (install: sudo apt-get install -y webkit2gtk-driver)")
+        code = blocker(
+            "WebKitWebDriver not found in PATH "
+            "(install: sudo apt-get install -y webkit2gtk-driver)"
+        )
         write_report(args.out, app=str(app), work=None)
         return code
 
@@ -427,10 +442,14 @@ def main() -> int:
                 return code
 
             try:
-                drive_window(driver, shots, work["cleaned"].name)
+                drive_window(driver, shots, work["cleaned"].name, work["extracted"].name)
                 check("window scenario completed (Metadata → Hide → Extract)", True)
             except Exception as error:  # noqa: BLE001 - timeouts land here
-                check("window scenario completed (Metadata → Hide → Extract)", False, str(error)[:500])
+                check(
+                    "window scenario completed (Metadata → Hide → Extract)",
+                    False,
+                    str(error)[:500],
+                )
                 try:
                     driver.save_screenshot(str(shots / "99-failure.png"))
                 except Exception as shot_error:  # noqa: BLE001
