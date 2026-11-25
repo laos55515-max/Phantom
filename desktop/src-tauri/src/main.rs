@@ -68,7 +68,7 @@ fn e2e_queues() -> Option<&'static Mutex<E2eQueues>> {
                         .lines()
                         .map(str::trim)
                         .filter(|line| !line.is_empty())
-                        .map(PathBuf::from)
+                        .map(|line| PathBuf::from(line.to_owned()))
                         .collect()
                 })
                 .unwrap_or_default()
