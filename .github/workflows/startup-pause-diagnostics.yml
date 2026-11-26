@@ -1,0 +1,66 @@
+name: Startup pause attribution (Tk 9.1)
+
+on:
+  push:
+    branches: ["arena/**"]
+    paths:
+      - 'tools/measure_startup_frame.py'
+      - 'tools/diagnose_startup_pause.py'
+      - '.github/workflows/startup-pause-diagnostics.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  measure:
+    name: Fixed main, native stacks and capture intervals
+    runs-on: macos-latest
+    timeout-minutes: 15
+    env:
+      # Exact main from the failed job, not a moving origin/main or PR merge ref.
+      PRODUCT_SHA: f788e2a310482b66b21806ac283534da8a6ea5f9
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install the gate's Tk and dependencies
+        run: |
+          brew install python@3.12 python-tk@3.12 libsndfile || brew upgrade python-tk@3.12
+          /opt/homebrew/bin/python3.12 -m venv .venv-tk9
+          . .venv-tk9/bin/activate
+          python -m pip install -r requirements-dev.txt
+          python -c "import tkinter; assert tkinter.TkVersion == 9.1; print('Tk', tkinter.TkVersion, tkinter.TclVersion)"
+          mkdir -p diagnostic/product diagnostic/results
+          git archive "$PRODUCT_SHA" | tar -x -C diagnostic/product
+          {
+            echo "product=$PRODUCT_SHA"
+            echo "instrument=$(git rev-parse HEAD)"
+            sw_vers
+            python -V
+            python -m pip freeze
+          } > diagnostic/results/environment.txt
+      # Separate steps keep each pair's four annotations below GitHub's per-step
+      # limit. There is one window per fresh process, never concurrent windows.
+      - name: Pair 1, capture then no capture
+        run: |
+          . .venv-tk9/bin/activate
+          python tools/diagnose_startup_pause.py --pair 1 --tree diagnostic/product --output diagnostic/results
+      - name: Pair 2, no capture then capture
+        if: always()
+        run: |
+          . .venv-tk9/bin/activate
+          python tools/diagnose_startup_pause.py --pair 2 --tree diagnostic/product --output diagnostic/results
+      - name: Pair 3, capture then no capture
+        if: always()
+        run: |
+          . .venv-tk9/bin/activate
+          python tools/diagnose_startup_pause.py --pair 3 --tree diagnostic/product --output diagnostic/results
+      - name: Preserve all raw measurements, native stacks and logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: startup-pause-attribution-tk91
+          path: diagnostic/results/
+          if-no-files-found: error
+          retention-days: 30

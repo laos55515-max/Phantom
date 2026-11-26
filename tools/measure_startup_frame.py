@@ -62,6 +62,7 @@ import time
 import traceback
 import zlib
 from dataclasses import dataclass, field
+from functools import partial
 from typing import Any, Final
 
 #: How long one run watches the window before it closes itself.
@@ -225,6 +226,26 @@ class Capture:
     samples: list[tuple[float, int, float, str, str]] = field(default_factory=list)
     available: bool = False
     reason: str = ""
+    diagnostic: bool = False
+    timings: list[dict[str, Any]] = field(default_factory=list)
+
+    def timed(self, name: str, action: Any) -> Any:
+        """Time capture work, not Tk; retain completed intervals even on error."""
+        if not self.diagnostic:
+            return action()
+        started = time.perf_counter()
+        cpu = time.thread_time()
+        record = {"stage": name, "start_ms": (started - self.origin) * 1000}
+        self.timings.append(record)
+        try:
+            return action()
+        finally:
+            ended = time.perf_counter()
+            record.update(
+                end_ms=(ended - self.origin) * 1000,
+                duration_ms=(ended - started) * 1000,
+                thread_cpu_ms=(time.thread_time() - cpu) * 1000,
+            )
 
     def run(self, until: float) -> None:
         directory = tempfile.mkdtemp(prefix="phantom-frame-")
@@ -236,17 +257,24 @@ class Capture:
                 continue
             left, top, width, height = self.rect
             taken = time.perf_counter()
-            done = subprocess.run(
-                ["screencapture", "-x", "-o", "-R", f"{left},{top},{width},{height}", str(path)],
-                check=False,
-                capture_output=True,
+            done = self.timed(
+                "screencapture",
+                partial(
+                    subprocess.run,
+                    [
+                        "screencapture", "-x", "-o", "-R",
+                        f"{left},{top},{width},{height}", str(path),
+                    ],
+                    check=False,
+                    capture_output=True,
+                ),
             )
             if done.returncode != 0:
                 self.reason = (done.stderr or b"?").decode("utf-8", "replace").strip()[:200]
                 self.available = False
                 return
             try:
-                image = decode_png(path)
+                image = self.timed("decode_png", lambda: decode_png(path))
             except (ValueError, zlib.error, OSError) as exc:
                 self.reason = f"{type(exc).__name__}: {exc}"
                 self.available = False
@@ -254,7 +282,9 @@ class Capture:
             # The capture is in points on this display, the image is in pixels: on a
             # Retina panel they differ by the backing scale, so the whole image is
             # the window when the rectangle was asked for in points.
-            colours, fraction, bg_hex = sample_detail(image, 0, 0, image.width, image.height)
+            colours, fraction, bg_hex = self.timed(
+                "sample_pixels", partial(sample_detail, image, 0, 0, image.width, image.height)
+            )
             self.samples.append(
                 (taken - self.origin, colours, fraction, bg_hex, f"{image.width}x{image.height}")
             )
@@ -269,10 +299,20 @@ def first_paint(capture: Capture) -> float | None:
     return None
 
 
+def attach_gap_samples(gaps: list[dict[str, Any]], samples: list[dict[str, Any]]) -> None:
+    """Retain only watchdog samples taken strictly inside each heartbeat gap."""
+    for gap in gaps:
+        gap["stack_samples"] = [
+            item for item in samples if gap["start_ms"] < item["at_ms"] < gap["end_ms"]
+        ]
+
+
 # ---------------------------------------------------------------------------
 # one run
 # ---------------------------------------------------------------------------
-def run(label: str, watch: float) -> dict[str, Any]:
+def run(
+    label: str, watch: float, *, diagnostic: bool = False, capture_enabled: bool = True
+) -> dict[str, Any]:
     import tkinter as tk
 
     import customtkinter as ctk
@@ -295,6 +335,9 @@ def run(label: str, watch: float) -> dict[str, Any]:
     worst_gap_at_ms = [0.0]
     beats = [0]
     stalls: list[str] = []
+    stack_samples: list[dict[str, Any]] = []
+    gaps: list[dict[str, Any]] = []
+    last_beat_cpu = [time.thread_time() if diagnostic else 0.0]
     done_flag = [False]
 
     def watchdog() -> None:
@@ -304,7 +347,7 @@ def run(label: str, watch: float) -> dict[str, Any]:
                 break
             now = time.perf_counter()
             gap = now - last_beat[0]
-            if gap >= 0.30 and len(stalls) < 8:
+            if gap >= 0.30 and (diagnostic or len(stalls) < 8):
                 frame = sys._current_frames().get(main_tid)
                 where = "unknown"
                 if frame is not None:
@@ -314,9 +357,18 @@ def run(label: str, watch: float) -> dict[str, Any]:
                         f"{pathlib.Path(item.filename).name}:{item.lineno}({item.name})"
                         for item in tail
                     )
-                stalls.append(
-                    f"at={now - started:.2f}s phase={phase[0]} gap={gap:.2f}s stack={where}"
-                )
+                if diagnostic:
+                    stack_samples.append(
+                        {
+                            "at_ms": round((now - started) * 1000, 1),
+                            "phase": phase[0],
+                            "stack": where,
+                        }
+                    )
+                elif len(stalls) < 8:
+                    stalls.append(
+                        f"at={now - started:.2f}s phase={phase[0]} gap={gap:.2f}s stack={where}"
+                    )
 
     dog = threading.Thread(target=watchdog, daemon=True)
     dog.start()
@@ -334,9 +386,10 @@ def run(label: str, watch: float) -> dict[str, Any]:
     window = app.i18n.t("tab_metadata")
     #: The screenshots taken while the window appears; the thread that takes them never
     #: touches Tk, and the main thread only writes the rectangle it should look at.
-    capture = Capture(origin=started)
+    capture = Capture(origin=started, diagnostic=diagnostic)
     result: dict[str, Any] = {
         "label": label,
+        "origin_perf_counter": started,
         "tk": tk_version,
         "build_ms": round(build_ms, 1),
         "window": window,
@@ -400,10 +453,21 @@ def run(label: str, watch: float) -> dict[str, Any]:
     def beat() -> None:
         now = time.perf_counter()
         gap_ms = (now - last_beat[0]) * 1000.0
+        cpu = time.thread_time() if diagnostic else 0.0
+        if diagnostic and gap_ms >= 300:
+            gaps.append(
+                {
+                    "start_ms": round((last_beat[0] - started) * 1000, 1),
+                    "end_ms": round((now - started) * 1000, 1),
+                    "duration_ms": round(gap_ms, 1),
+                    "main_thread_cpu_ms": round((cpu - last_beat_cpu[0]) * 1000, 1),
+                }
+            )
         if gap_ms > worst_gap_ms[0]:
             worst_gap_ms[0] = gap_ms
             worst_gap_at_ms[0] = (now - started) * 1000.0
         last_beat[0] = now
+        last_beat_cpu[0] = cpu
         beats[0] += 1
         if not done_flag[0]:
             root.after(10, beat)
@@ -425,8 +489,11 @@ def run(label: str, watch: float) -> dict[str, Any]:
     result["refresh_ms"] = round((time.perf_counter() - refreshed) * 1000.0, 1)
 
     capture.screen = (root.winfo_screenwidth(), root.winfo_screenheight())
-    sampler = threading.Thread(target=capture.run, args=(started + watch,), daemon=True)
-    sampler.start()
+    if capture_enabled:
+        sampler = threading.Thread(target=capture.run, args=(started + watch,), daemon=True)
+        sampler.start()
+    else:
+        capture.reason = "disabled for diagnostic comparison"
 
     pushed: dict[str, Any] = {}
 
@@ -447,7 +514,10 @@ def run(label: str, watch: float) -> dict[str, Any]:
         else:
             pushed["skipped"] = (time.perf_counter() - started) * 1000.0
 
-    root.after(int(PUSH_AT * 1000), to_push)
+    # In diagnostic mode keep workloads identical with and without capture.
+    # Otherwise the no-capture run would always push the window.
+    if not diagnostic:
+        root.after(int(PUSH_AT * 1000), to_push)
 
     clicks: dict[str, Any] = {}
 
@@ -508,6 +578,7 @@ def run(label: str, watch: float) -> dict[str, Any]:
     # Arm the heartbeat right before entering mainloop, so the first gap
     # measurement starts from the moment the event loop takes over.
     last_beat[0] = time.perf_counter()
+    last_beat_cpu[0] = time.thread_time() if diagnostic else 0.0
 
     phase[0] = "mainloop"
     try:
@@ -516,11 +587,8 @@ def run(label: str, watch: float) -> dict[str, Any]:
         done_flag[0] = True
 
     painted = first_paint(capture)
-    stages = [
-        f"{name}={delta:.1f}ms"
-        for name, _at, delta in trace.marks
-        if delta >= 15.0
-    ]
+    attach_gap_samples(gaps, stack_samples)
+    stages = [f"{name}={delta:.1f}ms" for name, _at, delta in trace.marks if delta >= 15.0]
     result.update(
         {
             "pre_mainloop_ms": round(marks.get("pre_mainloop", -1), 1),
@@ -542,6 +610,10 @@ def run(label: str, watch: float) -> dict[str, Any]:
             "worst_gap_ms": round(worst_gap_ms[0], 1),
             "worst_gap_at_ms": round(worst_gap_at_ms[0], 1),
             "stalls": stalls,
+            "diagnostic_gaps": gaps,
+            "diagnostic_stack_samples": stack_samples,
+            "capture_enabled": capture_enabled,
+            "capture_timings": [dict(item) for item in capture.timings],
             "slow_stages": stages,
             "refit_passes": app._refit_passes,
             "resize_events": app._resize_events,
@@ -640,10 +712,20 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--label", default="run", help="name for this run in the report")
     parser.add_argument("--watch", type=float, default=WATCH_SECONDS, help="seconds to watch")
     parser.add_argument("--json", help="write the raw numbers here")
+    parser.add_argument(
+        "--diagnostic", action="store_true", help="sample stacks throughout heartbeat gaps"
+    )
+    parser.add_argument(
+        "--no-capture", action="store_true", help="disable screenshots (diagnostic mode only)"
+    )
     args = parser.parse_args(argv)
+    if args.no_capture and not args.diagnostic:
+        parser.error("--no-capture requires --diagnostic")
 
     try:
-        result = run(args.label, args.watch)
+        result = run(
+            args.label, args.watch, diagnostic=args.diagnostic, capture_enabled=not args.no_capture
+        )
     except Exception as exc:  # noqa: BLE001 - a measurement reports, it never raises
         say(f"label={args.label} error={type(exc).__name__}: {exc}")
         return 1

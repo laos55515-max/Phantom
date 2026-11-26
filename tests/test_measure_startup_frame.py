@@ -193,3 +193,40 @@ def test_a_png_this_decoder_cannot_read_is_named_as_such(tmp_path: pathlib.Path)
     data = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", header) + chunk(b"IEND", b"")
     with pytest.raises(ValueError, match="unsupported PNG"):
         M.decode_png(_write(tmp_path, data))
+
+
+def test_gap_samples_are_strictly_inside_the_interval() -> None:
+    gaps = [{"start_ms": 100.0, "end_ms": 500.0}]
+    samples = [{"at_ms": at} for at in (99.0, 100.0, 200.0, 500.0, 501.0)]
+    M.attach_gap_samples(gaps, samples)
+    assert gaps[0]["stack_samples"] == [{"at_ms": 200.0}]
+
+
+def test_capture_stage_retains_elapsed_and_cpu_time_on_error(monkeypatch) -> None:
+    times = iter((10.0, 10.6))
+    cpus = iter((2.0, 2.1))
+    monkeypatch.setattr(M.time, "perf_counter", lambda: next(times))
+    monkeypatch.setattr(M.time, "thread_time", lambda: next(cpus))
+    capture = M.Capture(origin=9.0, diagnostic=True)
+
+    def failed():
+        raise ValueError("bad PNG")
+
+    with pytest.raises(ValueError, match="bad PNG"):
+        capture.timed("decode_png", failed)
+    assert capture.timings[0]["stage"] == "decode_png"
+    assert capture.timings[0]["start_ms"] == 1000
+    assert capture.timings[0]["end_ms"] == pytest.approx(1600)
+    assert capture.timings[0]["thread_cpu_ms"] == pytest.approx(100)
+
+
+def test_default_capture_does_not_collect_diagnostic_timings() -> None:
+    capture = M.Capture()
+    assert capture.timed("decode_png", lambda: 42) == 42
+    assert capture.timings == []
+
+
+def test_no_capture_cannot_silently_disable_the_required_gate() -> None:
+    with pytest.raises(SystemExit) as exc:
+        M.main(["--no-capture"])
+    assert exc.value.code == 2
