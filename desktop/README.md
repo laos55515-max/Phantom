@@ -151,6 +151,44 @@ and the button disabled.
 Settings → switch language → come back → same data; and the persistent draft
 is checked key-by-key — language, theme, savedAt, nothing else.
 
+## Window E2E (installed app, Linux/Xvfb)
+
+`e2e/window_cycle.py` drives the **installed** app through its real window —
+Metadata (open a GPS PNG, save the cleaned copy) → Hide (cleaned copy as
+carrier, hide a test file) → Extract (recover it) — and then verifies
+automatically that GPS is gone, the original PNG is byte-identical and the
+extracted file matches the test original by SHA-256.
+
+Platform: **Linux (Ubuntu 24.04) under Xvfb**, via the official Tauri
+WebDriver route (`tauri-driver` + `WebKitWebDriver` from `webkit2gtk-driver`,
+Selenium client).  It is the one platform where CI can stably control the
+installed window.  macOS has no WKWebView WebDriver (Apple ships no driver)
+and Windows needs an Edge Driver version-matched to the runner's Edge — both
+are blockers for a window test, not failures of the scenario.
+
+Native file dialogs are outside the webview and cannot be driven by
+WebDriver; `rfd` on Linux uses the XDG Desktop Portal, which is absent in a
+headless runner (the dialog silently cancels).  The shell therefore has a
+test-only seam: with `PHANTOM_E2E=1`, `pick_file`/`save_file` return the next
+path from a queue file (`PHANTOM_E2E_PICK_QUEUE` / `PHANTOM_E2E_SAVE_QUEUE`)
+instead of opening a dialog, and `reveal_path` is a no-op.  Without the env
+var nothing changes.  The window, the React UI and the bundled bridge are
+real; only the OS selection step is queued.
+
+```bash
+# after the .deb is installed (CI reuses the build-linux artifact)
+sudo apt-get install -y xvfb webkit2gtk-driver
+cargo install tauri-driver --locked
+pip install -r requirements.txt selenium
+xvfb-run -a -s "-screen 0 1280x1024x24" \
+  python desktop/e2e/window_cycle.py --app /usr/bin/phantom \
+    --out window-cycle.json --shots window-e2e-shots
+```
+
+Exit codes: `0` pass, `1` a check failed, `2` blocker (missing
+`tauri-driver` / `WebKitWebDriver` / app binary, or the WebDriver session
+could not start) — the blocker and its cause are in the JSON report.
+
 ## CI
 
 `.github/workflows/desktop.yml` — see the PR description for per-OS results.

@@ -12,11 +12,97 @@ use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 /// The core runs Argon2id (m = 96 MiB, t = 3) and can walk a 24 MP carrier, so
 /// minutes are legitimate; forever is not.
 const BRIDGE_TIMEOUT: Duration = Duration::from_secs(900);
+
+// ---------------------------------------------------------------------------
+// Window E2E seam (test-only, gated by environment).
+//
+// The window scenario (`desktop/e2e/window_cycle.py`) drives the *installed*
+// app through its real window with Tauri WebDriver on Linux/Xvfb.  The one
+// part WebDriver cannot drive is the OS file dialog: `rfd` on Linux uses the
+// XDG Desktop Portal (or zenity), which is absent in a headless CI runner, so
+// a native dialog would silently cancel and the scenario could never proceed.
+//
+// When — and only when — the process is started with `PHANTOM_E2E=1`, the
+// `pick_file`/`save_file` commands return the next path from a queue file
+// instead of opening a dialog, and `reveal_path` becomes a no-op.  The queues
+// are plain files with one absolute path per line, in dialog order:
+//
+//   PHANTOM_E2E_PICK_QUEUE  paths returned by successive pick dialogs
+//   PHANTOM_E2E_SAVE_QUEUE  paths returned by successive save dialogs
+//
+// The driver writes both files before launching the app; the shell loads them
+// once and pops them in order.  Without `PHANTOM_E2E=1` nothing changes: the
+// native dialogs run exactly as before.  The seam grants no new privilege —
+// the process already runs as the user and can open any path the user picks —
+// it only replaces the *selection* step, which lives outside the app window.
+// ---------------------------------------------------------------------------
+
+struct E2eQueues {
+    picks: Vec<PathBuf>,
+    saves: Vec<PathBuf>,
+}
+
+static E2E_QUEUES: OnceLock<Mutex<E2eQueues>> = OnceLock::new();
+
+fn e2e_enabled() -> bool {
+    matches!(std::env::var("PHANTOM_E2E").as_deref(), Ok("1"))
+}
+
+fn e2e_queues() -> Option<&'static Mutex<E2eQueues>> {
+    if !e2e_enabled() {
+        return None;
+    }
+    Some(E2E_QUEUES.get_or_init(|| {
+        fn load(var: &str) -> Vec<PathBuf> {
+            std::env::var(var)
+                .ok()
+                .and_then(|path| std::fs::read_to_string(path).ok())
+                .map(|content| {
+                    content
+                        .lines()
+                        .map(str::trim)
+                        .filter(|line| !line.is_empty())
+                        .map(|line| PathBuf::from(line.to_owned()))
+                        .collect()
+                })
+                .unwrap_or_default()
+        }
+        Mutex::new(E2eQueues {
+            picks: load("PHANTOM_E2E_PICK_QUEUE"),
+            saves: load("PHANTOM_E2E_SAVE_QUEUE"),
+        })
+    }))
+}
+
+/// Next queued pick: `None` when the seam is off (use the native dialog),
+/// `Some(None)` when the seam is on but the queue is exhausted (cancel),
+/// `Some(Some(path))` when a path is queued.
+fn e2e_next_pick() -> Option<Option<PathBuf>> {
+    let queues = e2e_queues()?;
+    let mut guard = queues.lock().ok()?;
+    Some(if guard.picks.is_empty() {
+        None
+    } else {
+        Some(guard.picks.remove(0))
+    })
+}
+
+/// Next queued save, same contract as [`e2e_next_pick`].
+fn e2e_next_save() -> Option<Option<PathBuf>> {
+    let queues = e2e_queues()?;
+    let mut guard = queues.lock().ok()?;
+    Some(if guard.saves.is_empty() {
+        None
+    } else {
+        Some(guard.saves.remove(0))
+    })
+}
 
 fn find_bridge() -> Result<PathBuf, String> {
     let exe_name = if cfg!(windows) {
@@ -167,8 +253,20 @@ fn path_fields(path: &std::path::Path) -> Result<Value, String> {
 /// System file picker for a payload to hide (`secret`) or a carrier
 /// (`carrier`).  `media` narrows the carrier picker: `image` (PNG) or
 /// `audio` (WAV/FLAC); anything else selects payload files.
+///
+/// In the window E2E (`PHANTOM_E2E=1`) the next queued path is returned
+/// instead of opening a dialog; see the seam note above.
 #[tauri::command]
 async fn pick_file(kind: String, media: String) -> Result<Option<Value>, String> {
+    if let Some(next) = e2e_next_pick() {
+        return match next {
+            Some(path) => path_fields(&path).map(Some),
+            None => {
+                eprintln!("PHANTOM_E2E: pick queue exhausted (kind={kind} media={media}), returning cancel");
+                Ok(None)
+            }
+        };
+    }
     tauri::async_runtime::spawn_blocking(move || {
         let mut dialog = rfd::FileDialog::new();
         match (kind.as_str(), media.as_str()) {
@@ -197,12 +295,24 @@ async fn pick_file(kind: String, media: String) -> Result<Option<Value>, String>
 /// `file` (any).  `suggested_dir` re-opens the dialog in the folder the core
 /// resolved, so the confirmed name and the written name are the same path.
 /// Returns the chosen path or `null` when the user cancels.
+///
+/// In the window E2E (`PHANTOM_E2E=1`) the next queued path is returned
+/// instead of opening a dialog; see the seam note above.
 #[tauri::command]
 async fn save_file(
     suggested_name: String,
     kind: String,
     suggested_dir: Option<String>,
 ) -> Result<Option<String>, String> {
+    if let Some(next) = e2e_next_save() {
+        return match next {
+            Some(path) => Ok(Some(path.to_string_lossy().into_owned())),
+            None => {
+                eprintln!("PHANTOM_E2E: save queue exhausted (kind={kind} suggested={suggested_name}), returning cancel");
+                Ok(None)
+            }
+        };
+    }
     tauri::async_runtime::spawn_blocking(move || {
         let mut dialog = rfd::FileDialog::new().set_file_name(&suggested_name);
         if let Some(dir) = suggested_dir.filter(|dir| !dir.is_empty()) {
@@ -225,8 +335,15 @@ async fn save_file(
 
 /// Reveal a file in the system file manager (or open its folder on Linux).
 /// The path is a user-chosen location, not a secret.
+///
+/// In the window E2E this is a no-op: opening a file manager under Xvfb would
+/// only add windows the driver does not own.
 #[tauri::command]
 async fn reveal_path(path: String) -> Result<(), String> {
+    if e2e_enabled() {
+        eprintln!("PHANTOM_E2E: reveal_path no-op: {path}");
+        return Ok(());
+    }
     tauri::async_runtime::spawn_blocking(move || {
         let path = std::path::PathBuf::from(&path);
         if !path.exists() {

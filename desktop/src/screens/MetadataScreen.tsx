@@ -366,7 +366,7 @@ export function MetadataScreen() {
             <IconFile size={26} strokeWidth={1.4} />
             <div className="dropzone-title">{t("meta.drop_title")}</div>
             <div className="dropzone-hint">{t("meta.drop_hint")}</div>
-            <button type="button" className="btn btn-ghost" onClick={() => void pickFile()}>
+            <button type="button" className="btn btn-ghost" data-testid="meta-open" onClick={() => void pickFile()}>
               {t("meta.choose_file")}
             </button>
           </DropZone>
@@ -656,6 +656,7 @@ export function MetadataScreen() {
           <button
             type="button"
             className="btn btn-primary btn-big"
+            data-testid="meta-save"
             onClick={() => void saveCopy()}
             disabled={saveDisabled}
           >

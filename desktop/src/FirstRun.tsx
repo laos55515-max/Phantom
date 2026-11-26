@@ -34,6 +34,7 @@ export function FirstRun() {
               key={code}
               type="button"
               className="firstrun-lang"
+              data-testid={`firstrun-${code}`}
               onClick={() => setLanguage(code)}
               autoFocus={code === "uk"}
             >

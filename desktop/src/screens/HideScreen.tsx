@@ -378,7 +378,7 @@ export function HideScreen({ onGoExtract }: { onGoExtract: (path: string) => voi
         <p className="screen-sub">{t("hide.q_sub")}</p>
 
         <div className="choice-list" role="list">
-          <button type="button" className="choice-card" onClick={pickSecretFile}>
+          <button type="button" className="choice-card" data-testid="hide-pick-file" onClick={pickSecretFile}>
             <span className="choice-icon">
               <IconFile size={24} />
             </span>
@@ -476,7 +476,7 @@ export function HideScreen({ onGoExtract }: { onGoExtract: (path: string) => voi
               <IconFolder size={17} />
               {t("hide.open_folder")}
             </button>
-            <button type="button" className="btn btn-subtle" onClick={() => onGoExtract(done.outputPath)}>
+            <button type="button" className="btn btn-subtle" data-testid="hide-open-extract" onClick={() => onGoExtract(done.outputPath)}>
               <IconExtract size={17} />
               {t("hide.open_extract")}
             </button>
@@ -675,6 +675,7 @@ export function HideScreen({ onGoExtract }: { onGoExtract: (path: string) => voi
                     <button
                       type="button"
                       className="btn btn-ghost"
+                      data-testid="hide-choose-own"
                       disabled={carrierBusy}
                       onClick={() => void pickCarrierFile("any")}
                     >
@@ -799,7 +800,7 @@ export function HideScreen({ onGoExtract }: { onGoExtract: (path: string) => voi
       ) : null}
 
       <div className="action-row">
-        <button type="submit" className="btn btn-primary btn-big" disabled={!canSubmit}>
+        <button type="submit" className="btn btn-primary btn-big" data-testid="hide-submit" disabled={!canSubmit}>
           {busy ? <IconSpinner size={17} className="spin" /> : <IconLock size={17} />}
           {busy ? t("hide.busy", { sec: busySec }) : t("hide.submit")}
         </button>

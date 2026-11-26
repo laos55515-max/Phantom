@@ -309,6 +309,7 @@ export function ExtractScreen({ handoff = null }: { handoff?: { path: string } |
           <button
             type="submit"
             className="btn btn-primary btn-big"
+            data-testid="extract-submit"
             disabled={!carrier || password.length < 12 || phase === "busy"}
           >
             {phase === "busy" ? <IconSpinner size={17} className="spin" /> : <IconShield size={17} />}
@@ -376,6 +377,7 @@ export function ExtractScreen({ handoff = null }: { handoff?: { path: string } |
                     <button
                       type="button"
                       className="btn btn-primary"
+                      data-testid="extract-save-as"
                       onClick={saveFilePayload}
                       disabled={busy || password.length < 12}
                     >
