@@ -95,6 +95,78 @@ The normal CI job now uploads `startup-frame.json`, `frame-*.json` and
 `frame-*.log` even when its unchanged startup gate fails. That fixes the confirmed
 **loss of diagnostic evidence**, not a claimed product freeze.
 
-## New results
+## New results — one completed experiment, six sequential processes
 
-Pending the attribution run. No product fix is claimed from the existing data.
+[Run 45894273662](https://github.com/laos55515-max/Phantom/actions/runs/45894273662),
+[job 140164178545](https://github.com/laos55515-max/Phantom/actions/runs/45894273662/job/140164178545).
+Instrument: `30d542f9c33bd414ed8c8147e15d10fc96ebef1d`. Product SHA is unchanged.
+All six application exits and all six native samplers returned 0; every metadata
+tab answered and every window closed. Artifact **startup-pause-attribution-tk91**
+(ID `15152443613`, 801378 bytes) retains raw data/native profiles/environment.
+The table is transcribed from the API-visible measurement annotations, not from
+an unavailable artifact download.
+
+Times are ms from each process's measurement origin, except CPU and durations.
+
+| Pair / mode | Build | Gap start | Gap end | Gap duration | Main-thread CPU in gap |
+|---|---:|---:|---:|---:|---:|
+| 1 capture | 4139.2 | 6028.6 | 7811.4 | 1782.8 | 1086.8 |
+| 1 no capture | 1696.9 | 2259.7 | 3382.1 | 1122.4 | 1029.1 |
+| 2 no capture | 1543.5 | 2036.7 | 2881.5 | 844.8 | 824.7 |
+| 2 capture | 1783.5 | 2846.1 | 4775.5 | 1929.4 | 1083.1 |
+| 3 capture | 1888.0 | 3143.0 | 4794.0 | 1651.0 | 1061.2 |
+| 3 no capture | 1782.6 | 2303.3 | 3156.2 | 852.9 | 837.2 |
+
+### What this adds (and does not add)
+
+- This was **not a reproduction of the 3397.2 ms failure**. All six heartbeat
+  maxima stayed below 2000 ms, but that is not a claim of a repair: the product
+  tree is literally the old one. The diagnostics do not replace/rerun the gate
+  with weaker criteria or drop its failures.
+- The capture rows are longer than their paired no-capture rows by 660.4,
+  1084.6 and 798.1 ms. This reinforces PR #26's interference evidence, with a
+  matched workload and new native/CPU data, but six runs do not attribute the
+  old outlier or exclude runner/sampling variability.
+- There is **real application-thread work without capture**: 824.7–1029.1 ms of
+  main-thread CPU during 844.8–1122.4 ms service gaps. Removing screenshots does
+  not remove all heartbeat latency; calling the whole problem merely a slow
+  screenshot command would be unjustified.
+- Captured native main-thread profiles contain
+  `Tcl_DoOneEvent -> TclServiceIdle -> ArrangeGrid -> Tk_MoveResizeWindow ->
+  XMoveResizeWindow -> GenerateConfigureNotify -> TkDoConfigureNotify ->
+  Tk_HandleEvent -> TkBindEventProc`. They also contain callbacks through
+  `PythonCmd -> PyEval_RestoreThread -> take_gil -> _pthread_cond_wait`.
+  These identify native layout/configure work and GIL waiting, rather than just
+  Python's opaque `mainloop`. They are **aggregate profiles of the run**, not
+  time-localised proof that any one frame caused the worst interval.
+- Capture timing separates mechanisms: during pair 2's 1929.4 ms gap, three
+  PNG decodes lasted 251.6 / 282.2 / 279.6 ms, using 240.6 / 233.8 / 247.0 ms
+  of capture-thread CPU; `screencapture` calls lasted 133.4 / 162.0 / 168.3 ms
+  and pixel sampling 3.4–8.0 ms. It is not one 1.9-second blocking capture call.
+  The decodes and GIL-wait samples are consistent with interference, not yet a
+  complete attribution of the original failure.
+- The first cold instrumented construction took **4139.2 ms**, before the
+  heartbeat was armed; later builds took 1543.5–1888.0 ms. The independent native
+  sampler runs during construction too, unlike the old gate. These wall times
+  must not be substituted for uninstrumented Mac startup times. This also makes
+  an unchanged green heartbeat result insufficient to assert a fast first frame.
+
+### User-facing conclusion / review status
+
+If the reported 3397.2 ms service gap occurred in an ordinary Mac launch, its
+window would temporarily fail to service timer/event callbacks (potentially
+appear frozen); the data do not establish that an ordinary, uninstrumented user
+actually gets that entire delay, or that a click is needed to recover. In the
+requested failing run, construction/loop entry were already complete around
+0.64/0.69 seconds, and the later click and close did work.
+
+We have established a post-construction service gap, real Tk/application work,
+measurement interference consistent across three pairs, and a confirmed loss of
+raw diagnostic evidence in the old workflow. **We have not established the cause
+of the rare 3.3972-second gap or fixed a product freeze.** The only confirmed fix
+here is retaining the ordinary gate's raw evidence; the added diagnostic measures
+make the remaining alternatives distinguishable rather than declaring victory
+from green reruns. A next investigation needs a reproduction above 2000 ms with
+native samples localised to that exact interval before changing application or
+capture architecture. The PR remains open for review; the 2000 ms threshold and
+product source are unchanged.
