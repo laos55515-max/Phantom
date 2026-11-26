@@ -1,0 +1,100 @@
+name: Tk 9.1 pause diagnostics
+
+on:
+  push:
+    branches: ["arena/5c5833d2-phantom"]
+  pull_request:
+    paths:
+      - 'tools/measure_startup_frame.py'
+      - '.github/workflows/tk91-pause-diagnostics.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  compare:
+    name: Fixed revisions, capture on and off
+    runs-on: macos-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install the same Tk and dependencies as the gate
+        run: |
+          brew install python@3.12 python-tk@3.12 libsndfile || brew upgrade python-tk@3.12
+          /opt/homebrew/bin/python3.12 -m venv .venv-tk9
+          . .venv-tk9/bin/activate
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-dev.txt
+          python -c "import tkinter; print('Tk', tkinter.TkVersion, tkinter.TclVersion)"
+      - name: Measure alternating fixed revisions with a single instrument
+        run: |
+          . .venv-tk9/bin/activate
+          mkdir -p diagnostic/base diagnostic/merge diagnostic/results
+          git archive f5bb4f7818c201fd1c379d33034072de386da6cb | tar -x -C diagnostic/base
+          git archive 5f8b84d57efb656f3c1485dbe3440b0de0072cbf | tar -x -C diagnostic/merge
+          python - <<'PY'
+          import json, os, pathlib, subprocess, sys
+
+          root = pathlib.Path.cwd()
+          output = root / 'diagnostic/results'
+          shas = {'base': 'f5bb4f7818c201fd1c379d33034072de386da6cb',
+                  'merge': '5f8b84d57efb656f3c1485dbe3440b0de0072cbf'}
+          # Interleave revisions and modes, reversing order between repetitions.
+          rows = []
+          for iteration in range(3):
+              order = [('base', True), ('merge', True), ('merge', False), ('base', False)]
+              if iteration % 2:
+                  order.reverse()
+              for tree, capture in order:
+                  mode = 'capture' if capture else 'no-capture'
+                  label = f'{tree}-{mode}-{iteration + 1}'
+                  path, log = output / f'{label}.json', output / f'{label}.log'
+                  command = [sys.executable, '-u', 'tools/measure_startup_frame.py',
+                             '--diagnostic', '--label', label, '--watch', '8', '--json', str(path)]
+                  if not capture:
+                      command.append('--no-capture')
+                  env = {**os.environ, 'PYTHONPATH': str(root / 'diagnostic' / tree / 'src')}
+                  try:
+                      with log.open('w') as f:
+                          result = subprocess.run(command, env=env, stdout=f,
+                                                  stderr=subprocess.STDOUT, timeout=180)
+                      exit_code = result.returncode
+                  except subprocess.TimeoutExpired:
+                      exit_code = 124
+                  data = json.loads(path.read_text()) if path.exists() else {}
+                  gaps = data.get('diagnostic_gaps', [])
+                  worst = max(gaps, key=lambda item: item['duration_ms'], default=None)
+                  row = {'label': label, 'sha': shas[tree], 'capture_requested': capture,
+                         'exit': exit_code, 'capture': data.get('capture'),
+                         'first_paint_ms': data.get('first_paint_ms'),
+                         'worst_gap_ms': data.get('worst_gap_ms'), 'worst_gap': worst}
+                  rows.append(row)
+          (output / 'summary.json').write_text(json.dumps(rows, indent=2))
+          # GitHub limits annotations per step; four summaries cover all 12 rows.
+          for tree in ('base', 'merge'):
+              for capture in (True, False):
+                  group = [row for row in rows if row['label'].startswith(tree + '-')
+                           and row['capture_requested'] == capture]
+                  compact = [{**{k: row[k] for k in ('label', 'first_paint_ms', 'worst_gap_ms',
+                                                       'exit', 'capture')},
+                              'start_ms': (row['worst_gap'] or {}).get('start_ms'),
+                              'end_ms': (row['worst_gap'] or {}).get('end_ms')}
+                             for row in group]
+                  print('::notice::' + json.dumps(compact), flush=True)
+                  worst = max(group, key=lambda row: row['worst_gap_ms'] or 0)
+                  print('::notice::worst stacks ' + worst['label'] + ' ' +
+                        json.dumps(worst['worst_gap']), flush=True)
+          if any(row['exit'] != 0 for row in rows):
+              raise SystemExit('At least one measurement failed; inspect the artifacts')
+          PY
+      - name: Save every measurement and log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tk91-fixed-revision-pause-diagnostics
+          path: diagnostic/results/
+          if-no-files-found: warn
+          retention-days: 30
