@@ -641,6 +641,18 @@ jobs:
           printf 'startup frame\t%s\tgate\n' "$code" >> ci/status.tsv
           exit "$code"
 
+      - name: Preserve startup evidence even when the gate fails
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: startup-frame-tk91
+          path: |
+            startup-frame.json
+            frame-*.json
+            frame-*.log
+          if-no-files-found: error
+          retention-days: 30
+
       - name: The pytest suite, one interpreter per chunk (Tk 9.1 dies otherwise)
         # Root cause, from the ``.ips`` report this job now annotates:
         #
